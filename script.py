@@ -8,6 +8,7 @@ import re
 import ast
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import requests
 
 class RepoToSwagger:
     def __init__(self, api_key: str, repo_path: str):
@@ -799,4 +800,21 @@ save_config(config)
 
 converter = RepoToSwagger(api_key=openai_api_key, repo_path=repo_path)
 code_files = converter.generate_swagger(output_filepath, api_host)
-print("Process Completed Successfully")
+print("Swagger Generated Successfully")
+
+if qodex_api_key:
+    print("Uploading swagger to Qodex.AI")
+    url = "https://api.app.qodex.ai/api/v1/collections/import_swagger_json"
+    with open(output_filepath, "r") as file:
+        swagger_doc = json.load(file)
+    payload = {
+        "api_key": qodex_api_key,
+        "swagger_doc": swagger_doc
+    }
+    response = requests.post(url, json=payload)
+
+    # Check the response
+    if response.status_code == 200 or response.status_code == 201:
+        print("Success:", response.json())  # Or response.text for plain text responses
+    else:
+        print(f"Failed with status code {response.status_code}: {response.text}")
