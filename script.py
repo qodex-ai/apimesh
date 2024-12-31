@@ -546,7 +546,7 @@ class RepoToSwagger:
             return {"paths": {endpoint['path']: {}}}
 
 
-    def create_swagger_json(self, endpoints, authentication_information, framework):
+    def create_swagger_json(self, endpoints, authentication_information, framework, api_host):
         swagger = {
             "openapi": "3.0.0",
             "info": {
@@ -554,6 +554,11 @@ class RepoToSwagger:
                 "version": "1.0.0",
                 "description": "This Swagger file was generated using OpenAI GPT."
             },
+            "servers": [
+                {
+                    "url": api_host
+                }
+            ],
             "paths": {}
         }
         print("\n***************************************************")
@@ -629,7 +634,7 @@ class RepoToSwagger:
         return json.loads(swagger_json_block)
 
 
-    def generate_swagger(self, output_filepath):
+    def generate_swagger(self, output_filepath, api_host):
         print("\n***************************************************")
         print("Started fetching all filepaths")
         file_paths = self.get_all_file_paths()
@@ -726,25 +731,37 @@ class RepoToSwagger:
         print("Completed Fetching authentication related information")
         endpoint_related_information = self.get_endpoint_related_information(faiss_vector, all_endpoints)
 
-        swagger = self.create_swagger_json(endpoint_related_information, authentication_information, framework)
+        swagger = self.create_swagger_json(endpoint_related_information, authentication_information, framework, api_host)
         self.save_swagger_json(swagger, output_filepath)
         return swagger
 
 
 
-print("***************************************************")
-# Prompt the user for the project repository path
-default_repo_path = os.getcwd()
-repo_path = input(f"Please enter the project repository path (default: {default_repo_path}): ") or default_repo_path
+config_dir = f"{os.getcwd()}/.qodexai"
+config_file = os.path.join(config_dir, "config.json")
+os.makedirs(config_dir, exist_ok=True)
+def load_config():
+    if os.path.exists(config_file):
+        with open(config_file, "r") as file:
+            return json.load(file)
+    return {}
 
+def save_config(config):
+    with open(config_file, "w") as file:
+        json.dump(config, file, indent=4)
+
+
+config = load_config()
+
+print("***************************************************")
+default_repo_path = config.get("repo_path", os.getcwd())
+repo_path = input(f"Please enter the project repository path (default: {default_repo_path}): ") or default_repo_path
+config["repo_path"] = repo_path
+save_config(config)
 # Check if the user entered something
 if not repo_path.strip():
     print("No path provided. Exiting...")
     exit(1)
-
-# Output the entered path
-print(f"You entered: {repo_path}")
-
 # Optionally check if the path exists
 if os.path.isdir(repo_path):
     print("The directory exists.")
@@ -752,24 +769,34 @@ else:
     print("The directory does not exist.")
     exit(1)
 
-# Ask for input with a default value
-default_output_filepath = f"{repo_path}/swagger.json"
-output_filepath = input(f"Please enter the output swagger filepath (default: {default_output_filepath}): ") or default_output_filepath
+print("***************************************************")
+default_output_filepath = config.get("output_filepath", f"{os.getcwd()}/swagger.json")
+output_filepath = input(f"Please enter the output file path (default: {default_output_filepath}): ") or default_output_filepath
+config["output_filepath"] = output_filepath
+save_config(config)
 
-# Output the entered or default path
-print(f"The output swagger path is: {output_filepath}")
+print("***************************************************")
+default_openai_api_key = config.get("openai_api_key")
+openai_api_key = input(f"Please enter openai api key (default: {default_openai_api_key}): ") or default_openai_api_key
+config["openai_api_key"] = openai_api_key
+save_config(config)
 
-
-api_key = input("Please enter the openai api key: ")
-
+print("***************************************************")
+default_api_host = config.get("api_host")
+api_host = input(f"Please enter api host (default: {default_api_host}): ") or default_api_host
+config["api_host"] = api_host
+save_config(config)
 # Check if the user entered something
-if not api_key.strip():
-    print("No api key provided. Exiting...")
+if not api_host.strip():
+    print("No api host provided. Exiting...")
     exit(1)
 
-# Output the entered path
-print(f"You entered: {api_key}")
+print("***************************************************")
+default_qodex_api_key = config.get("qodex_api_key")
+qodex_api_key = input(f"Please enter qodex api key (default: {default_qodex_api_key}) (press enter to skip this): ") or default_qodex_api_key
+config["qodex_api_key"] = qodex_api_key
+save_config(config)
 
-converter = RepoToSwagger(api_key=api_key, repo_path=repo_path)
-code_files = converter.generate_swagger(output_filepath)
+converter = RepoToSwagger(api_key=openai_api_key, repo_path=repo_path)
+code_files = converter.generate_swagger(output_filepath, api_host)
 print("Process Completed Successfully")
