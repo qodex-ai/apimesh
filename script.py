@@ -804,7 +804,7 @@ print("Swagger Generated Successfully")
 
 if qodex_api_key:
     print("Uploading swagger to Qodex.AI")
-    url = "https://api.app.qodex.ai/api/v1/collections/import_swagger_json"
+    url = "https://api.app.qodex.ai/api/v1/collection_imports/create_with_json"
     with open(output_filepath, "r") as file:
         swagger_doc = json.load(file)
     payload = {
