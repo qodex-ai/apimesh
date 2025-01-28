@@ -227,6 +227,133 @@ class RepoToSwagger:
                 {"role": "system", "content": "You are an expert Express.js developer and routing specialist."},
                 {"role": "user", "content": content}
             ]
+        elif framework == "django":
+            content = f"""You are a Django routing expert. Analyze the provided Django urls.py file and return a comprehensive and VALID JSON array of all possible endpoints it defines. Ensure the following rules are strictly followed:
+
+                1. Consistency:
+                    - Every output must follow the same format and include all valid endpoints.
+                    - Missing any valid endpoint or including invalid ones is unacceptable.
+                2. JSON Format:
+                    - Output must be a JSON array of dictionaries.
+                    - Each dictionary should have exactly two keys: "method" and "path".
+                    Example:
+                        [
+                          {{"method": "GET", "path": "/example/"}},
+                          {{"method": "POST", "path": "/example/"}}
+                        ]
+                3. Rules for Extraction:
+                    a. Direct Routes: - Include all routes explicitly defined in urlpatterns. - Include routes defined using path() and re_path(). - Include routes with named or unnamed URL parameters (e.g., /users/<int:id> or /users/<slug:username>). - Include optional URL parameters if defined (e.g., /users/<int:id>?). - Include routes defined with regex patterns.
+                    
+                    b. View-Based Routes: - Include all valid HTTP methods for routes tied to Django generic views or function-based views (e.g., GET, POST, PUT, PATCH, DELETE). - For class-based views (e.g., APIView, ViewSet), extract all supported methods. - Include routes defined via as_view() and map them to their allowed HTTP methods.
+                    
+                    c. Namespace and Prefixes: - Include all routes under namespaced include() patterns. - Prepend parent path prefixes when analyzing nested routes from included urls.py files.
+                    
+                    d. Dynamic and Static Paths: - Ensure dynamic segments like <int:id> and <str:slug> are represented correctly in the output as /users/:id or /users/:slug. - Include static paths as-is.
+                    
+                    e. Advanced Routes: - Include routes defined with decorators like @api_view and custom method mappings. - Include routes with custom URL converters or constraints.
+                    
+                    f. Django REST Framework (DRF): - For DRF Router instances, extract all routes for registered viewsets, including basename and nested routes if any. - Ensure all methods (GET, POST, PUT, PATCH, DELETE) supported by the viewset are included for each route.
+
+                4. Validation:
+                    - Ensure every path starts with /.
+                    - Ensure methods are uppercase (GET, POST, etc.).
+                    - Ensure paths are lowercase and include trailing slashes unless explicitly configured otherwise.
+                    - Include format suffixes (e.g., .json, .xml) if defined in the routes.
+                
+                Analyze this file:
+
+                {file_content}
+                """
+            messages = [
+                {"role": "system", "content": "You are an expert DJANGO developer and routing specialist."},
+                {"role": "user", "content": content}
+            ]
+
+        elif framework == "flask":
+            content = f"""
+                You are a Flask routing expert. Analyze the provided Python file defining Flask routes and return a comprehensive and VALID JSON array of all possible endpoints it defines. Ensure the following rules are strictly followed:
+
+                1. Consistency:
+                    Every output must follow the same format and include all valid endpoints.
+                    Missing any valid endpoint or including invalid ones is unacceptable.
+                2. JSON Format:
+                    Output must be a JSON array of dictionaries.
+                    Each dictionary should have exactly two keys: "method" and "path".
+                    Example:
+                        [
+                          {{"method": "GET", "path": "/example/"}},
+                          {{"method": "POST", "path": "/example/"}}
+                        ]
+                        
+                3. Rules for Extraction:
+                    a. Direct Routes: - Include all HTTP methods (GET, POST, PUT, PATCH, DELETE, OPTIONS). - Extract routes defined using @app.route or Flask.add_url_rule. - Include dynamic parameters (e.g., /users/<id> or /users/<string:username>). - Include optional parameters (e.g., /users/<id>?).
+                    
+                    b. Blueprints: - Include all routes registered through Blueprint instances. - Prepend the blueprint prefix (if any) to the route paths.
+                    
+                    c. Static and Dynamic Paths: - Ensure dynamic segments like <int:id> and <string:username> are represented as /users/:id or /users/:username. - Include static paths as-is.
+                    
+                    d. Custom Methods: - Include routes registered with custom HTTP methods or method lists. - Account for methods parameters in route decorators.
+                    
+                    e. Middleware and Nested Routes: - Include middleware-wrapped routes. - Account for routes registered with sub-applications or extensions like Flask-RESTful or Flask-Smorest.
+                    
+                    f. API Frameworks: - For Flask-RESTful Api instances, extract all routes and their associated HTTP methods. - For Flask-Smorest or similar frameworks, include paths and methods for registered resources.
+
+                4. Validation:
+                    - Ensure every path starts with /.
+                    - Ensure methods are uppercase (GET, POST, etc.).
+                    - Ensure paths are lowercase and reflect the defined structure.
+                
+                Analyze this file:
+
+                {file_content}
+        """
+            messages = [
+                {"role": "system", "content": "You are an expert Flask developer and routing specialist."},
+                {"role": "user", "content": content}
+            ]
+        elif framework == "fastapi":
+            content = f"""
+                        You are a FastAPI routing expert. Analyze the provided Python file defining FastAPI routes and return a comprehensive and VALID JSON array of all possible endpoints it defines. Ensure the following rules are strictly followed:
+
+                        1. Consistency:
+                            - Every output must follow the same format and include all valid endpoints.
+                            - Missing any valid endpoint or including invalid ones is unacceptable.
+                        2. JSON Format:
+                            - Output must be a JSON array of dictionaries.
+                            - Each dictionary should have exactly two keys: "method" and "path".
+                        Example:
+                            [
+                          {{"method": "GET", "path": "/example/"}},
+                          {{"method": "POST", "path": "/example/"}}
+                        ]
+                        3. Rules for Extraction:
+                            a. Direct Routes: - Include all HTTP methods (GET, POST, PUT, PATCH, DELETE, OPTIONS). - Extract routes defined with @app.get, @app.post, @app.put, etc. - Include routes defined with @app.api_route() and @app.router.
+                            
+                            b. Dynamic and Static Paths: - Include dynamic parameters (e.g., /items/{{item_id}}) and represent them as /items/:item_id. - Include optional parameters (e.g., /users/{{user_id}}?). - Ensure static paths are included as-is.
+                            
+                            c. APIRouter: - Include routes defined in APIRouter instances. - Prepend prefixes specified in app.include_router() or APIRouter with the route paths. - Include dependencies or middleware-wrapped routes registered with APIRouter.
+                            
+                            d. Path Operation Parameters: - Include query parameters explicitly if specified in the Depends() or other parameter definitions.
+                            
+                            e. Custom Methods: - Account for custom HTTP methods or method lists defined using methods arguments.
+                            
+                            f. Validation and Serialization: - Extract all routes even if they specify response models, request validation, or dependencies. - Do not modify or skip routes with additional validation logic.
+                        
+                        4. Validation:
+                            Ensure every path starts with /.
+                            Ensure methods are uppercase (GET, POST, etc.).
+                            Ensure paths are lowercase.
+                            Include routes with trailing slashes if defined.
+                            Include all valid paths from the FastAPI application.
+                        
+                        Analyze this file:
+                            {file_content}
+
+            """
+            messages = [
+                {"role": "system", "content": "You are an expert Fastapi developer and routing specialist."},
+                {"role": "user", "content": content}
+            ]
         # Call the OpenAI API
         client = OpenAI(api_key=self.api_key)
         response = client.chat.completions.create(model="gpt-4o", messages=messages, temperature=0)
