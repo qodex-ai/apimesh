@@ -26,24 +26,27 @@ pip3 install langchain-text-splitters
 echo "Installed the requirements"
 echo ""
 
-# Define the URL for the Python file
-PYTHON_FILE_URL="https://raw.githubusercontent.com/qodex-ai/swagger-bot/refs/heads/main/script.py"
+# Download the Github repo
+echo "Downloading the repo"
+git clone https://github.com/qodex-ai/swagger-bot.git
 
-# Define the name for the downloaded file
-PYTHON_FILE_NAME="script.py"
+REPO_DIR="swagger-bot"
 
-# Download the Python file
-echo "Downloading the Python file from $PYTHON_FILE_URL..."
-curl -sSL $PYTHON_FILE_URL -o $VENV_DIR/$PYTHON_FILE_NAME
-
-# Check if the file was downloaded successfully
-if [ -f "$VENV_DIR/$PYTHON_FILE_NAME" ]; then
-    echo "File downloaded successfully: $VENV_DIR/$PYTHON_FILE_NAME"
-
-    # Run the Python file
-    echo "Running the Python script..."
-    $VENV_DIR/bin/python3 $VENV_DIR/$PYTHON_FILE_NAME
-else
-    echo "Failed to download the Python file."
+# Check if the directory exists
+if [ -d "$REPO_DIR" ]; then
+  # Check if it's a git repository
+  if [ -d "$REPO_DIR/.git" ]; then
+    echo "The repository '$REPO_DIR' exists and is a valid Git repository."
+  else
+    echo "The directory '$REPO_DIR' exists, but it is not a Git repository."
     exit 1
+  fi
+else
+  echo "The repository '$REPO_DIR' does not exist locally."
+  exit 1
 fi
+
+echo "Running the Python script..."
+source qodexai-virtual-env/bin/activate
+python3 -m repo_to_swagger.run_swagger
+exit 1
