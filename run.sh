@@ -23,12 +23,13 @@ pip3 install openai
 pip3 install tiktoken
 pip3 install faiss-cpu
 pip3 install langchain-text-splitters
+pip3 install pyyaml
 echo "Installed the requirements"
 echo ""
 
 # Download the Github repo
 echo "Downloading the repo"
-git clone https://github.com/qodex-ai/swagger-bot.git
+git clone --branch structrual_changes_and_gpt --single-branch https://github.com/qodex-ai/swagger-bot.git
 
 REPO_DIR="swagger-bot"
 
@@ -48,5 +49,6 @@ fi
 
 echo "Running the Python script..."
 source qodexai-virtual-env/bin/activate
+cd swagger-bot/
 python3 -m repo_to_swagger.run_swagger
 exit 1
