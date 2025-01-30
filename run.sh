@@ -29,7 +29,7 @@ echo ""
 
 # Download the Github repo
 echo "Downloading the repo"
-git clone --branch structrual_changes_and_gpt --single-branch https://github.com/qodex-ai/swagger-bot.git
+git clone https://github.com/qodex-ai/swagger-bot.git
 
 REPO_DIR="swagger-bot"
 
