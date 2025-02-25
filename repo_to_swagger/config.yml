@@ -1,0 +1,137 @@
+# config.yml
+ignored_dirs:
+  - .git
+  - node_modules
+  - venv
+  - __pycache__
+  - build
+  - dist
+  - tests
+  - test
+  - docs
+  - examples
+  - migrations
+  - tmp
+  - vendor
+  - app/assets
+  - develop-eggs
+  - downloads
+  - eggs
+  - .eggs
+  - lib
+  - lib64
+  - parts
+  - sdist
+  - var
+  - wheels
+  - .egg-info
+  - .env
+  - .venv
+  - ENV
+  - .python-version
+  - .pytest_cache
+  - .coverage
+  - htmlcov
+  - log
+  - db
+  - public
+  - coverage
+  - spec
+  - bundle
+  - .rvmrc
+  - .byebug_history
+  - storage
+  - .pnp
+  - .env.local
+  - .env.development.local
+  - .env.test.local
+  - .env.production.local
+  - .next
+  - .nuxt
+  - .DS_Store
+  - .tscache
+  - .angular
+  - dist-types
+  - target
+  - .apt_generated
+  - .classpath
+  - .factorypath
+  - .project
+  - .settings
+  - .springBeans
+  - .sts4-cache
+  - .gradle
+  - logs
+  - .idea
+  - .vscode
+  - qodexai-virtual-env
+  - swagger-bot
+  - repo_to_swagger
+
+routing_patterns_map:
+  ruby_on_rails:
+    - '\bresources\b.*:'
+    - 'namespace\b.*'''
+    - 'Rails\.application\.routes\.draw'
+    - 'root\s+(?:''|")'
+    - 'get\s+[''"]/\w+'
+    - 'post\s+[''"]/\w+'
+    - 'put\s+[''"]/\w+'
+    - 'delete\s+[''"]/\w+'
+  
+  django:
+    - 'path\([''"]'
+    - 'include\([''"]'
+    - 'url\([''"]'
+    - 'urlpatterns\s*='
+    - '@route\([''"]'
+    - '\.(?:get|post|put|delete)_api\('
+    - '@api_view\(\[[''""](?:GET|POST|PUT|DELETE)[''"]'
+    - 'ListAPIView'
+    - 'CreateAPIView'
+    - 'UpdateAPIView'
+    - 'DestroyAPIView'
+  
+  express:
+    - 'app\.(?:get|post|put|delete)\([''"]'
+    - 'router\.(?:get|post|put|delete)\([''"]'
+    - 'express\.Router\(\)'
+    - 'app\.use\([''"]'
+  
+  flask:
+    - '@app\.route\([''"]'
+    - 'app\.(?:get|post|put|delete)\([''"]'
+    - '@blueprint\.route\([''"]'
+    - 'flask\.Blueprint\('
+    - 'app\.register_blueprint\('
+    - '@\w+\.route\([''"]'
+    - 'Api\('
+    - 'Resource\)'
+    - 'def (?:get|post|put|delete)\('
+  
+  fastapi:
+    - '@app\.(?:get|post|put|delete)\([''"]'
+    - '@router\.(?:get|post|put|delete)\([''"]'
+    - 'APIRouter\(\)'
+    - 'app\.include_router\('
+    - '@app\.middleware\([''"]'
+  
+  laravel:
+    - 'Route::(?:get|post|put|delete)\([''"]'
+    - 'Route::resource\([''"]'
+    - 'Route::group\('
+    - '->middleware\([''"]'
+  
+  spring:
+    - '@RequestMapping\([''"]'
+    - '@GetMapping\([''"]'
+    - '@PostMapping\([''"]'
+    - '@PutMapping\([''"]'
+    - '@DeleteMapping\([''"]'
+    - '@RestController'
+    - '@Controller'
+    - '@RequestParam'
+    - '@PathVariable'
+
+gpt_4o_model_name: "gpt-4o"
+user_config_file_dir: ".qodexai"
