@@ -40,7 +40,7 @@ class RunSwagger:
         authentication_information = faiss_index.get_authentication_related_information(faiss_vector)
         print("Completed Fetching authentication related information")
         endpoint_related_information = endpoints_extractor.get_endpoint_related_information(faiss_vector, all_endpoints)
-        swagger = swagger_generator.create_swagger_json(endpoint_related_information, authentication_information, framework, self.user_config['api_host'])
+        swagger = swagger_generator.create_swagger_json(self.user_config['repo_name'],endpoint_related_information, authentication_information, framework, self.user_config['api_host'])
         swagger_generator.save_swagger_json(swagger, self.user_config['output_filepath'])
         print("Swagger Generated Successfully")
         self.upload_swagger_to_qodex()
@@ -63,6 +63,7 @@ class RunSwagger:
             # Check the response
             if response.status_code == 200 or response.status_code == 201:
                 print("Success:", response.json())  # Or response.text for plain text responses
+                print("Swagger successfully uploaded to Qodex AI. Please refresh your tab.")
             else:
                 print(f"Failed with status code {response.status_code}: {response.text}")
         return

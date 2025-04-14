@@ -25,9 +25,11 @@ class UserConfigurations:
         user_config = self.load_user_config()
         print("***************************************************")
         default_repo_path = user_config.get("repo_path", os.getcwd())
+        default_repo_path = "/".join(default_repo_path.split("/")[:-1])
         repo_path = input(
             f"Please enter the project repository path (default: {default_repo_path}): ") or default_repo_path
         user_config["repo_path"] = repo_path
+        user_config['repo_name'] = os.path.basename(repo_path)
         self.save_user_config(user_config)
         # Check if the user entered something
         if not repo_path.strip():
@@ -62,7 +64,7 @@ class UserConfigurations:
 
         print("***************************************************")
         default_api_host = user_config.get("api_host", "")
-        api_host = input(f"Please enter api host (default: {default_api_host}): ") or default_api_host
+        api_host = input(f"Please enter host of any of your servers (default: {default_api_host}): ") or default_api_host
         user_config["api_host"] = api_host
         self.save_user_config(user_config)
         # Check if the user entered something

@@ -12,11 +12,11 @@ class SwaggerGeneration:
         self.openai_client = OpenAiClient()
 
 
-    def create_swagger_json(self, endpoints, authentication_information, framework, api_host):
+    def create_swagger_json(self, repo_name, endpoints, authentication_information, framework, api_host):
         swagger = {
             "openapi": "3.0.0",
             "info": {
-                "title": "Generated API Documentation",
+                "title": repo_name,
                 "version": "1.0.0",
                 "description": "This Swagger file was generated using OpenAI GPT."
             },
