@@ -133,5 +133,5 @@ routing_patterns_map:
     - '@RequestParam'
     - '@PathVariable'
 
-gpt_4o_model_name: "gpt-4o-2024-11-20"
+gpt_4o_model_name: "gpt-4.1-2025-04-14"
 user_config_file_dir: ".qodexai"

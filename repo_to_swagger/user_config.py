@@ -56,9 +56,9 @@ class UserConfigurations:
         self.save_user_config(user_config)
 
         print("***************************************************")
-        default_openai_model = user_config.get("openai_model", "gpt-4o")
+        default_openai_model = user_config.get("openai_model", "gpt-4.1-2025-04-14")
         openai_model = input(
-            f"Please enter openai api model (default: {default_openai_model}): choices: gpt-4o/gpt-4o-mini ") or default_openai_model
+            f"Please enter openai api model (default: {default_openai_model}): choices: gpt-4.1-2025-04-14/gpt-4o ") or default_openai_model
         user_config["openai_model"] = openai_model
         self.save_user_config(user_config)
 

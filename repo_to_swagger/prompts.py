@@ -258,12 +258,13 @@ ruby_on_rails_swagger_generation_prompt = """
             Authentication/Authorization Information: {authentication_information}
 
             Include:
-            1. A description for the endpoint derived from the Controller Information.
+            1. api_description: A detailed description of the API endpoint's functionality and the parameter limitations.
             2. Expected request parameters (query, path, body) with fully resolved schemas. Do not use $ref or references; include all definitions inline.
             3. Example request and response schemas, fully expanded without references.
             4. Response codes (200, 400, etc.) and their descriptions.
             5. The method in the output should match the Method mentioned above.
             6. Tags should be UpperCamelCase, pluralized, and based on the Rails controller name inferred from the Controller Information.
+            7. authorization_tag: This field should be 'Authorization' if the primary function of the endpoint is authentication or authorization (e.g., login, token generation, access management). Otherwise, set it to 'Non-Authorization'. Do not classify it based solely on the presence of an Authorization header.
 
             Important Notes:
             - If the Controller Information or Authentication/Authorization Information indicates that the endpoint enforces authentication, include the appropriate security scheme in the JSON.
@@ -287,7 +288,7 @@ ruby_on_rails_swagger_generation_prompt = """
                 "/api/v1/users/{{id}}": {{
                     "get": {{
                         "summary": "Retrieve User Details",
-                        "description": "Retrieves detailed information about a specific user based on their ID. This action is typically defined in the UsersController#show.",
+                        "api_description": "Retrieves detailed information about a specific user using the provided ID.",
                         "tags": [
                             "Users"
                         ],
@@ -302,6 +303,7 @@ ruby_on_rails_swagger_generation_prompt = """
                                 "description": "The unique identifier for the user."
                             }}
                         ],
+                        "authorization_tag": "Non-Authorization",
                         "responses": {{
                             "200": {{
                                 "description": "User details retrieved successfully.",
@@ -360,12 +362,14 @@ generic_swagger_generation_prompt = """
                         Authentication/Authorization Information: {authentication_information}
 
                         Include:
-                        1. Description for the endpoint.
+                        1. api_description: A detailed description of the API endpoint's functionality and the parameter limitations.
                         2. Expected request parameters (query, path, body) with fully resolved schemas. Do not use $ref or references; include all definitions inline.
                         3. Example request and response schemas, fully expanded without references.
                         4. Response codes (200, 400, etc.) and their descriptions.
                         5. The method in the output should be same as the Method mentioned above.
                         6. Tags should be UpperCamelCase without space with pluralized form.
+                        7. authorization_tag: This field should be 'Authorization' if the primary function of the endpoint is authentication or authorization (e.g., login, token generation, access management). Otherwise, set it to 'Non-Authorization'. Do not classify it based solely on the presence of an Authorization header.
+
 
                         **Leverage Authentication/Authorization Information while generating parameters and headers for the endpoint.**
 
@@ -382,7 +386,7 @@ generic_swagger_generation_prompt = """
                             "/api/v1/users/confirm_email": {{
                                 "post": {{
                                     "summary": "Confirm User's Email",
-                                    "description": "This endpoint is used to confirm a user's email address using a confirmation token.",
+                                    "api_description": "This endpoint confirms a user's email address based on the provided confirmation token.",
                                     "tags": [
                                         "Users"
                                     ],
@@ -405,6 +409,7 @@ generic_swagger_generation_prompt = """
                                             }}
                                         }}
                                     }},
+                                    "authorization_tag": "Non-Authorization",
                                     "responses": {{
                                         "200": {{
                                             "description": "Email confirmed successfully",
