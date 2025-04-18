@@ -13,74 +13,27 @@ framework_identifier_prompt = """
         """
 framework_identifier_system_prompt = "You are a helpful assistant for understanding different framework repositories."
 
-ruby_on_rails_endpoint_extractor_prompt = """
-            You are a Ruby on Rails routing expert. Analyze the provided Rails routes file and return a comprehensive and VALID JSON array of all possible endpoints it defines. Ensure the following rules are strictly followed:
+ruby_on_rails_endpoint_extractor_prompt = """You are a Ruby on Rails routing expert. Analyze the provided Rails routes file and return a JSON array of all API endpoints exactly as they would appear in the output of the `rails routes` command.
 
-            1. **Consistency**:
-               - Every output must follow the same format and include all valid endpoints.
-               - Missing any valid endpoint or including invalid ones is unacceptable.
+1. **Accuracy**:
+   - The output must include only the endpoints that `rails routes` would display, with exact paths and HTTP methods.
+   - Do not generate endpoints that are not explicitly defined or that `rails routes` would not show.
+   - Ensure that `new` and `edit` routes are included for all resources, unless they are explicitly excluded using except or restricted using only. If `only` or `except` is specified, include the appropriate API paths accordingly.
+   - For nested resources, ensure `new` routes include all parent resource IDs (e.g., `/grandparent/:grandparent_id/parent/:parent_id/name/new`).
 
-            2. **JSON Format**:
-               - Output must be a JSON array of dictionaries.
-               - Each dictionary should have exactly two keys: "method" and "path".
-               - Example:
-                 [
-                   {{"method": "GET", "path": "/example"}},
-                   {{"method": "POST", "path": "/example"}}
-                 ]
+2. **JSON Format**:
+   - Output must be a JSON array of dictionaries.
+   - Each dictionary must have exactly two keys: `method` (uppercase HTTP method, e.g., GET, POST) and `path` (lowercase, starting with `/`, matching the URI pattern from `rails routes`).
+   - Example:
+     [
+       {{"method": "GET", "path": "/api/v1/organisations/:organisation_id/projects/:project_id/collections"}},
+       {{"method": "POST", "path": "/api/v1/organisations/:organisation_id/projects/:project_id/collections"}}
+     ]
+   - Include format suffixes (e.g., `.:format`) only if present in the routes file.
 
-            3. **Rules for Extraction**:
-               a. **Direct Routes**:
-                  - Include all HTTP methods (GET, POST, PUT, PATCH, DELETE).
-                  - Include root, match, and custom routes.
-                  - Include mounted engine paths.
-                  - **Include routes being defined by devise gem in rails.**
-
-               b. **Resources**:
-                  - For `resources :name`:
-                    * GET    /name              (index)   # (Exclude if `except: [:index]`) OR  (Include if `only: [:index]`) OR (Include if only and except is missing)
-                    * POST   /name              (create)  # (Exclude if `except: [:create]`) OR  (Include if `only: [:create]`) OR (Include if only and except is missing)
-                    * GET    /name/new          (new)     # (Exclude if `except: [:new]`) OR  (Include if `only: [:new]`) OR (Include if only and except is missing)
-                    * GET    /name/:id/edit     (edit)    # (Exclude if `except: [:edit]`) OR  (Include if `only: [:edit]`) OR (Include if only and except is missing)
-                    * GET    /name/:id          (show)    # (Exclude if `except: [:show]`) OR  (Include if `only: [:show]`) OR (Include if only and except is missing)
-                    * PATCH  /name/:id          (update)  # (Exclude if `except: [:put]`) OR  (Include if `only: [:put]`) OR (Include if only and except is missing)
-                    * PUT    /name/:id          (update)  # (Exclude if `except: [:put]`) OR  (Include if `only: [:put]`) OR (Include if only and except is missing)
-                    * DELETE /name/:id          (destroy) # (Exclude if `except: [:destroy]`) OR  (Include if `only: [:destroy]`) OR (Include if only and except is missing)
-                  - For `resource :name`:
-                    * POST   /name              (create)  # (Exclude if `except: [:create]`) OR  (Include if `only: [:create]`) OR (Include if only and except is missing)
-                    * GET    /name/new          (new)     # (Exclude if `except: [:new]`) OR  (Include if `only: [:new]`) OR (Include if only and except is missing)
-                    * GET    /name/edit         (edit)    # (Exclude if `except: [:edit]`) OR  (Include if `only: [:edit]`) OR (Include if only and except is missing)
-                    * GET    /name              (show)    # (Exclude if `except: [:show]`) OR  (Include if `only: [:show]`) OR (Include if only and except is missing)
-                    * PATCH  /name              (update)  # (Exclude if `except: [:update]`) OR  (Include if `only: [:update]`) OR (Include if only and except is missing)
-                    * PUT    /name              (update)  # (Exclude if `except: [:update]`) OR  (Include if `only: [:update]`) OR (Include if only and except is missing)
-                    * DELETE /name              (destroy) # (Exclude if `except: [:destroy]`) OR  (Include if `only: [:destroy]`) OR (Include if only and except is missing)
-
-               c. **Custom Routes**:
-                  - Include collection and member routes.
-                  - Include routes defined using `on: :member` or `on: :collection`.
-                  - Include all namespace and scope prefixes.
-                  - Include routes with constraints, custom paths, or shallow options.
-                  - Include nested resources fully.
-
-            4. **Validation**:
-               - Ensure every path starts with `/`.
-               - Ensure methods are uppercase (GET, POST, etc.).
-               - Ensure paths are lowercase and include format suffixes like `.json` if specified.
-               - Include both PATCH and PUT for updates.
-
-            For Example if the content is:
-            resources :test_plans, only: [:index, :create, :show, :update, :destroy] do
-            member do
-              post :run
-            end
-
-            Your output should be
-            [{{"method":"DELETE", "path": "/api/v1/test_plans/:id"}}, {{"method":"PUT", "path": "/api/v1/test_plans/:id"}}, {{"method":"PATCH", "path": "/api/v1/test_plans/:id"}}, {{"method":"GET", "path": "/api/v1/test_plans/:id"}}, {{"method":"POST", "path": "/api/v1/test_plans"}}, {{"method":"GET", "path": "/api/v1/test_plans"}}, {{"method":"POST", "path": "/api/v1/test_plans/:id/run"}}]
-
-            Return ONLY the JSON array, nothing else. Analyze this file:
-            {file_content}
-            """
-
+File Content:
+{file_content}
+"""
 ruby_on_rails_endpoint_extractor_system_prompt = "You are an expert Ruby on Rails developer and routing specialist."
 
 express_endpoint_extractor_prompt = """
