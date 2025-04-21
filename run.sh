@@ -1,6 +1,8 @@
 #!/bin/bash
 
 VENV_DIR="qodexai-virtual-env"
+REPO_URL="https://github.com/qodex-ai/swagger-bot.git"
+REPO_NAME="swagger-bot"
 
 # Check if the virtual environment directory exists
 if [[ -d "$VENV_DIR" ]]; then
@@ -27,9 +29,18 @@ pip3 install pyyaml
 echo "Installed the requirements"
 echo ""
 
-# Download the Github repo
-echo "Downloading the repo"
-git clone https://github.com/qodex-ai/swagger-bot.git
+echo "Checking for existing repo..."
+
+if [ -d "$REPO_NAME" ]; then
+    echo "Repo already exists. Pulling latest changes..."
+    cd "$REPO_NAME"
+    git pull
+    cd ..
+else
+    echo "Repo not found. Cloning the repo..."
+    git clone "$REPO_URL"
+fi
+
 
 REPO_DIR="swagger-bot"
 
