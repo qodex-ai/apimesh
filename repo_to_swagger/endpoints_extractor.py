@@ -47,6 +47,13 @@ class EndpointsExtractor:
                 {"role": "system", "content": prompts.fastapi_endpoint_extractor_system_prompt},
                 {"role": "user", "content": content}
             ]
+
+        elif framework == "golang":
+            content = prompts.golang_endpoint_extractor_prompt.format(file_content=file_content)
+            messages = [
+                {"role": "system", "content": prompts.golang_endpoint_extractor_system_prompt},
+                {"role": "user", "content": content}
+            ]
         # Call the OpenAI API
         response = self.openai_client.call_chat_completion(messages=messages, temperature=0)
         start = response.find('[')

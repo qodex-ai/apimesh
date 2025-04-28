@@ -19,9 +19,14 @@ class GenerateFaissIndex:
                 chunk_overlap=200, language=Language.JS
             )
         elif framework == "django" or framework == "flask" or framework == "fastapi":
-            text_splitter = RecursiveCharacterTextSplitter(
+            text_splitter = RecursiveCharacterTextSplitter.from_language(
                 chunk_size=2000,
                 chunk_overlap=200, language=Language.PYTHON
+            )
+        elif framework == "golang":
+            text_splitter = RecursiveCharacterTextSplitter.from_language(
+                chunk_size=2000,
+                chunk_overlap=200, language=Language.GO
             )
         else:
             text_splitter = RecursiveCharacterTextSplitter(

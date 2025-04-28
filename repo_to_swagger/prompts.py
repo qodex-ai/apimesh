@@ -36,6 +36,31 @@ File Content:
 """
 ruby_on_rails_endpoint_extractor_system_prompt = "You are an expert Ruby on Rails developer and routing specialist."
 
+golang_endpoint_extractor_system_prompt = "You are an expert `golang` developer and routing specialist."
+golang_endpoint_extractor_prompt = """You are a Golang web routing expert. Analyze the provided Go source code and extract all the HTTP API endpoints. Your output must reflect exactly the routes defined in the file without inventing or assuming any missing parts.
+
+1. **Accuracy**:
+   - Only include endpoints explicitly defined via standard Go routing patterns (e.g., `http.HandleFunc`, `mux.HandleFunc`, `r.GET`, `router.POST`, `e.GET`, `app.Get`, etc.).
+   - Extract the correct HTTP method (e.g., GET, POST, PUT, DELETE, PATCH) and the associated path exactly as defined in the code.
+   - If a route uses a path variable (e.g., `"/users/id"` in `mux` or `"/users/:id"` in `gin`), preserve the path syntax exactly as it appears in the code.
+   - Do not infer routes not present in the source code.
+   - Ignore WebSocket handlers, middleware, or non-HTTP route-related code unless they define a direct HTTP method+path combination.
+
+2. **JSON Format**:
+   - Output must be a JSON array of dictionaries.
+   - Each dictionary must have exactly two keys: `method` (uppercase HTTP method, e.g., GET, POST) and `path` (lowercase, starting with `/`, matching the path from the source code).
+   - Example:
+     [
+       {{"method": "GET", "path": "/api/v1/users"}},
+       {{"method": "POST", "path": "/api/v1/users/:userId/projects"}}
+     ]
+   - Keep the path parameters (`:id`, etc.) exactly as they appear — do not transform or standardize them across frameworks.
+
+File Content:
+{file_content}
+"""
+
+
 express_endpoint_extractor_prompt = """
             You are an Express.js routing expert. Analyze the provided JavaScript file defining Express routes and return a comprehensive and VALID JSON array of all possible endpoints it defines. Ensure the following rules are strictly followed:
 

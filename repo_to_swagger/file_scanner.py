@@ -14,7 +14,7 @@ class FileScanner:
         Get all file paths in the repository, ignoring specified directories
         """
         file_paths = []
-        supported_extensions = ('.py', '.js', '.ts', '.java', '.rb')
+        supported_extensions = ('.py', '.js', '.ts', '.java', '.rb', '.go')
 
         for root, dirs, files in os.walk(repo_path):
             dirs[:] = [d for d in dirs if d not in config.ignored_dirs]

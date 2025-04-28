@@ -133,5 +133,31 @@ routing_patterns_map:
     - '@RequestParam'
     - '@PathVariable'
 
+  golang:
+    # net/http (standard library)
+    - 'http\.HandleFunc\([''"]'
+    - 'http\.Handle\([''"]'
+    - 'http\.ServeMux\{'
+
+    # gorilla/mux
+    - 'mux\.HandleFunc\([''"]'
+    - 'mux\.Handle\([''"]'
+    - 'mux\.NewRouter\('
+
+    # gin-gonic/gin
+    - 'gin\.Default\('
+    - 'gin\.New\('
+    - '\b\w+\.(GET|POST|PUT|DELETE|PATCH|OPTIONS|HEAD)\([''"]'
+
+    # echo
+    - 'echo\.New\('
+    - '\b\w+\.(GET|POST|PUT|DELETE|PATCH|OPTIONS|HEAD)\([''"]'
+
+    # fiber
+    - 'fiber\.New\('
+    - '\b\w+\.(Get|Post|Put|Delete|Patch|Options|Head)\([''"]'
+
+
+
 gpt_4o_model_name: "gpt-4.1-2025-04-14"
 user_config_file_dir: ".qodexai"
