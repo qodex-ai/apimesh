@@ -75,6 +75,7 @@ class RunSwagger:
             if response.status_code == 200 or response.status_code == 201:
                 print("Success:", response.json())  # Or response.text for plain text responses
                 print("Swagger successfully uploaded to Qodex AI. Please refresh your tab.")
+                print("We highly recommend you to review the apis before generating test scenarios.")
             else:
                 print(f"Failed with status code {response.status_code}: {response.text}")
         return
