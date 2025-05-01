@@ -242,7 +242,10 @@ ruby_on_rails_swagger_generation_prompt = """
             4. Response codes (200, 400, etc.) and their descriptions.
             5. The method in the output should match the Method mentioned above.
             6. Tags should be UpperCamelCase, pluralized, and based on the Rails controller name inferred from the Controller Information.
-            7. authorization_tag: This field should be 'Authorization' if the primary function of the endpoint is authentication or authorization (e.g., login, token generation, access management). Otherwise, set it to 'Non-Authorization'. Do not classify it based solely on the presence of an Authorization header.
+            7. authorization_tag: This field should be 'Authorization Required' if the endpoint requires authorization(eg: beaker token, auth token etc.). Otherwise, set it to 'Authorization Not Required'.
+            8. module_tag: This field will have the tag that represents the name of the module under which this endpoint exists.
+            9. auth_tag: This field should be present only if the api handles user authentication and authorization processes like login, signup, signin, access token, email confirmation etc. The value should be 'Auth API'
+
 
             Important Notes:
             - If the Controller Information or Authentication/Authorization Information indicates that the endpoint enforces authentication, include the appropriate security scheme in the JSON.
@@ -281,7 +284,8 @@ ruby_on_rails_swagger_generation_prompt = """
                                 "description": "The unique identifier for the user."
                             }}
                         ],
-                        "authorization_tag": "Non-Authorization",
+                        "authorization_tag": "Authorization Not Required",
+                        "module_tag": "Users",
                         "responses": {{
                             "200": {{
                                 "description": "User details retrieved successfully.",
@@ -346,7 +350,9 @@ generic_swagger_generation_prompt = """
                         4. Response codes (200, 400, etc.) and their descriptions.
                         5. The method in the output should be same as the Method mentioned above.
                         6. Tags should be UpperCamelCase without space with pluralized form.
-                        7. authorization_tag: This field should be 'Authorization' if the primary function of the endpoint is authentication or authorization (e.g., login, token generation, access management). Otherwise, set it to 'Non-Authorization'. Do not classify it based solely on the presence of an Authorization header.
+                        7. authorization_tag: This field should be 'Authorization Required' if the endpoint requires authorization(eg: beaker token, auth token etc.). Otherwise, set it to 'Authorization Not Required'.
+                        8. module_tag: This field will have the tag that represents the name of the module under which this endpoint exists.
+                        9. auth_tag: This field should be present only if the api handles user authentication and authorization processes like login, signup, signin, access token, email confirmation etc. The value should be 'Auth API'
 
 
                         **Leverage Authentication/Authorization Information while generating parameters and headers for the endpoint.**
@@ -364,7 +370,7 @@ generic_swagger_generation_prompt = """
                             "/api/v1/users/confirm_email": {{
                                 "post": {{
                                     "summary": "Confirm User's Email",
-                                    "api_description": "This endpoint confirms a user's email address based on the provided confirmation token.",
+                                    "api_description": "This endpoint confirms a user's email address based on the token sent to user's email.",
                                     "tags": [
                                         "Users"
                                     ],
@@ -387,7 +393,9 @@ generic_swagger_generation_prompt = """
                                             }}
                                         }}
                                     }},
-                                    "authorization_tag": "Non-Authorization",
+                                    "authorization_tag": "Authorization Not Required",
+                                    "module_tag": "users",
+                                    "auth_tag": "Auth API",
                                     "responses": {{
                                         "200": {{
                                             "description": "Email confirmed successfully",
@@ -412,14 +420,6 @@ generic_swagger_generation_prompt = """
                                                     "schema": {{
                                                         "type": "object",
                                                         "oneOf": [
-                                                            {{
-                                                                "properties": {{
-                                                                    "error": {{
-                                                                        "type": "string",
-                                                                        "example": "Invalid token"
-                                                                    }}
-                                                                }}
-                                                            }},
                                                             {{
                                                                 "properties": {{
                                                                     "error": {{
