@@ -5,9 +5,9 @@ from repo_to_swagger.framework_identifier import FrameworkIdentifier
 from repo_to_swagger.endpoints_extractor import EndpointsExtractor
 from repo_to_swagger.faiss_index_generator import GenerateFaissIndex
 import requests, json
+import sys
 
 
-user_configurations = UserConfigurations()
 swagger_generator = SwaggerGeneration()
 file_scanner = FileScanner()
 framework_identifier = FrameworkIdentifier()
@@ -15,8 +15,8 @@ endpoints_extractor = EndpointsExtractor()
 faiss_index = GenerateFaissIndex()
 
 class RunSwagger:
-    def __init__(self):
-        self.user_config = UserConfigurations.load_user_config()
+    def __init__(self, project_api_key):
+        self.user_config = UserConfigurations(project_api_key).load_user_config()
 
     def run(self):
         try:
@@ -80,6 +80,7 @@ class RunSwagger:
                 print(f"Failed with status code {response.status_code}: {response.text}")
         return
 
-RunSwagger().run()
+project_api_key = sys.argv[1]
+RunSwagger(project_api_key).run()
 
 

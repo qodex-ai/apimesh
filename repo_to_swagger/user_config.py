@@ -7,8 +7,8 @@ config_file = os.path.join(config_dir, "config.json")
 os.makedirs(config_dir, exist_ok=True)
 
 class UserConfigurations:
-    def __init__(self):
-        self.add_user_configs()
+    def __init__(self, project_api_key):
+        self.add_user_configs(project_api_key)
 
     @staticmethod
     def load_user_config():
@@ -21,7 +21,7 @@ class UserConfigurations:
         with open(config_file, "w") as file:
             json.dump(config, file, indent=4)
 
-    def add_user_configs(self):
+    def add_user_configs(self, project_api_key):
         user_config = self.load_user_config()
         print("***************************************************")
         current_repo_path = "/".join(os.getcwd().split("/")[:-1])
@@ -72,9 +72,12 @@ class UserConfigurations:
             print("No api host provided. Exiting...")
             exit(1)
 
-        print("***************************************************")
-        default_qodex_api_key = user_config.get("qodex_api_key")
-        qodex_api_key = input(
-            f"Please enter qodex api key (default: {default_qodex_api_key}) (press enter to skip this): ") or default_qodex_api_key
+        if not project_api_key:
+            print("***************************************************")
+            default_qodex_api_key = user_config.get("qodex_api_key")
+            qodex_api_key = input(f"Please enter qodex api key (default: {default_qodex_api_key}) (press enter to skip this): ") or default_qodex_api_key
+        else:
+            qodex_api_key = project_api_key
+
         user_config["qodex_api_key"] = qodex_api_key
         self.save_user_config(user_config)
