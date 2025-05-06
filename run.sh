@@ -58,8 +58,23 @@ else
   exit 1
 fi
 
+PROJECT_API_KEY=null
+
+# Parse args
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --project-api-key)
+      PROJECT_API_KEY="$2"
+      shift 2 # Shift past the flag and its value
+      ;;
+    *)
+      shift # Skip unknown options
+      ;;
+  esac
+done
+
 echo "Running the Python script..."
 source qodexai-virtual-env/bin/activate
 cd swagger-bot/
-python3 -m repo_to_swagger.run_swagger
+python3 -m repo_to_swagger.run_swagger $PROJECT_API_KEY
 exit 1
