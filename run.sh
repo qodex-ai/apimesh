@@ -39,7 +39,9 @@ if [ -d "$REPO_NAME" ]; then
 else
     echo "Repo not found. Cloning the repo..."
     git clone "$REPO_URL"
+    cd "$REPO_NAME"
     git checkout amitc
+    cd ..
 fi
 
 
