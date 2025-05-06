@@ -79,6 +79,4 @@ class RunSwagger:
         return
 
 project_api_key = sys.argv[1]
-print("**************************")
-print(project_api_key)
 RunSwagger(project_api_key).run()
