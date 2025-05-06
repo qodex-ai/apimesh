@@ -8,7 +8,6 @@ import requests, json
 import sys
 
 
-swagger_generator = SwaggerGeneration()
 file_scanner = FileScanner()
 framework_identifier = FrameworkIdentifier()
 endpoints_extractor = EndpointsExtractor()
@@ -17,6 +16,7 @@ faiss_index = GenerateFaissIndex()
 class RunSwagger:
     def __init__(self, project_api_key):
         self.user_config = UserConfigurations(project_api_key).load_user_config()
+        self.swagger_generator = SwaggerGeneration()
 
     def run(self):
         try:
@@ -45,12 +45,12 @@ class RunSwagger:
             authentication_information = faiss_index.get_authentication_related_information(faiss_vector)
             print("Completed Fetching authentication related information")
             endpoint_related_information = endpoints_extractor.get_endpoint_related_information(faiss_vector, all_endpoints)
-            swagger = swagger_generator.create_swagger_json(self.user_config['repo_name'],endpoint_related_information, authentication_information, framework, self.user_config['api_host'])
+            swagger = self.swagger_generator.create_swagger_json(self.user_config['repo_name'],endpoint_related_information, authentication_information, framework, self.user_config['api_host'])
         except Exception as ex:
             print("Oops! looks like we encountered an issue. Please try after some time.")
             exit()
         try:
-            swagger_generator.save_swagger_json(swagger, self.user_config['output_filepath'])
+            self.swagger_generator.save_swagger_json(swagger, self.user_config['output_filepath'])
         except Exception as ex:
             print("Swagger was not able to be uploaded to server. Please check your project api key and try again.")
         print("Swagger Generated Successfully")
