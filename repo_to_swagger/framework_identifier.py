@@ -6,8 +6,8 @@ from repo_to_swagger.llm_client import OpenAiClient
 
 class FrameworkIdentifier:
     def __init__(self):
-        self.openai_client = OpenAiClient()
         self.config = Configurations()
+        self.openai_client = OpenAiClient()
 
 
     def get_framework(self, file_paths):

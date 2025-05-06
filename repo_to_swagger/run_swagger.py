@@ -7,23 +7,21 @@ from repo_to_swagger.faiss_index_generator import GenerateFaissIndex
 import requests, json
 import sys
 
-
-file_scanner = FileScanner()
-framework_identifier = FrameworkIdentifier()
-endpoints_extractor = EndpointsExtractor()
-faiss_index = GenerateFaissIndex()
-
 class RunSwagger:
     def __init__(self, project_api_key):
         self.user_config = UserConfigurations(project_api_key).load_user_config()
+        self.framework_identifier = FrameworkIdentifier()
+        self.file_scanner = FileScanner()
+        self.endpoints_extractor = EndpointsExtractor()
+        self.faiss_index = GenerateFaissIndex()
         self.swagger_generator = SwaggerGeneration()
 
     def run(self):
         try:
-            file_paths = file_scanner.get_all_file_paths(self.user_config['repo_path'])
+            file_paths = self.file_scanner.get_all_file_paths(self.user_config['repo_path'])
             print("\n***************************************************")
             print("Started framework identification")
-            framework = framework_identifier.get_framework(file_paths)['framework']
+            framework = self.framework_identifier.get_framework(file_paths)['framework']
         except Exception as ex:
             print("We do not support this framework currently. Please contact QodexAI support.")
             exit()
@@ -31,20 +29,20 @@ class RunSwagger:
         print("\n***************************************************")
         print("Started finding files related to API information")
         try:
-            api_files = file_scanner.find_api_files(file_paths, framework)
+            api_files = self.file_scanner.find_api_files(file_paths, framework)
             print("Completed finding files related to API information")
             all_endpoints = []
             for filePath in api_files:
-                endpoints = endpoints_extractor.extract_endpoints_with_gpt(filePath, framework)
+                endpoints = self.endpoints_extractor.extract_endpoints_with_gpt(filePath, framework)
                 all_endpoints.extend(endpoints)
             print("\n***************************************************")
             print("Started creating faiss index for all files")
-            faiss_vector = faiss_index.create_faiss_index(file_paths, framework)
+            faiss_vector = self.faiss_index.create_faiss_index(file_paths, framework)
             print("Completed creating faiss index for all files")
             print("Fetching authentication related information")
-            authentication_information = faiss_index.get_authentication_related_information(faiss_vector)
+            authentication_information = self.faiss_index.get_authentication_related_information(faiss_vector)
             print("Completed Fetching authentication related information")
-            endpoint_related_information = endpoints_extractor.get_endpoint_related_information(faiss_vector, all_endpoints)
+            endpoint_related_information = self.endpoints_extractor.get_endpoint_related_information(faiss_vector, all_endpoints)
             swagger = self.swagger_generator.create_swagger_json(self.user_config['repo_name'],endpoint_related_information, authentication_information, framework, self.user_config['api_host'])
         except Exception as ex:
             print("Oops! looks like we encountered an issue. Please try after some time.")
