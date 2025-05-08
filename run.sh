@@ -58,7 +58,7 @@ else
   exit 1
 fi
 
-PROJECT_API_KEY=null
+PROJECT_API_KEY=''
 
 # Parse args
 while [[ $# -gt 0 ]]; do
