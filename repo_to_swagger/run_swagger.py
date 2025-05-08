@@ -8,8 +8,8 @@ import requests, json
 import sys
 
 class RunSwagger:
-    def __init__(self, project_api_key):
-        self.user_config = UserConfigurations(project_api_key).load_user_config()
+    def __init__(self, project_api_key, openai_api_key):
+        self.user_config = UserConfigurations(project_api_key, openai_api_key).load_user_config()
         self.framework_identifier = FrameworkIdentifier()
         self.file_scanner = FileScanner()
         self.endpoints_extractor = EndpointsExtractor()
@@ -79,4 +79,6 @@ class RunSwagger:
         return
 
 project_api_key = sys.argv[1]
-RunSwagger(project_api_key).run()
+openai_api_key = sys.argv[2]
+
+RunSwagger(project_api_key, openai_api_key).run()

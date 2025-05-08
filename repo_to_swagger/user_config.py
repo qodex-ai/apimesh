@@ -7,8 +7,8 @@ config_file = os.path.join(config_dir, "config.json")
 os.makedirs(config_dir, exist_ok=True)
 
 class UserConfigurations:
-    def __init__(self, project_api_key):
-        self.add_user_configs(project_api_key)
+    def __init__(self, project_api_key, openai_api_key):
+        self.add_user_configs(project_api_key, openai_api_key)
 
     @staticmethod
     def load_user_config():
@@ -21,7 +21,7 @@ class UserConfigurations:
         with open(config_file, "w") as file:
             json.dump(config, file, indent=4)
 
-    def add_user_configs(self, project_api_key):
+    def add_user_configs(self, project_api_key, openai_api_key):
         user_config = self.load_user_config()
         print("***************************************************")
         current_repo_path = "/".join(os.getcwd().split("/")[:-1])
@@ -48,10 +48,11 @@ class UserConfigurations:
         user_config["output_filepath"] = output_filepath
         self.save_user_config(user_config)
 
-        print("***************************************************")
-        default_openai_api_key = user_config.get("openai_api_key")
-        openai_api_key = input(
-            f"Please enter openai api key (default: {default_openai_api_key}): ") or default_openai_api_key
+        if str(openai_api_key) == 'null':
+            print("***************************************************")
+            default_openai_api_key = user_config.get("openai_api_key")
+            openai_api_key = input(f"Please enter openai api key (default: {default_openai_api_key}): ") or default_openai_api_key
+
         user_config["openai_api_key"] = openai_api_key
         self.save_user_config(user_config)
 
