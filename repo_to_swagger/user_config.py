@@ -72,7 +72,7 @@ class UserConfigurations:
             print("No api host provided. Exiting...")
             exit(1)
 
-        if not project_api_key:
+        if str(project_api_key) == '':
             print("***************************************************")
             default_qodex_api_key = user_config.get("qodex_api_key")
             qodex_api_key = input(f"Please enter qodex api key (default: {default_qodex_api_key}) (press enter to skip this): ") or default_qodex_api_key
