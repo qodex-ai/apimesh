@@ -1,6 +1,7 @@
 from langchain_text_splitters import RecursiveCharacterTextSplitter, Language
 from langchain.vectorstores import FAISS
 from repo_to_swagger.llm_client import OpenAiClient
+from repo_to_swagger.utils import num_tokens_from_string
 
 
 class GenerateFaissIndex:
@@ -42,6 +43,33 @@ class GenerateFaissIndex:
             chunks = text_splitter.split_text(file_content)
             texts.extend(chunks)
             metadata.extend([{'file_path': str(file)}] * len(chunks))
+        all_indices = []
+        batch = []
+        batch_meta = []
+        batch_token_count = 0
+
+        for text, meta in zip(texts, metadata):
+            tokens = num_tokens_from_string(text)
+
+            # Start new batch if adding this text exceeds token limit
+            if batch_token_count + tokens > 290000:
+                index = FAISS.from_texts(batch, self.openai_client.embeddings, metadatas=batch_meta)
+                all_indices.append(index)
+                batch, batch_meta, batch_token_count = [], [], 0
+
+            batch.append(text)
+            batch_meta.append(meta)
+            batch_token_count += tokens
+
+        # Final batch
+        if batch:
+            index = FAISS.from_texts(batch, self.openai_client.embeddings, metadatas=batch_meta)
+            all_indices.append(index)
+
+        # Merge all indices
+        final_index = all_indices[0]
+        for idx in all_indices[1:]:
+            final_index.merge_from(idx)
         return FAISS.from_texts(texts, self.openai_client.embeddings, metadatas=metadata)
 
     @staticmethod
