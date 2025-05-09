@@ -74,7 +74,7 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --ai-chat-id)
-      OPENAI_API_KEY="$2"
+      AI_CHAT_ID="$2"
       shift 2
       ;;
     *)
