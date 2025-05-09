@@ -77,7 +77,7 @@ class RunSwagger:
                 print("We highly recommend you to review the apis before generating test scenarios.")
                 if str(ai_chat_id) != 'null'
                     print("Open the following link in your browser or refresh the existing open page to continue further")
-                    print(f"https://www.staging.app.qodex.ai/ai-agent?chatId={ai_chat_id}")
+                    print(f"https://www.app.qodex.ai/ai-agent?chatId={ai_chat_id}")
             else:
                 print(f"Failed with status code {response.status_code}: {response.text}")
         return
