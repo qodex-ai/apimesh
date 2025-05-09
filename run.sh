@@ -60,6 +60,7 @@ fi
 
 PROJECT_API_KEY=null
 OPENAI_API_KEY=null
+AI_CHAT_ID=null
 
 # Parse args
 while [[ $# -gt 0 ]]; do
@@ -72,6 +73,10 @@ while [[ $# -gt 0 ]]; do
       OPENAI_API_KEY="$2"
       shift 2
       ;;
+    --ai-chat-id)
+      OPENAI_API_KEY="$2"
+      shift 2
+      ;;
     *)
       shift # Skip unknown options
       ;;
@@ -81,5 +86,5 @@ done
 echo "Running the Python script..."
 source qodexai-virtual-env/bin/activate
 cd swagger-bot/
-python3 -m repo_to_swagger.run_swagger $PROJECT_API_KEY $OPENAI_API_KEY
+python3 -m repo_to_swagger.run_swagger $PROJECT_API_KEY $OPENAI_API_KEY $AI_CHAT_ID
 exit 1

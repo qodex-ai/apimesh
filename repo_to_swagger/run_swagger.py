@@ -16,7 +16,7 @@ class RunSwagger:
         self.faiss_index = GenerateFaissIndex()
         self.swagger_generator = SwaggerGeneration()
 
-    def run(self):
+    def run(self, ai_chat_id):
         try:
             file_paths = self.file_scanner.get_all_file_paths(self.user_config['repo_path'])
             print("\n***************************************************")
@@ -52,11 +52,11 @@ class RunSwagger:
         except Exception as ex:
             print("Swagger was not able to be uploaded to server. Please check your project api key and try again.")
         print("Swagger Generated Successfully")
-        self.upload_swagger_to_qodex()
+        self.upload_swagger_to_qodex(ai_chat_id)
         return
 
 
-    def upload_swagger_to_qodex(self):
+    def upload_swagger_to_qodex(self, ai_chat_id):
         qodex_api_key = self.user_config['qodex_api_key']
         if qodex_api_key:
             print("Uploading swagger to Qodex.AI")
@@ -65,7 +65,8 @@ class RunSwagger:
                 swagger_doc = json.load(file)
             payload = {
                 "api_key": qodex_api_key,
-                "swagger_doc": swagger_doc
+                "swagger_doc": swagger_doc,
+                "ai_chat_id": ai_chat_id
             }
             response = requests.post(url, json=payload)
 
@@ -80,5 +81,6 @@ class RunSwagger:
 
 project_api_key = sys.argv[1]
 openai_api_key = sys.argv[2]
+ai_chat_id = sys.argv[3]
 
-RunSwagger(project_api_key, openai_api_key).run()
+RunSwagger(project_api_key, openai_api_key).run(ai_chat_id)
