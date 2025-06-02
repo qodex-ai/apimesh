@@ -75,7 +75,7 @@ class RunSwagger:
                 print("Success:", response.json())  # Or response.text for plain text responses
                 print("Swagger successfully uploaded to Qodex AI. Please refresh your tab.")
                 print("We highly recommend you to review the apis before generating test scenarios.")
-                if str(ai_chat_id) != 'null'
+                if str(ai_chat_id) != 'null':
                     print("Open the following link in your browser or refresh the existing open page to continue further")
                     print(f"https://app.qodex.ai/ai-agent?chatId={ai_chat_id}")
             else:
