@@ -18,14 +18,14 @@ echo "activated a python3 virtual environment"
 echo ""
 
 echo "Installing the requirements..."
-pip3 install langchain
-pip3 install langchain-community
-pip3 install langchain-openai
-pip3 install openai
-pip3 install tiktoken
-pip3 install faiss-cpu
-pip3 install langchain-text-splitters
-pip3 install pyyaml
+pip3 install langchain==0.3.16
+pip3 install langchain-community==0.3.16
+pip3 install langchain-openai==0.3.5
+pip3 install openai==1.76.0
+pip3 install tiktoken==0.8.0
+pip3 install faiss-cpu==1.9.0.post1
+pip3 install langchain-text-splitters==0.3.4
+pip3 install pyyaml==6.0.2
 echo "Installed the requirements"
 echo ""
 
