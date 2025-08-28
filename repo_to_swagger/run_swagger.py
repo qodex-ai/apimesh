@@ -32,6 +32,7 @@ class RunSwagger:
                 swagger = nodejs_swagger_generator(self.user_config['repo_path'], self.user_config['api_host'],
                                                    self.user_config['repo_name'])
         except Exception as ex:
+            traceback.print_exc()
             print("Fallback to old procedure")
         return swagger
 
