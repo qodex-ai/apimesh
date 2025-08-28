@@ -14,7 +14,10 @@ class OpenAiClient:
 
     def call_chat_completion(self, messages, temperature=0.5):
         model = self.load_openai_model()
-        response = self.client.chat.completions.create(model=model, messages=messages, temperature=temperature)
+        if model.starts_with("gpt-5"):
+            response = self.client.chat.completions.create(model=model, messages=messages, temperature=1)
+        else:
+            response = self.client.chat.completions.create(model=model, messages=messages, temperature=temperature)
         return response.choices[0].message.content
 
     @staticmethod

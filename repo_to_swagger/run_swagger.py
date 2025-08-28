@@ -6,6 +6,8 @@ from repo_to_swagger.file_scanner import FileScanner
 from repo_to_swagger.framework_identifier import FrameworkIdentifier
 from repo_to_swagger.endpoints_extractor import EndpointsExtractor
 from repo_to_swagger.faiss_index_generator import GenerateFaissIndex
+from repo_to_swagger.nodejs_swagger_generation.run_swagger_generation import run_swagger_generation as nodejs_swagger_generator
+from repo_to_swagger.python_swagger_generation.run_swagger_generation import run_swagger_generation as python_swagger_generator
 import requests, json
 import sys
 
@@ -17,6 +19,20 @@ class RunSwagger:
         self.endpoints_extractor = EndpointsExtractor()
         self.faiss_index = GenerateFaissIndex()
         self.swagger_generator = SwaggerGeneration()
+
+
+    def run_python_nodejs(self, framework):
+        swagger = None
+        try:
+            if framework == "django" or framework == "flask" or framework == "fastapi":
+                swagger = python_swagger_generator(self.user_config['repo_path'], self.user_config['api_host'],
+                                                   self.user_config['repo_name'])
+            elif framework == "express":
+                swagger = nodejs_swagger_generator(self.user_config['repo_path'], self.user_config['api_host'],
+                                                   self.user_config['repo_name'])
+        except Exception as ex:
+            print("Fallback to old procedure")
+        return swagger
 
     def run(self, ai_chat_id):
         try:
@@ -31,6 +47,11 @@ class RunSwagger:
         print("\n***************************************************")
         print("Started finding files related to API information")
         try:
+            swagger = self.run_python_nodejs(framework)
+            if swagger:
+                self.swagger_generator.save_swagger_json(swagger, self.user_config['output_filepath'])
+                self.upload_swagger_to_qodex(ai_chat_id)
+                exit()
             api_files = self.file_scanner.find_api_files(file_paths, framework)
             print("Completed finding files related to API information")
             all_endpoints = []

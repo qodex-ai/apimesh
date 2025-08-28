@@ -451,3 +451,234 @@ generic_swagger_generation_prompt = """
                 """
 
 swagger_generation_system_prompt = "You are a helpful assistant for generating API documentation."
+node_js_prompt = """
+    You are given a **Node.js API definition** (such as an Express route handler `app.get("/path", (req, res) => {{...}})`, `router.post(...)`, or controller function) along with its context (request/response handling, variables used, and purpose).
+    Using this, generate a valid **OpenAPI 3.0 specification** for that endpoint with the following rules:
+
+    1. **api\_description**: Write a detailed description of the API endpoint's purpose and parameter limitations.
+    2. **Request Parameters**: Explicitly list query, path, and body parameters with **fully resolved schemas**. Do **not** use `$ref`.
+    3. **Example Schemas**: Provide both example request and response schemas, fully expanded without references.
+    4. **Responses**: Include all possible response codes (200, 400, 404, 422, etc.) with proper descriptions and example payloads.
+    5. **HTTP Method**: The method in the spec must match the Node.js route method (`get`, `post`, `put`, `delete`, etc.).
+    6. **Tags**: Tags should be **UpperCamelCase**, pluralized (e.g., `"Users"`, `"Orders"`).
+    7. **authorization\_tag**: Set to `"Authorization Required"` if the endpoint requires authentication (like tokens). Otherwise `"Authorization Not Required"`.
+    8. **module\_tag**: This should represent the module or controller name where the endpoint resides.
+    9. **auth\_tag**: Add `"Auth API"` only if the endpoint is handling authentication-related functionality (login, signup, password reset, confirmation, token exchange, etc.).
+
+
+    The output must follow the structure of the provided sample OpenAPI spec:
+
+    {{
+      "openapi": "3.0.0",
+      "info": {{
+        "title": "User Confirmation API",
+        "version": "1.0.0"
+      }},
+      "paths": {{
+        "/api/v1/users/confirm_email": {{
+          "post": {{
+            "summary": "Confirm User's Email",
+            "api_description": "This endpoint confirms a user's email address based on the token sent to user's email.",
+            "tags": [
+              "Users"
+            ],
+            "requestBody": {{
+              "required": true,
+              "content": {{
+                "application/json": {{
+                  "schema": {{
+                    "type": "object",
+                    "properties": {{
+                      "token": {{
+                        "type": "string",
+                        "description": "The confirmation token sent to the user's email."
+                      }}
+                    }},
+                    "required": [
+                      "token"
+                    ]
+                  }}
+                }}
+              }}
+            }},
+            "authorization_tag": "Authorization Not Required",
+            "module_tag": "users",
+            "auth_tag": "Auth API",
+            "responses": {{
+              "200": {{
+                "description": "Email confirmed successfully",
+                "content": {{
+                  "application/json": {{
+                    "schema": {{
+                      "type": "object",
+                      "properties": {{
+                        "message": {{
+                          "type": "string",
+                          "example": "Email confirmed successfully"
+                        }}
+                      }}
+                    }}
+                  }}
+                }}
+              }},
+              "422": {{
+                "description": "Unprocessable Entity",
+                "content": {{
+                  "application/json": {{
+                    "schema": {{
+                      "type": "object",
+                      "oneOf": [
+                        {{
+                          "properties": {{
+                            "error": {{
+                              "type": "string",
+                              "example": "Token has expired"
+                            }}
+                          }}
+                        }},
+                        {{
+                          "properties": {{
+                            "message": {{
+                              "type": "string",
+                              "example": "Email already confirmed"
+                            }}
+                          }}
+                        }}
+                      ]
+                    }}
+                  }}
+                }}
+              }}
+            }}
+          }}
+        }}
+      }}
+    }}
+
+
+    Route:
+    ---->{route}
+
+    Function Definition:
+    ---->{function_definition}
+
+    Context
+    ---->{context}
+
+    Based on the provided Node JS definition and context, generate a complete OpenAPI specification that adheres to these requirements. Ensure the output is valid JSON.
+    No other explanation or reasoning is required"""
+
+python_swagger_prompt = """
+    Create an OpenAPI 3.0.0 specification in JSON format for a given Python API function definition. The input will include the Python function (e.g., `def get()`, `def post()`, etc.) and context about the functions and variables used. The generated OpenAPI spec must include:
+
+    1. **api_description**: A detailed description of the API endpoint's functionality and parameter limitations.
+    2. **Expected request parameters** (query, path, body) with fully resolved schemas, without using `$ref` or references; all definitions must be inline.
+    3. **Example request and response schemas**, fully expanded without references.
+    4. **Response codes** (e.g., 200, 400) with their descriptions.
+    5. The **method** in the output must match the method in the provided function (e.g., `get`, `post`).
+    6. **Tags** must be in UpperCamelCase, pluralized, and without spaces (e.g., `Users`, `Products`).
+    7. **authorization_tag**: Set to 'Authorization Required' if the endpoint requires authorization (e.g., bearer token, auth token). Otherwise, set to 'Authorization Not Required'.
+    8. **module_tag**: A tag representing the name of the module under which the endpoint exists (e.g., `users`, `products`).
+    9. **auth_tag**: Include only if the API handles user authentication/authorization processes (e.g., login, signup, signin, access token, email confirmation). Set to 'Auth API'.
+
+    The output must follow the structure of the provided sample OpenAPI spec:
+
+    {{
+      "openapi": "3.0.0",
+      "info": {{
+        "title": "User Confirmation API",
+        "version": "1.0.0"
+      }},
+      "paths": {{
+        "/api/v1/users/confirm_email": {{
+          "post": {{
+            "summary": "Confirm User's Email",
+            "api_description": "This endpoint confirms a user's email address based on the token sent to user's email.",
+            "tags": [
+              "Users"
+            ],
+            "requestBody": {{
+              "required": true,
+              "content": {{
+                "application/json": {{
+                  "schema": {{
+                    "type": "object",
+                    "properties": {{
+                      "token": {{
+                        "type": "string",
+                        "description": "The confirmation token sent to the user's email."
+                      }}
+                    }},
+                    "required": [
+                      "token"
+                    ]
+                  }}
+                }}
+              }}
+            }},
+            "authorization_tag": "Authorization Not Required",
+            "module_tag": "users",
+            "auth_tag": "Auth API",
+            "responses": {{
+              "200": {{
+                "description": "Email confirmed successfully",
+                "content": {{
+                  "application/json": {{
+                    "schema": {{
+                      "type": "object",
+                      "properties": {{
+                        "message": {{
+                          "type": "string",
+                          "example": "Email confirmed successfully"
+                        }}
+                      }}
+                    }}
+                  }}
+                }}
+              }},
+              "422": {{
+                "description": "Unprocessable Entity",
+                "content": {{
+                  "application/json": {{
+                    "schema": {{
+                      "type": "object",
+                      "oneOf": [
+                        {{
+                          "properties": {{
+                            "error": {{
+                              "type": "string",
+                              "example": "Token has expired"
+                            }}
+                          }}
+                        }},
+                        {{
+                          "properties": {{
+                            "message": {{
+                              "type": "string",
+                              "example": "Email already confirmed"
+                            }}
+                          }}
+                        }}
+                      ]
+                    }}
+                  }}
+                }}
+              }}
+            }}
+          }}
+        }}
+      }}
+    }}
+
+
+    Route:
+    ---->{route}
+
+    Function Definition:
+    ---->{function_definition}
+
+    Context
+    ---->{context}
+
+    Based on the provided Python function definition and context, generate a complete OpenAPI specification that adheres to these requirements. Ensure the output is valid JSON.
+    No other explanation or reasoning is required"""
