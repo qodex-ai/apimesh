@@ -1,4 +1,4 @@
-import os, json, ast
+import os, json
 from pathlib import Path
 from repo_to_swagger.nodejs_swagger_generation.generate_file_information import process_file
 from repo_to_swagger.nodejs_swagger_generation.find_api_definition_files import find_api_definition_files
@@ -77,7 +77,9 @@ def run_swagger_generation(directory_path, host, repo_name):
                     continue
                 _method = _method_list[0]
                 swagger["paths"][key][_method] = swagger_for_def['paths'][key][_method]
-    return json.dumps(swagger, indent=2)
+
+    os.rmdir(new_dir_path)
+    return swagger
 
 
 def get_dependencies(data, start_line, end_line, file_path):

@@ -13,7 +13,8 @@ import sys
 
 class RunSwagger:
     def __init__(self, project_api_key, openai_api_key):
-        self.user_config = UserConfigurations(project_api_key, openai_api_key).load_user_config()
+        self.user_configurations = UserConfigurations(project_api_key, openai_api_key)
+        self.user_config = self.user_configurations.load_user_config()
         self.framework_identifier = FrameworkIdentifier()
         self.file_scanner = FileScanner()
         self.endpoints_extractor = EndpointsExtractor()
@@ -38,8 +39,14 @@ class RunSwagger:
         try:
             file_paths = self.file_scanner.get_all_file_paths(self.user_config['repo_path'])
             print("\n***************************************************")
-            print("Started framework identification")
-            framework = self.framework_identifier.get_framework(file_paths)['framework']
+            if self.user_config.get('framework', None):
+                print(f"Using Existing Framework - {self.user_config['framework']}")
+                framework =  self.user_config.get('framework', "")
+            else:
+                print("Started framework identification")
+                framework = self.framework_identifier.get_framework(file_paths)['framework']
+                self.user_config['framework'] = framework
+                self.user_configurations.save_user_config(self.user_config)
         except Exception as ex:
             print("We do not support this framework currently. Please contact QodexAI support.")
             exit()
