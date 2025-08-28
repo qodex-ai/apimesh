@@ -1,4 +1,5 @@
 import os, json
+import shutil
 from pathlib import Path
 from repo_to_swagger.nodejs_swagger_generation.generate_file_information import process_file
 from repo_to_swagger.nodejs_swagger_generation.find_api_definition_files import find_api_definition_files
@@ -78,7 +79,7 @@ def run_swagger_generation(directory_path, host, repo_name):
                 _method = _method_list[0]
                 swagger["paths"][key][_method] = swagger_for_def['paths'][key][_method]
 
-    os.rmdir(new_dir_path)
+    shutil.rmtree(new_dir_path)
     return swagger
 
 
