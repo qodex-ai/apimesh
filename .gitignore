@@ -1,0 +1,7 @@
+__pycahce__/
+*/__pycahce__/
+**/__pycahce__/
+.qodexai/
+.DS_Store
+.idea/
+repo_to_swagger/.qodexai/
