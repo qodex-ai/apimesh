@@ -12,8 +12,8 @@ import requests, json
 import sys
 
 class RunSwagger:
-    def __init__(self, project_api_key, openai_api_key):
-        self.user_configurations = UserConfigurations(project_api_key, openai_api_key)
+    def __init__(self, project_api_key, openai_api_key, repo_path, is_mcp):
+        self.user_configurations = UserConfigurations(project_api_key, openai_api_key, repo_path, is_mcp)
         self.user_config = self.user_configurations.load_user_config()
         self.framework_identifier = FrameworkIdentifier()
         self.file_scanner = FileScanner()
@@ -114,8 +114,11 @@ class RunSwagger:
                 print(f"Failed with status code {response.status_code}: {response.text}")
         return
 
-project_api_key = sys.argv[1]
-openai_api_key = sys.argv[2]
-ai_chat_id = sys.argv[3]
 
-RunSwagger(project_api_key, openai_api_key).run(ai_chat_id)
+repo_path = sys.argv[1]
+openai_api_key = sys.argv[2]
+project_api_key = sys.argv[3]
+ai_chat_id = sys.argv[4]
+is_mcp = sys.argv[5] if len(sys.argv) > 5 else False
+
+RunSwagger(project_api_key, openai_api_key, repo_path, is_mcp).run(ai_chat_id)
