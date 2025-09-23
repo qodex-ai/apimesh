@@ -5,7 +5,7 @@ import os, subprocess, shutil, sys
 
 APP_NAME = "SwaggerBot MCP"
 DEFAULT_WORK_DIR = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_SCRIPT_URL = "https://raw.githubusercontent.com/qodex-ai/swagger-bot/refs/heads/ankit/mcp_run.sh"
+DEFAULT_SCRIPT_URL = "https://raw.githubusercontent.com/qodex-ai/swagger-bot/refs/heads/main/mcp_run.sh"
 
 mcp = FastMCP(APP_NAME)
 
@@ -21,14 +21,13 @@ def _ensure_dir(p: str):
     os.makedirs(p, exist_ok=True)
 
 @mcp.tool()
-def run_swagger_bot(
+def run_swagger_generation(
     openai_api_key: str,
     repo_path: str,
     timeout_seconds: int = 900
 ) -> dict:
     """
-    Runs swagger-bot bootstrap in a persistent work directory (~/.swagger-bot).
-    Non-interactive; params come from tool inputs/env.
+    This tool takes the path of the repository, openai_api_key and timeout to generate a openapi spec swagger json for that repo.
     """
     _require("openai_api_key", openai_api_key)
     _require("repo_path", repo_path)

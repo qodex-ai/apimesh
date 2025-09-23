@@ -4,7 +4,7 @@ set -euo pipefail
 VENV_DIR="qodexai-virtual-env"
 REPO_URL="${REPO_URL:-https://github.com/qodex-ai/swagger-bot.git}"
 REPO_NAME="swagger-bot"
-BRANCH_NAME="${BRANCH_NAME:-ankit}"
+BRANCH_NAME="${BRANCH_NAME:-main}"
 
 PROJECT_API_KEY="null"
 OPENAI_API_KEY="null"
