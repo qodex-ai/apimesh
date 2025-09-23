@@ -5,6 +5,7 @@ WORK_DIR="${WORK_DIR:-$HOME/.swagger-bot}"
 VENV_DIR="$WORK_DIR/qodexai-virtual-env"
 REPO_URL="${REPO_URL:-https://github.com/qodex-ai/swagger-bot.git}"
 REPO_NAME="swagger-bot"
+BRANCH_NAME="${BRANCH_NAME:-ankit}"
 
 PROJECT_API_KEY="null"
 OPENAI_API_KEY="null"
@@ -37,13 +38,17 @@ pip3 install \
   "tree-sitter-javascript==0.23.1" \
   "esprima==4.0.1"
 
+# --- repo setup (clone/update specific branch) ---
 if [[ -d "$REPO_NAME/.git" ]]; then
-  echo "Repo exists, pulling latest..."
-  git -C "$REPO_NAME" pull --ff-only
+  echo "Repo exists, switching to branch '$BRANCH_NAME' and pulling latest..."
+  git -C "$REPO_NAME" fetch --prune origin
+  git -C "$REPO_NAME" checkout -B "$BRANCH_NAME" "origin/$BRANCH_NAME"
+  git -C "$REPO_NAME" pull --ff-only origin "$BRANCH_NAME"
 else
-  echo "Cloning repo..."
-  git clone "$REPO_URL" "$REPO_NAME"
+  echo "Cloning repo branch '$BRANCH_NAME'..."
+  git clone --branch "$BRANCH_NAME" --single-branch "$REPO_URL" "$REPO_NAME"
 fi
+# --- end repo setup ---
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
