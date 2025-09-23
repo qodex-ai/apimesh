@@ -15,7 +15,7 @@ wget https://github.com/qodex-ai/swagger-bot/blob/ankit/swagger_mcp.py -O swagge
   "mcpServers": {
     "swagger-bot": {
       "command": "uv",
-      "args": ["run", "/Users/ankits/Downloads/testing_mcp/swagger_mcp.py"]
+      "args": ["run", "/path/to/swagger_mcp/swagger_mcp.py"]
     }
   }
 }
