@@ -81,6 +81,10 @@ while [[ $# -gt 0 ]]; do
       AI_CHAT_ID="$2"
       shift 2
       ;;
+    --repo-path)
+      REPO_PATH="$2"
+      shift 2
+      ;;
     *)
       shift # Skip unknown options
       ;;
@@ -90,5 +94,5 @@ done
 echo "Running the Python script..."
 source qodexai-virtual-env/bin/activate
 cd swagger-bot/
-python3 -m repo_to_swagger.run_swagger $PROJECT_API_KEY $OPENAI_API_KEY $AI_CHAT_ID
+python3 -m repo_to_swagger.run_swagger $REPO_PATH $OPENAI_API_KEY $PROJECT_API_KEY $AI_CHAT_ID
 exit 1
