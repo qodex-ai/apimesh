@@ -1,10 +1,11 @@
+# server.py
 from mcp.server.fastmcp import FastMCP
-from typing import Optional, Dict
-import os, subprocess, json, shutil
+from typing import Optional
+import os, subprocess, shutil, sys
 
 APP_NAME = "SwaggerBot MCP"
-DEFAULT_WORK_DIR = os.path.expanduser("~/.swagger-bot")
-DEFAULT_SCRIPT_URL = "https://raw.githubusercontent.com/qodex-ai/swagger-bot/refs/heads/main/mcp_run.sh"
+DEFAULT_WORK_DIR = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_SCRIPT_URL = "https://raw.githubusercontent.com/qodex-ai/swagger-bot/refs/heads/ankit/mcp_run.sh"
 
 mcp = FastMCP(APP_NAME)
 
@@ -23,11 +24,11 @@ def _ensure_dir(p: str):
 def run_swagger_bot(
     openai_api_key: str,
     repo_path: str,
-    timeout_seconds: int = 900) -> dict:
+    timeout_seconds: int = 900
+) -> dict:
     """
-    Runs swagger-bot bootstrap in a *persistent* work directory (default ~/.swagger-bot).
-    No interactive prompts; values come from tool parameters / env.
-    Returns exit_code, stdout, stderr, and the work_dir path.
+    Runs swagger-bot bootstrap in a persistent work directory (~/.swagger-bot).
+    Non-interactive; params come from tool inputs/env.
     """
     _require("openai_api_key", openai_api_key)
     _require("repo_path", repo_path)
@@ -35,24 +36,35 @@ def run_swagger_bot(
     for dep in ("bash", "curl", "git", "python3", "pip3"):
         _need(dep)
 
-    base_dir = os.path.abspath(os.path.expanduser(DEFAULT_WORK_DIR))
+    base_dir = DEFAULT_WORK_DIR
     _ensure_dir(base_dir)
 
     repo_path = os.path.abspath(os.path.expanduser(repo_path))
     if not os.path.isdir(repo_path):
         raise ValueError(f"repo_path is not a directory: {repo_path}")
 
-    # Fetch (or refresh) the bootstrap script into the persistent dir
-    script_url = DEFAULT_SCRIPT_URL,
-    script_path = os.path.join(base_dir, "mcp_run.sh")
-    curl = subprocess.run(["curl", "-sSL", script_url, "-o", script_path], capture_output=True, text=True)
+    # --- fetch script (be sure it's a STRING, not a tuple) ---
+    script_url = DEFAULT_SCRIPT_URL  # <-- no trailing comma
+    script_path = os.path.join(base_dir, "mcp_run.sh")  # <-- no trailing comma
+
+    # debug types to Claude's log
+    print(f"[mcp] base_dir={base_dir!r} ({type(base_dir)})", file=sys.stderr)
+    print(f"[mcp] repo_path={repo_path!r} ({type(repo_path)})", file=sys.stderr)
+    print(f"[mcp] script_url={script_url!r} ({type(script_url)})", file=sys.stderr)
+    print(f"[mcp] script_path={script_path!r} ({type(script_path)})", file=sys.stderr)
+
+    curl = subprocess.run(
+        ["curl", "-sSL", script_url, "-o", script_path],
+        capture_output=True, text=True
+    )
     if curl.returncode != 0:
         raise RuntimeError(f"curl failed ({curl.returncode}): {curl.stderr or curl.stdout}")
+
     chmod = subprocess.run(["chmod", "+x", script_path], capture_output=True, text=True)
     if chmod.returncode != 0:
         raise RuntimeError(f"chmod failed ({chmod.returncode}): {chmod.stderr or chmod.stdout}")
 
-    # Environment given to the script (so your Python code can read os.environ)
+    # --- env for the script ---
     env = os.environ.copy()
     env.update({
         "OPENAI_API_KEY": openai_api_key,
@@ -60,14 +72,16 @@ def run_swagger_bot(
         "WORK_DIR": base_dir,
     })
 
+    # --- command (ALL ARGS AS STRINGS) ---
     cmd = [
         "bash", script_path,
         "--repo-path", repo_path,
         "--openai-api-key", openai_api_key,
         "--project-api-key", "null",
         "--ai-chat-id", "null",
-        "is_mcp", True
+        "--is-mcp", "true",
     ]
+    print(f"[mcp] running: {cmd} (cwd={base_dir})", file=sys.stderr)
 
     proc = subprocess.run(
         cmd,
@@ -86,4 +100,5 @@ def run_swagger_bot(
     }
 
 if __name__ == "__main__":
+    print("[mcp] server booted; waiting on stdio", file=sys.stderr)
     mcp.run()
