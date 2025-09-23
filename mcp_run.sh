@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-WORK_DIR="${WORK_DIR:-$HOME/.swagger-bot}"
-VENV_DIR="$WORK_DIR/qodexai-virtual-env"
+VENV_DIR="qodexai-virtual-env"
 REPO_URL="${REPO_URL:-https://github.com/qodex-ai/swagger-bot.git}"
 REPO_NAME="swagger-bot"
 BRANCH_NAME="${BRANCH_NAME:-ankit}"
@@ -13,9 +12,6 @@ AI_CHAT_ID="null"
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "Missing dependency: $1" >&2; exit 2; }; }
 need bash; need git; need curl; need python3; need pip3
-
-mkdir -p "$WORK_DIR"
-cd "$WORK_DIR"
 
 if [[ ! -d "$VENV_DIR" ]]; then
   echo "Creating Python venv at $VENV_DIR"
@@ -60,7 +56,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-cd "$WORK_DIR/$REPO_NAME"
+cd "$REPO_NAME"
 python3 -m repo_to_swagger.run_swagger "$REPO_PATH" "$OPENAI_API_KEY" "$PROJECT_API_KEY" "$AI_CHAT_ID" true
 
 exit 0
