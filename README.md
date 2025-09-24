@@ -14,7 +14,7 @@ Just provide a repo path and API key, and Swagger Generator will analyze your pr
   Run directly as an MCP server or via a one-liner install script.
 
 - 🔑 **Secure API Integration**  
-  Uses your project API key and AI chat ID for authenticated spec generation.
+  Uses your project API key and AI chat ID for uploading it to the Qodex project.
 
 - 🛠️ **Flexible Execution**  
   - Integrates with MCP settings  
