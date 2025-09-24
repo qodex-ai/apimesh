@@ -1,4 +1,4 @@
-# Swagger Bot --- Quick Start
+# Swagger Generator --- Quick Start
 
 ## Approach A --- Run the MCP server directly
 
