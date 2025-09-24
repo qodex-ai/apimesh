@@ -36,7 +36,7 @@ You can set up Swagger Generator in **two ways**:
 1. **Download the MCP server file**
 
 ```bash
-wget https://github.com/qodex-ai/swagger-bot/blob/ankit/swagger_mcp.py -O swagger_mcp.py
+wget https://github.com/qodex-ai/swagger-generator/blob/ankit/swagger_mcp.py -O swagger_mcp.py
 ```
 
 2. **Add this to your MCP settings**
@@ -44,7 +44,7 @@ wget https://github.com/qodex-ai/swagger-bot/blob/ankit/swagger_mcp.py -O swagge
 ```json
 {
   "mcpServers": {
-    "swagger-bot": {
+    "swagger-generator": {
       "command": "uv",
       "args": ["run", "/path/to/swagger_mcp/swagger_mcp.py"]
     }
@@ -59,7 +59,7 @@ wget https://github.com/qodex-ai/swagger-bot/blob/ankit/swagger_mcp.py -O swagge
 ### Approach B — One-liner install & run (curl)
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/qodex-ai/swagger-bot/refs/heads/main/run.sh -o script.sh \
+curl -sSL https://raw.githubusercontent.com/qodex-ai/swagger-generator/refs/heads/main/run.sh -o script.sh \
   && chmod +x script.sh \
   && ./script.sh --repo-path {repo_path} --project-api-key {project_api_key} --ai-chat-id {ai_chat_id}
 ```

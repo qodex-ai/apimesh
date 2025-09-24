@@ -4,7 +4,7 @@ import os, subprocess, shutil, sys
 
 APP_NAME = "SwaggerBot MCP"
 DEFAULT_WORK_DIR = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_SCRIPT_URL = "https://raw.githubusercontent.com/qodex-ai/swagger-bot/main/mcp_run.sh"
+DEFAULT_SCRIPT_URL = "https://raw.githubusercontent.com/qodex-ai/swagger-generator/main/mcp_run.sh"
 
 mcp = FastMCP(APP_NAME)
 
