@@ -1,8 +1,8 @@
 #!/bin/bash
 
 VENV_DIR="qodexai-virtual-env"
-REPO_URL="https://github.com/qodex-ai/swagger-bot.git"
-REPO_NAME="swagger-bot"
+REPO_URL="https://github.com/qodex-ai/swagger-generator.git"
+REPO_NAME="swagger-generator"
 
 # Check if the virtual environment directory exists
 if [[ -d "$VENV_DIR" ]]; then
@@ -46,7 +46,7 @@ else
 fi
 
 
-REPO_DIR="swagger-bot"
+REPO_DIR="swagger-generator"
 
 # Check if the directory exists
 if [ -d "$REPO_DIR" ]; then

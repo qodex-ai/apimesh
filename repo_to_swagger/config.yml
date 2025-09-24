@@ -66,6 +66,7 @@ ignored_dirs:
   - .vscode
   - qodexai-virtual-env
   - swagger-bot
+  - swagger-generator
   - repo_to_swagger
 
 routing_patterns_map:
