@@ -1,11 +1,10 @@
-# server.py
 from mcp.server.fastmcp import FastMCP
 from typing import Optional
 import os, subprocess, shutil, sys
 
 APP_NAME = "SwaggerBot MCP"
 DEFAULT_WORK_DIR = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_SCRIPT_URL = "https://raw.githubusercontent.com/qodex-ai/swagger-bot/refs/heads/main/mcp_run.sh"
+DEFAULT_SCRIPT_URL = "https://raw.githubusercontent.com/qodex-ai/swagger-bot/main/mcp_run.sh"
 
 mcp = FastMCP(APP_NAME)
 
