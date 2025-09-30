@@ -56,7 +56,9 @@ curl -sSL https://raw.githubusercontent.com/qodex-ai/swagger-generator/refs/head
 Flags
 
 --repo-path → Local path where the repo should be cloned / used
+
 --project-api-key → Your project API key
+
 --ai-chat-id → Target AI chat ID
 
 ### Approach B — Run the MCP server directly
