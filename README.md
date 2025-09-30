@@ -3,6 +3,8 @@
 Qodex's Swagger generator helps Generate **OpenAPI (Swagger) specs** for your codebase in seconds.\
 Just provide a repo path and API key, and Swagger Generator will analyze
 your project and produce a Swagger JSON automatically.
+
+
 [![LinkedIn](https://img.shields.io/badge/LinkedIn-0077B5?style=for-the-badge&logo=linkedin&logoColor=white)](https://www.linkedin.com/company/qodexai)
 [![X](https://img.shields.io/badge/Follow%20on%20X-000000?style=for-the-badge&logo=twitter&logoColor=white)](https://x.com/qodex_ai)
 
