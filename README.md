@@ -9,26 +9,33 @@ Open-source tool to auto-analyze your code and generate accurate Swagger/OpenAPI
 
 ------------------------------------------------------------------------
 
-## ✨ Features
+## OpenAPI/Swagger Generator – Open Source
 
--   🔍 **Automatic OpenAPI Spec Generation**\
-    Analyze any repository and generate an OpenAPI-compliant Swagger
-    JSON with minimal setup.
+This open-source project scans your codebase, detects API endpoints, and instantly generates Swagger/OpenAPI specifications. No more manual documentation — keep your API docs up-to-date, accurate, and developer-friendly.
 
--   ⚡ **Quick Setup**\
-    Run directly as an MCP server or via a one-liner install script.
+### ✨ Features
 
--   🔑 **Secure API Integration**\
-    Uses your project API key and AI chat ID for uploading it to the
-    Qodex project.
+Code Analysis → Auto-discovers REST APIs from your code.
 
--   🛠️ **Flexible Execution**
+Swagger/OpenAPI Docs → Generates spec files instantly.
 
-    -   Integrates with MCP settings\
-    -   Or run standalone with a shell script
+Language Agnostic → Works across popular frameworks.
 
--   📦 **Repository Aware**\
-    Works with any local repo path you provide.
+Developer Friendly → Easy setup, extensible, open-source.
+
+SEO Benefit → Great for teams publishing public API docs.
+
+### 🚀 Why Use It?
+
+Eliminate manual documentation.
+
+Keep API docs always in sync with your code.
+
+Improve onboarding for new devs and external users.
+
+Integrate Swagger UI for interactive docs.
+
+Perfect for developers, startups, and open-source projects who want reliable, always-up-to-date API documentation without extra effort.
 
 ------------------------------------------------------------------------
 
