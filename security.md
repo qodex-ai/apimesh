@@ -2,4 +2,4 @@
 
 ## Reporting a Vulnerability
 
-If you notice a security vulnerability, please let the team know by [sending an email to security@tooljet.com](mailto:support@qodex.ai).
+If you notice a security vulnerability, please let the team know by [sending an email to support@qodex.ai](mailto:support@qodex.ai).
