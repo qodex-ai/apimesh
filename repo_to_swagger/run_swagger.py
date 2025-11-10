@@ -8,6 +8,7 @@ from repo_to_swagger.endpoints_extractor import EndpointsExtractor
 from repo_to_swagger.faiss_index_generator import GenerateFaissIndex
 from repo_to_swagger.nodejs_swagger_generation.run_swagger_generation import run_swagger_generation as nodejs_swagger_generator
 from repo_to_swagger.python_swagger_generation.run_swagger_generation import run_swagger_generation as python_swagger_generator
+from repo_to_swagger.ruby_on_rails_swagger_generation.run_swagger_generation import run_swagger_generation as ruby_on_rails_swagger_generator
 import requests, json
 import sys
 
@@ -22,7 +23,7 @@ class RunSwagger:
         self.swagger_generator = SwaggerGeneration()
 
 
-    def run_python_nodejs(self, framework):
+    def run_python_nodejs_ruby(self, framework):
         swagger = None
         try:
             if framework == "django" or framework == "flask" or framework == "fastapi":
@@ -31,6 +32,9 @@ class RunSwagger:
             elif framework == "express":
                 swagger = nodejs_swagger_generator(self.user_config['repo_path'], self.user_config['api_host'],
                                                    self.user_config['repo_name'])
+            elif framework == "ruby_on_rails":
+                swagger = ruby_on_rails_swagger_generator(self.user_config['repo_path'], self.user_config['api_host'],
+                                                          self.user_config['repo_name'])
         except Exception as ex:
             traceback.print_exc()
             print("Fallback to old procedure")
@@ -55,7 +59,7 @@ class RunSwagger:
         print("\n***************************************************")
         print("Started finding files related to API information")
         try:
-            swagger = self.run_python_nodejs(framework)
+            swagger = self.run_python_nodejs_ruby(framework)
             if swagger:
                 self.swagger_generator.save_swagger_json(swagger, self.user_config['output_filepath'])
                 self.upload_swagger_to_qodex(ai_chat_id)
