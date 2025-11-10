@@ -6,6 +6,15 @@ from tree_sitter import Language, Node, Parser
 import tree_sitter_ruby
 
 HTTP_METHODS = {"get", "post", "put", "patch", "delete"}
+REST_ACTION_ORDER = [
+    "index",
+    "create",
+    "new",
+    "show",
+    "edit",
+    "update",
+    "destroy",
+]
 
 RUBY_LANGUAGE = Language(tree_sitter_ruby.language())
 parser = Parser(RUBY_LANGUAGE)
@@ -34,10 +43,16 @@ def _iter_block_children(block_node: Optional[Node]):
 
 
 @dataclass
+class ResourceEntry:
+    name: str
+    shallow: bool = False
+
+
+@dataclass
 class RouteContext:
     path_prefix: str = ""
     controller_prefix: str = ""
-    resource_stack: List[str] = field(default_factory=list)
+    resource_stack: List[ResourceEntry] = field(default_factory=list)
 
     def with_namespace(self, namespace: str) -> "RouteContext":
         new_prefix = _join_paths(self.path_prefix, namespace)
@@ -150,20 +165,44 @@ def _handle_command(
         return
 
     if method_lower in {"resources", "resource"}:
-        resource_name = _first_symbol_or_string(args)
-        if not resource_name:
+        resource_names = _collect_resource_names(args)
+        if not resource_names:
             return
+        option_args = args[len(resource_names) :]
+        resource_options = _extract_hash_arguments(option_args)
+        shallow = _is_truthy(resource_options.get("shallow"))
+        only_actions = _normalize_action_list(resource_options.get("only"))
+        except_actions = _normalize_action_list(resource_options.get("except"))
         plural = method_lower == "resources"
-        new_context = RouteContext(
-            path_prefix=context.path_prefix,
-            controller_prefix=context.controller_prefix,
-            resource_stack=context.resource_stack + [resource_name],
-        )
-        controller_key = _join_controllers(context.controller_prefix, resource_name)
-        _append_restful_routes(routes, new_context, controller_key, plural)
-        if block_node:
-            _walk_resource_block(
-                block_node, source, new_context, controller_key, routes, plural
+
+        for idx, resource_name in enumerate(resource_names):
+            resource_entry = ResourceEntry(
+                name=resource_name,
+                shallow=shallow if plural else shallow,
+            )
+            new_context = RouteContext(
+                path_prefix=context.path_prefix,
+                controller_prefix=context.controller_prefix,
+                resource_stack=list(context.resource_stack) + [resource_entry],
+            )
+            controller_key = _join_controllers(context.controller_prefix, resource_name)
+            _append_restful_routes(
+                routes,
+                new_context,
+                controller_key,
+                plural,
+                only_actions=only_actions,
+                except_actions=except_actions,
+            )
+            if block_node and idx == 0:
+                _walk_resource_block(
+                    block_node,
+                    source,
+                    new_context,
+                    controller_key,
+                    routes,
+                    plural,
+                    shallow=resource_entry.shallow,
                 )
         handled = True
         return
@@ -209,7 +248,12 @@ def _handle_command(
         target = _extract_option(args, "to")
         controller, action = _split_controller_action(target)
         if not path or not controller or not action:
-            # Forward commands like `get :preview` within member/collection blocks are handled elsewhere.
+            hash_path, hash_target = _extract_path_target_from_hash(args)
+            if not path and hash_path:
+                path = hash_path
+            if hash_target and (not controller or not action):
+                controller, action = _split_controller_action(hash_target)
+        if not path or not controller or not action:
             return
         routes.append(
             {
@@ -233,6 +277,7 @@ def _walk_resource_block(
     controller_key: str,
     routes: List[Dict],
     plural: bool,
+    shallow: bool = False,
 ):
     for child in _iter_block_children(block_node):
         if child.type == "method_add_block":
@@ -248,7 +293,14 @@ def _walk_resource_block(
 
             if method_lower in {"member", "collection"} and inner_block:
                 _handle_member_collection(
-                    method_lower, inner_block, source, context, controller_key, routes
+                    method_lower,
+                    inner_block,
+                    source,
+                    context,
+                    controller_key,
+                    routes,
+                    shallow,
+                    plural,
                 )
             elif method_lower in {"resources", "resource"}:
                 # Nested resources inherit the existing context stack.
@@ -266,7 +318,25 @@ def _walk_resource_block(
                     if grandchild.type == "do_block":
                         block = grandchild
                         break
-            _handle_command(child, block, source, context, routes)
+            method_node = child.child_by_field_name("method")
+            method_lower = (
+                _node_text(source, method_node).strip().lower()
+                if method_node
+                else ""
+            )
+            if method_lower in {"member", "collection"} and block:
+                _handle_member_collection(
+                    method_lower,
+                    block,
+                    source,
+                    context,
+                    controller_key,
+                    routes,
+                    shallow,
+                    plural,
+                )
+            else:
+                _handle_command(child, block, source, context, routes)
 
 
 def _handle_member_collection(
@@ -276,10 +346,14 @@ def _handle_member_collection(
     context: RouteContext,
     controller_key: str,
     routes: List[Dict],
+    shallow: bool = False,
+    plural: bool = True,
 ):
     collection_path = _resource_collection_path(context)
-    member_path = _resource_member_path(context)
-    base_path = member_path if scope_type == "member" else collection_path
+    member_path = (
+        _resource_member_path(context, shallow=shallow) if plural else collection_path
+    )
+    base_path = member_path if scope_type == "member" and plural else collection_path
 
     for child in _iter_block_children(block_node):
         if child.type in {"command", "command_call", "call"}:
@@ -292,11 +366,12 @@ def _handle_member_collection(
                 continue
 
             args = _extract_arguments(child, source)
-            action_name = _first_symbol_or_string(args)
-            if not action_name:
+            path_segment = _first_symbol_or_string(args)
+            if not path_segment:
                 continue
 
             controller_name = controller_key
+            action_name = path_segment
             target = _extract_option(args, "to")
             if target:
                 target_controller, target_action = _split_controller_action(target)
@@ -315,7 +390,7 @@ def _handle_member_collection(
             routes.append(
                 {
                     "verb": method_lower.upper(),
-                    "path": _join_paths(base_path, action_name),
+                    "path": _join_paths(base_path, path_segment),
                     "controller": controller_name,
                     "action": action_name,
                 }
@@ -327,110 +402,239 @@ def _append_restful_routes(
     context: RouteContext,
     controller_key: str,
     plural: bool,
+    only_actions: Optional[List[str]] = None,
+    except_actions: Optional[List[str]] = None,
 ):
     collection_path = _resource_collection_path(context)
-    member_path = _resource_member_path(context)
+
+    allowed_actions = _determine_allowed_actions(
+        plural, only_actions=only_actions, except_actions=except_actions
+    )
 
     if plural:
-        routes.extend(
-            [
-                {
-                    "verb": "GET",
-                    "path": collection_path,
-                    "controller": controller_key,
-                    "action": "index",
-                },
-                {
-                    "verb": "POST",
-                    "path": collection_path,
-                    "controller": controller_key,
-                    "action": "create",
-                },
-                {
-                    "verb": "GET",
-                    "path": _join_paths(collection_path, "new"),
-                    "controller": controller_key,
-                    "action": "new",
-                },
-                {
-                    "verb": "GET",
-                    "path": member_path,
-                    "controller": controller_key,
-                    "action": "show",
-                },
-                {
-                    "verb": "GET",
-                    "path": _join_paths(member_path, "edit"),
-                    "controller": controller_key,
-                    "action": "edit",
-                },
-                {
-                    "verb": "PATCH",
-                    "path": member_path,
-                    "controller": controller_key,
-                    "action": "update",
-                },
-                {
-                    "verb": "PUT",
-                    "path": member_path,
-                    "controller": controller_key,
-                    "action": "update",
-                },
+        member_path = _resource_member_path(context)
+        _append_if_allowed(
+            routes,
+            allowed_actions,
+            "index",
+            {
+                "verb": "GET",
+                "path": collection_path,
+                "controller": controller_key,
+                "action": "index",
+            },
+        )
+        _append_if_allowed(
+            routes,
+            allowed_actions,
+            "create",
+            {
+                "verb": "POST",
+                "path": collection_path,
+                "controller": controller_key,
+                "action": "create",
+            },
+        )
+        new_path = _join_paths(collection_path, "new")
+        _append_if_allowed(
+            routes,
+            allowed_actions,
+            "new",
+            {
+                "verb": "GET",
+                "path": new_path,
+                "controller": controller_key,
+                "action": "new",
+            },
+        )
+        _append_if_allowed(
+            routes,
+            allowed_actions,
+            "show",
+            {
+                "verb": "GET",
+                "path": member_path,
+                "controller": controller_key,
+                "action": "show",
+            },
+        )
+        edit_path = _join_paths(member_path, "edit")
+        _append_if_allowed(
+            routes,
+            allowed_actions,
+            "edit",
+            {
+                "verb": "GET",
+                "path": edit_path,
+                "controller": controller_key,
+                "action": "edit",
+            },
+        )
+        if "update" in allowed_actions:
+            routes.extend(
+                [
+                    {
+                        "verb": "PATCH",
+                        "path": member_path,
+                        "controller": controller_key,
+                        "action": "update",
+                    },
+                    {
+                        "verb": "PUT",
+                        "path": member_path,
+                        "controller": controller_key,
+                        "action": "update",
+                    },
+                ]
+            )
+        if "destroy" in allowed_actions:
+            routes.append(
                 {
                     "verb": "DELETE",
                     "path": member_path,
                     "controller": controller_key,
                     "action": "destroy",
-                },
-            ]
-        )
+                }
+            )
     else:
-        routes.extend(
-            [
-                {
-                    "verb": "GET",
-                    "path": _join_paths(collection_path, "new"),
-                    "controller": controller_key,
-                    "action": "new",
-                },
-                {
-                    "verb": "POST",
-                    "path": collection_path,
-                    "controller": controller_key,
-                    "action": "create",
-                },
-                {
-                    "verb": "GET",
-                    "path": collection_path,
-                    "controller": controller_key,
-                    "action": "show",
-                },
-                {
-                    "verb": "GET",
-                    "path": _join_paths(collection_path, "edit"),
-                    "controller": controller_key,
-                    "action": "edit",
-                },
-                {
-                    "verb": "PATCH",
-                    "path": collection_path,
-                    "controller": controller_key,
-                    "action": "update",
-                },
-                {
-                    "verb": "PUT",
-                    "path": collection_path,
-                    "controller": controller_key,
-                    "action": "update",
-                },
+        new_path = _join_paths(collection_path, "new")
+        edit_path = _join_paths(collection_path, "edit")
+        _append_if_allowed(
+            routes,
+            allowed_actions,
+            "new",
+            {
+                "verb": "GET",
+                "path": new_path,
+                "controller": controller_key,
+                "action": "new",
+            },
+        )
+        _append_if_allowed(
+            routes,
+            allowed_actions,
+            "create",
+            {
+                "verb": "POST",
+                "path": collection_path,
+                "controller": controller_key,
+                "action": "create",
+            },
+        )
+        _append_if_allowed(
+            routes,
+            allowed_actions,
+            "show",
+            {
+                "verb": "GET",
+                "path": collection_path,
+                "controller": controller_key,
+                "action": "show",
+            },
+        )
+        _append_if_allowed(
+            routes,
+            allowed_actions,
+            "edit",
+            {
+                "verb": "GET",
+                "path": edit_path,
+                "controller": controller_key,
+                "action": "edit",
+            },
+        )
+        if "update" in allowed_actions:
+            routes.extend(
+                [
+                    {
+                        "verb": "PATCH",
+                        "path": collection_path,
+                        "controller": controller_key,
+                        "action": "update",
+                    },
+                    {
+                        "verb": "PUT",
+                        "path": collection_path,
+                        "controller": controller_key,
+                        "action": "update",
+                    },
+                ]
+            )
+        if "destroy" in allowed_actions:
+            routes.append(
                 {
                     "verb": "DELETE",
                     "path": collection_path,
                     "controller": controller_key,
                     "action": "destroy",
-                },
-            ]
-        )
+                }
+            )
+
+
+def _append_if_allowed(
+    routes: List[Dict], allowed_actions: set, action_name: str, route_definition: Dict
+):
+    if action_name in allowed_actions:
+        routes.append(route_definition)
+
+
+def _determine_allowed_actions(
+    plural: bool,
+    only_actions: Optional[List[str]] = None,
+    except_actions: Optional[List[str]] = None,
+) -> set:
+    if plural:
+        base_actions = {"index", "create", "new", "show", "edit", "update", "destroy"}
+    else:
+        base_actions = {"new", "create", "show", "edit", "update", "destroy"}
+
+    allowed = set(base_actions)
+    if only_actions is not None:
+        normalized_only = {str(action) for action in only_actions}
+        allowed &= normalized_only
+    if except_actions:
+        normalized_except = {str(action) for action in except_actions}
+        allowed -= normalized_except
+    return allowed
+
+
+def _mirror_method_info(
+    action: str, methods_by_name: Dict[str, Dict]
+) -> Optional[Dict]:
+    if not methods_by_name:
+        return None
+
+    if action in methods_by_name:
+        mirrored = methods_by_name[action].copy()
+        mirrored["mirrored_from"] = action
+        return mirrored
+
+    if action in REST_ACTION_ORDER:
+        idx = REST_ACTION_ORDER.index(action)
+        max_distance = len(REST_ACTION_ORDER)
+        for distance in range(1, max_distance):
+            candidates: List[str] = []
+            left = idx - distance
+            right = idx + distance
+            if left >= 0:
+                candidates.append(REST_ACTION_ORDER[left])
+            if right < len(REST_ACTION_ORDER):
+                candidates.append(REST_ACTION_ORDER[right])
+            for candidate in candidates:
+                if candidate in methods_by_name:
+                    mirrored = methods_by_name[candidate].copy()
+                    mirrored["mirrored_from"] = candidate
+                    mirrored["name"] = action
+                    return mirrored
+
+    # Fallback to any available method definition.
+    fallback_method = next(iter(methods_by_name.values()), None)
+    if fallback_method:
+        mirrored = fallback_method.copy()
+        mirrored["mirrored_from"] = fallback_method["name"]
+        mirrored["name"] = action
+        return mirrored
+    return None
 
 
 def _extract_controller_endpoints(
@@ -459,9 +663,13 @@ def _extract_controller_endpoints(
     for route in routes:
         action = route["action"]
         method_info = methods_by_name.get(action)
-        if not method_info:
-            continue
-        method_copy = method_info.copy()
+        if method_info:
+            method_copy = method_info.copy()
+        else:
+            mirrored = _mirror_method_info(action, methods_by_name)
+            if not mirrored:
+                continue
+            method_copy = mirrored
         method_copy["route"] = route["path"]
         method_copy["http_method"] = route["verb"]
         endpoint_methods.append(method_copy)
@@ -586,7 +794,10 @@ def _parse_hash(node: Node, source: str) -> Dict:
             key_node = child.children[0]
         value_node = child.child_by_field_name("value")
         if value_node is None and len(child.children) > 1:
-            value_node = child.children[1]
+            for candidate in reversed(child.children[1:]):
+                if candidate.type not in {":", "=>"}:
+                    value_node = candidate
+                    break
 
         key_text = _literal_text(key_node, source) if key_node else ""
         value = _parse_value(value_node, source)
@@ -600,7 +811,7 @@ def _parse_array(node: Node, source: str) -> List:
     for child in node.children:
         if child.type == "SYMBOLS_BEGIN":
             continue
-        if child.type in {"symbol_literal", "symbol"}:
+        if child.type in {"symbol_literal", "symbol", "simple_symbol"}:
             items.append(_literal_text(child, source))
         elif child.type == "identifier":
             items.append(_literal_text(child, source))
@@ -627,6 +838,48 @@ def _parse_value(node: Optional[Node], source: str):
     return _node_text(source, node)
 
 
+def _extract_hash_arguments(args: List[Dict]) -> Dict:
+    options: Dict = {}
+    for arg in args:
+        if arg["type"] == "hash":
+            for key, value in arg["value"].items():
+                options[key] = value
+    return options
+
+
+def _normalize_action_list(option_value) -> Optional[List[str]]:
+    if option_value is None:
+        return None
+    if isinstance(option_value, list):
+        return [str(item) for item in option_value]
+    return [str(option_value)]
+
+
+def _is_truthy(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.lower() in {"true", "t", "1"}
+    return bool(value)
+
+
+def _effective_resource_entries(
+    context: RouteContext, include_current: bool
+) -> List[ResourceEntry]:
+    stack = context.resource_stack
+    if not stack:
+        return []
+    limit = len(stack) if include_current else len(stack) - 1
+    if limit <= 0:
+        return []
+    start = 0
+    current_idx = limit - 1
+    for idx in range(current_idx):
+        if stack[idx].shallow:
+            start = idx
+    return stack[start:limit]
+
+
 def _collect_hash_options(args: List[Dict]) -> Dict[str, str]:
     options: Dict[str, str] = {}
     for arg in args:
@@ -644,6 +897,16 @@ def _extract_option(args: List[Dict], key: str):
             if value is not None:
                 return value
     return None
+
+
+def _extract_path_target_from_hash(args: List[Dict]):
+    for arg in args:
+        if arg["type"] != "hash":
+            continue
+        for key, value in arg["value"].items():
+            if isinstance(key, str) and key.startswith("/"):
+                return key, value
+    return None, None
 
 
 def _normalize_via(via_option) -> List[str]:
@@ -677,6 +940,16 @@ def _first_string(args: List[Dict]) -> Optional[str]:
         if arg["type"] == "string":
             return arg["value"]
     return None
+
+
+def _collect_resource_names(args: List[Dict]) -> List[str]:
+    names: List[str] = []
+    for arg in args:
+        if arg["type"] in {"symbol", "string"}:
+            names.append(arg["value"])
+        else:
+            break
+    return names
 
 
 def _singular(name: str) -> str:
@@ -728,21 +1001,32 @@ def _namespace_segments(path_prefix: str) -> List[str]:
 
 
 def _resource_collection_path(context: RouteContext) -> str:
+    entries = _effective_resource_entries(context, include_current=True)
     segments = _namespace_segments(context.path_prefix)
-    for idx, resource in enumerate(context.resource_stack):
-        segments.append(resource)
-        if idx < len(context.resource_stack) - 1:
-            segments.append(f":{_singular(resource)}_id")
+    for idx, entry in enumerate(entries):
+        segments.append(entry.name)
+        if idx < len(entries) - 1:
+            segments.append(f":{_singular(entry.name)}_id")
     if not segments:
         return "/"
     return "/" + "/".join(segments)
 
 
-def _resource_member_path(context: RouteContext) -> str:
+def _resource_member_path(context: RouteContext, shallow: Optional[bool] = None) -> str:
     if not context.resource_stack:
         return _resource_collection_path(context)
+
+    current_entry = context.resource_stack[-1]
+    is_shallow = (
+        shallow if shallow is not None else current_entry.shallow
+    )
+
+    if is_shallow:
+        base_path = _join_paths(context.path_prefix, current_entry.name)
+        return _join_paths(base_path, f":{_singular(current_entry.name)}_id")
+
     collection_path = _resource_collection_path(context)
-    param_segment = f":{_singular(context.resource_stack[-1])}_id"
+    param_segment = f":{_singular(current_entry.name)}_id"
     return _join_paths(collection_path, param_segment)
 
 
