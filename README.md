@@ -114,7 +114,7 @@ Flags
 Download the MCP server file
 
 ```bash
-wget https://github.com/qodex-ai/swagger-generator/blob/ankit/swagger_mcp.py -O swagger_mcp.py
+wget https://github.com/qodex-ai/swagger-generator/blob/main/swagger_mcp.py -O swagger_mcp.py
 ```
 
 Add this to your MCP settings
