@@ -7,16 +7,16 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 from config import Configurations
-from ruby_on_rails_swagger_generation.definition_swagger_generator import (
+from rails_openapi_pipeline.definition_swagger_generator import (
     get_function_definition_swagger,
 )
-from ruby_on_rails_swagger_generation.generate_file_information import (
+from rails_openapi_pipeline.generate_file_information import (
     process_file,
 )
-from ruby_on_rails_swagger_generation.find_api_definition_files import (
+from rails_openapi_pipeline.find_api_definition_files import (
     find_api_definition_files,
 )
-from ruby_on_rails_swagger_generation.identify_api_functions import (
+from rails_openapi_pipeline.identify_api_functions import (
     find_api_endpoints,
 )
 

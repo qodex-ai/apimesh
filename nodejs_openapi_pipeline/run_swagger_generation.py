@@ -1,11 +1,11 @@
 import os, json
 import shutil
 from pathlib import Path
-from nodejs_swagger_generation.generate_file_information import process_file
-from nodejs_swagger_generation.find_api_definition_files import find_api_definition_files
-from nodejs_swagger_generation.identify_api_functions import find_api_endpoints_js
+from nodejs_openapi_pipeline.generate_file_information import process_file
+from nodejs_openapi_pipeline.find_api_definition_files import find_api_definition_files
+from nodejs_openapi_pipeline.identify_api_functions import find_api_endpoints_js
 from config import Configurations
-from nodejs_swagger_generation.definition_swagger_generator import get_function_definition_swagger
+from nodejs_openapi_pipeline.definition_swagger_generator import get_function_definition_swagger
 
 config = Configurations()
 
@@ -160,6 +160,5 @@ def provide_context_codeblock(directory_path, method_info):
     in_file_dependency_functions, imported_functions = get_dependencies(data, method_info["start_line"], method_info["end_line"], method_info['file_path'])
     context_code_blocks = get_code_blocks(in_file_dependency_functions, imported_functions, file_name, directory_path)
     return context_code_blocks, method_definition_code_block
-
 
 

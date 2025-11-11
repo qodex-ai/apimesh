@@ -29,6 +29,54 @@ It removes the need for **manual API documentation** and ensures your API docs s
 
 ---
 
+## 🧠 How It Works  
+
+Swagger Generator follows a deterministic workflow so you can trust every emitted spec:
+
+1. **Repository Scan**  
+   `FileScanner` walks your repo (respecting `config.yml` ignores) and collects relevant source files across Python, Node/TypeScript, Ruby on Rails, and Go.
+2. **Framework Detection**  
+   `FrameworkIdentifier` uses routing heuristics + LLM verification to determine the dominant framework (Express, Django/FastAPI/Flask, Rails, etc.).
+3. **Endpoint Harvesting**  
+   - *Language pipelines* (`python_openapi_pipeline`, `nodejs_openapi_pipeline`, `rails_openapi_pipeline`) parse route files and controllers directly whenever possible.  
+   - If native parsing is insufficient, `EndpointsExtractor` asks the LLM to interpret tricky files (custom routers, decorators, DSLs).
+4. **Context + Intelligence**  
+   `GenerateFaissIndex` chunks your codebase into vector embeddings so the LLM can pull nearby authentication logic, schemas, and helpers per endpoint.
+5. **Spec Generation**  
+   `SwaggerGeneration` prompts OpenAI with the gathered context, stitches every response into a valid `swagger.json`, and saves it to the configured output path.
+6. **Optional Upload**  
+   If you provide a Project API key, the tool can push the resulting spec to Qodex AI for further automation (test generation, mocking, etc.).
+
+---
+
+## 🌐 Supported Frameworks & Languages  
+
+| Ecosystem | Detection Signals | Pipeline | Notes |
+|-----------|------------------|----------|-------|
+| **Python** | `urls.py`, `@app.route`, FastAPI decorators | `python_openapi_pipeline` | Works with Django, Flask, FastAPI, DRF-style routes |
+| **Node.js / TypeScript** | `express.Router`, `app.get`, decorators | `nodejs_openapi_pipeline` | Supports Express and similar router abstractions |
+| **Ruby on Rails** | `config/routes.rb`, controller naming | `rails_openapi_pipeline` | Parses controllers + routes via Tree-sitter |
+| **Other stacks** | Golang routers, generic REST hints | fallback LLM extraction | Still improves coverage even without a native pipeline |
+
+You can extend `config.yml` to tweak ignored folders, routing regexes, or add additional language heuristics. Feel free to open a PR with your custom pipeline!
+
+---
+
+## 📦 Output & Customization  
+
+- **Artifacts**  
+  - `swagger.json` (default path: repo root)  
+  - Optional upload payload for Qodex AI collections  
+- **Configuration**  
+  - `.qodexai/config.json` stores API keys, repo path, framework overrides, and desired host URL.  
+  - `config.yml` lets you refine ignored directories and routing hints.  
+  - You can supply CLI flags (`--project-api-key`, `--openai-api-key`, `--ai-chat-id`, `--repo-path`) to avoid prompts.  
+- **Usage Tips**  
+  - Commit the generated `swagger.json` if you want versioned docs, or add it to `.gitignore` for on-demand generation.  
+  - Pair with Swagger UI / Redoc to publish a live portal in minutes.  
+
+---
+
 ## 🚀 Why Use Swagger Generator?  
 
 - ⏱️ **Eliminate manual documentation** → No more writing Swagger files by hand.  
@@ -48,9 +96,9 @@ You can set up **Swagger Generator** in two ways:
 ### Approach A — One-liner install & run (curl) ✅ *Quickest setup*  
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/qodex-ai/swagger-generator/refs/heads/main/run.sh -o script.sh \
-  && chmod +x script.sh \
-  && ./script.sh --repo-path {repo_path} --project-api-key {project_api_key} --ai-chat-id {ai_chat_id}
+curl -sSL https://raw.githubusercontent.com/qodex-ai/swagger-generator/refs/heads/main/bootstrap_swagger_generator.sh -o swagger_bootstrap.sh \
+  && chmod +x swagger_bootstrap.sh \
+  && ./swagger_bootstrap.sh --repo-path {repo_path} --project-api-key {project_api_key} --ai-chat-id {ai_chat_id}
 ```
 
 Flags

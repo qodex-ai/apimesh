@@ -4,7 +4,7 @@ import os, subprocess, shutil, sys
 
 APP_NAME = "SwaggerGenerator MCP"
 DEFAULT_WORK_DIR = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_SCRIPT_URL = "https://raw.githubusercontent.com/qodex-ai/swagger-generator/main/mcp_run.sh"
+DEFAULT_SCRIPT_URL = "https://raw.githubusercontent.com/qodex-ai/swagger-generator/main/bootstrap_mcp_runner.sh"
 
 mcp = FastMCP(APP_NAME)
 
@@ -43,7 +43,7 @@ def run_swagger_generation(
 
     # --- fetch script (be sure it's a STRING, not a tuple) ---
     script_url = DEFAULT_SCRIPT_URL  # <-- no trailing comma
-    script_path = os.path.join(base_dir, "mcp_run.sh")  # <-- no trailing comma
+    script_path = os.path.join(base_dir, "bootstrap_mcp_runner.sh")  # <-- no trailing comma
 
     # debug types to Claude's log
     print(f"[mcp] base_dir={base_dir!r} ({type(base_dir)})", file=sys.stderr)
