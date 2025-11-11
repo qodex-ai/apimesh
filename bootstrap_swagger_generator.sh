@@ -1,9 +1,8 @@
 #!/bin/bash
 
 VENV_DIR="qodexai-virtual-env"
-REPO_URL="${REPO_URL:-https://github.com/qodex-ai/swagger-generator.git}"
+REPO_URL="https://github.com/qodex-ai/swagger-generator.git"
 REPO_NAME="swagger-generator"
-REPO_BRANCH="${REPO_BRANCH:-changes_1}"
 
 # Check if the virtual environment directory exists
 if [[ -d "$VENV_DIR" ]]; then
@@ -37,22 +36,30 @@ echo ""
 
 echo "Checking for existing repo..."
 
-if [ -d "$REPO_NAME/.git" ]; then
-    echo "Repo already exists. Switching to branch '$REPO_BRANCH' and pulling latest changes..."
-    git -C "$REPO_NAME" fetch --prune origin
-    git -C "$REPO_NAME" checkout -B "$REPO_BRANCH" "origin/$REPO_BRANCH"
-    git -C "$REPO_NAME" pull --ff-only origin "$REPO_BRANCH"
+if [ -d "$REPO_NAME" ]; then
+    echo "Repo already exists. Pulling latest changes..."
+    cd "$REPO_NAME"
+    git pull
+    cd ..
 else
-    echo "Repo not found. Cloning branch '$REPO_BRANCH'..."
-    git clone --branch "$REPO_BRANCH" --single-branch "$REPO_URL" "$REPO_NAME"
+    echo "Repo not found. Cloning the repo..."
+    git clone "$REPO_URL"
 fi
 
 
 REPO_DIR="swagger-generator"
 
 # Check if the directory exists
-if [ ! -d "$REPO_DIR/.git" ]; then
-  echo "The repository '$REPO_DIR' either does not exist or is not a valid Git repository."
+if [ -d "$REPO_DIR" ]; then
+  # Check if it's a git repository
+  if [ -d "$REPO_DIR/.git" ]; then
+    echo "The repository '$REPO_DIR' exists and is a valid Git repository."
+  else
+    echo "The directory '$REPO_DIR' exists, but it is not a Git repository."
+    exit 1
+  fi
+else
+  echo "The repository '$REPO_DIR' does not exist locally."
   exit 1
 fi
 
