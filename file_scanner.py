@@ -1,6 +1,6 @@
 import os
 from typing import List
-from repo_to_swagger.config import Configurations
+from config import Configurations
 import re
 
 config = Configurations()

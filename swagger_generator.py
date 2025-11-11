@@ -1,6 +1,6 @@
-from repo_to_swagger.llm_client import OpenAiClient
-from repo_to_swagger.config import Configurations
-from repo_to_swagger import prompts
+from llm_client import OpenAiClient
+from config import Configurations
+import prompts
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import time
@@ -94,5 +94,4 @@ class SwaggerGeneration:
         with open(filename, 'w', encoding='utf-8') as file:
             json.dump(swagger, file, indent=2)
         print(f"Swagger JSON saved to {filename}.")
-
 

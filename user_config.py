@@ -1,5 +1,5 @@
 import os, json
-from repo_to_swagger.config import Configurations
+from config import Configurations
 configurations = Configurations()
 config_dir = configurations.user_config_file_dir
 config_file = os.path.join(config_dir, "config.json")

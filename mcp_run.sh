@@ -57,6 +57,6 @@ while [[ $# -gt 0 ]]; do
 done
 
 cd "$REPO_NAME"
-python3 -m repo_to_swagger.run_swagger "$REPO_PATH" "$OPENAI_API_KEY" "$PROJECT_API_KEY" "$AI_CHAT_ID" true
+python3 -m run_swagger "$REPO_PATH" "$OPENAI_API_KEY" "$PROJECT_API_KEY" "$AI_CHAT_ID" true
 
 exit 0

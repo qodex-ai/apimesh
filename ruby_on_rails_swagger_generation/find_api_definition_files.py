@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import List
 
-from repo_to_swagger.config import Configurations
+from config import Configurations
 
 config = Configurations()
 

@@ -4,7 +4,7 @@ import ast
 import importlib.util
 import os
 import sys
-from repo_to_swagger.config import Configurations
+from config import Configurations
 
 config = Configurations()
 
