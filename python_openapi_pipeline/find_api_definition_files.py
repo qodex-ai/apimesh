@@ -1,6 +1,6 @@
 from pathlib import Path
 import ast
-from repo_to_swagger.config import Configurations
+from config import Configurations
 
 config = Configurations()
 

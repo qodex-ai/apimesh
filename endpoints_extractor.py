@@ -1,7 +1,7 @@
 import ast
-from repo_to_swagger.llm_client import OpenAiClient
-from repo_to_swagger.config import Configurations
-from repo_to_swagger import prompts
+from llm_client import OpenAiClient
+from config import Configurations
+import prompts
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 

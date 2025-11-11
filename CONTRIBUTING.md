@@ -59,9 +59,9 @@ cd swagger-generator
 **A) One-liner script (quickest)**
 ```bash
 # Fetch and run the helper script (see README for the latest command/flags)
-curl -sSL https://raw.githubusercontent.com/qodex-ai/swagger-generator/refs/heads/main/run.sh -o script.sh
-chmod +x script.sh
-./script.sh --repo-path {repo_path} --project-api-key {project_api_key} --ai-chat-id {ai_chat_id}
+curl -sSL https://raw.githubusercontent.com/qodex-ai/swagger-generator/refs/heads/main/bootstrap_swagger_generator.sh -o swagger_bootstrap.sh
+chmod +x swagger_bootstrap.sh
+./swagger_bootstrap.sh --repo-path {repo_path} --project-api-key {project_api_key} --ai-chat-id {ai_chat_id}
 ```
 
 **B) Run as an MCP server**
@@ -109,7 +109,7 @@ We aim for clear, readable Python and tidy shell scripts.
 Before you open a PR:
 
 - [ ] The change is documented (README or inline comments as needed).
-- [ ] Scripts still work (`run.sh`, `mcp_run.sh` if applicable).
+- [ ] Scripts still work (`bootstrap_swagger_generator.sh`, `bootstrap_mcp_runner.sh` if applicable).
 - [ ] Any new flags or behavior are reflected in the README examples.
 - [ ] Code is reasonably linted/typed (if you added type hints).
 - [ ] Tests added or manual test steps documented (see below).
@@ -142,7 +142,7 @@ If you add unit tests:
 ## 🧱 Project Structure (high level)
 
 - `swagger_mcp.py` — MCP server entry and core orchestration.
-- `script.py`, `run.sh`, `mcp_run.sh` — runner/helper scripts.
+- `legacy_swagger_pipeline.py`, `bootstrap_swagger_generator.sh`, `bootstrap_mcp_runner.sh` — runner/helper scripts.
 - `ruby_dependencies.py` — language-specific helpers (example).
 - `README.md`, `CODE_OF_CONDUCT.md`, `security.md`, `LICENSE.md` — docs & policies.
 

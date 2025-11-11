@@ -1,11 +1,11 @@
-import os, json
+import os, json, ast
 import shutil
 from pathlib import Path
-from repo_to_swagger.nodejs_swagger_generation.generate_file_information import process_file
-from repo_to_swagger.nodejs_swagger_generation.find_api_definition_files import find_api_definition_files
-from repo_to_swagger.nodejs_swagger_generation.identify_api_functions import find_api_endpoints_js
-from repo_to_swagger.config import Configurations
-from repo_to_swagger.nodejs_swagger_generation.definition_swagger_generator import get_function_definition_swagger
+from python_openapi_pipeline.generate_file_information import process_file
+from python_openapi_pipeline.find_api_definition_files import find_api_definition_files
+from python_openapi_pipeline.identify_api_functions import set_parents, find_api_endpoints
+from config import Configurations
+from python_openapi_pipeline.definition_swagger_generator import get_function_definition_swagger
 
 config = Configurations()
 
@@ -24,9 +24,9 @@ def run_swagger_generation(directory_path, host, repo_name):
     for root, dirs, files in os.walk(directory_path):
         for file in files:
             file_path = os.path.join(root, file)
-            if os.path.exists(file_path) and should_process_directory(str(file_path)) and file_path.endswith(".js"):
+            if os.path.exists(file_path) and should_process_directory(str(file_path)) and file_path.endswith(".py"):
                 file_info = process_file(file_path, directory_path)
-                json_file_name = new_dir_path +"/"+ str(file_path).replace("/", "_q_").strip(".js") + ".json"
+                json_file_name = new_dir_path +"/"+ str(file_path).replace("/", "_q_").strip(".py") + ".json"
                 with open(json_file_name, "w") as f:
                     json.dump(file_info, f, indent=4)
     api_definition_files = find_api_definition_files(directory_path)
@@ -34,7 +34,10 @@ def run_swagger_generation(directory_path, host, repo_name):
     for file in api_definition_files:
         all_endpoints = []
         py_file = Path(file)
-        eps = find_api_endpoints_js(py_file)
+        source = py_file.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        set_parents(tree)
+        eps = find_api_endpoints(py_file)
         if eps:
             all_endpoints.extend(eps)
             all_endpoints_dict[file] = all_endpoints
@@ -78,7 +81,6 @@ def run_swagger_generation(directory_path, host, repo_name):
                     continue
                 _method = _method_list[0]
                 swagger["paths"][key][_method] = swagger_for_def['paths'][key][_method]
-
     shutil.rmtree(new_dir_path)
     return swagger
 
@@ -91,7 +93,7 @@ def get_dependencies(data, start_line, end_line, file_path):
             item['file_path'] = file_path
             in_file_dependency_functions.append(item)
     imported_functions = []
-    for item in data['elements']['imports']:
+    for item in data['imports']:
         if not item['path_exists']:
             continue
         for k in item['usage_lines']:
@@ -114,7 +116,7 @@ def get_code_blocks(in_file_dependency_functions, imported_functions, file_name,
         visited = False
         file_name = func['origin']
         json_dir_path = directory_path + "/" + "qodex_file_information"
-        json_file = str(file_name).replace("/", "_q_").strip(".js") + ".json"
+        json_file = str(file_name).replace("/", "_q_").strip(".py") + ".json"
         complete_json_file_path = json_dir_path + "/" + json_file
         with open(complete_json_file_path, "r") as f:
             data = json.load(f)
@@ -153,14 +155,11 @@ def provide_context_codeblock(directory_path, method_info):
         lines = f.readlines()
     method_definition_code_block = lines[method_info["start_line"]-1: method_info["end_line"]]
     json_dir_path = directory_path + "/" + "qodex_file_information"
-    json_file = str(file_name).replace("/", "_q_").strip(".js") + ".json"
+    json_file = str(file_name).replace("/", "_q_").strip(".py") + ".json"
     complete_json_file_path = json_dir_path + "/" + json_file
     with open(complete_json_file_path, "r") as f:
         data = json.load(f)
     in_file_dependency_functions, imported_functions = get_dependencies(data, method_info["start_line"], method_info["end_line"], method_info['file_path'])
     context_code_blocks = get_code_blocks(in_file_dependency_functions, imported_functions, file_name, directory_path)
     return context_code_blocks, method_definition_code_block
-
-
-
 

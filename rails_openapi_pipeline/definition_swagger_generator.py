@@ -2,8 +2,8 @@ import json
 import re
 from typing import List, Optional
 
-from repo_to_swagger.llm_client import OpenAiClient
-from repo_to_swagger.prompts import ruby_on_rails_swagger_generation_prompt
+from llm_client import OpenAiClient
+from prompts import ruby_on_rails_swagger_generation_prompt
 
 
 _SYSTEM_PROMPT = (

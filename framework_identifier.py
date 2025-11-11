@@ -1,7 +1,7 @@
 import json
-from repo_to_swagger.config import Configurations
-from repo_to_swagger.prompts import framework_identifier_prompt, framework_identifier_system_prompt
-from repo_to_swagger.llm_client import OpenAiClient
+from config import Configurations
+from prompts import framework_identifier_prompt, framework_identifier_system_prompt
+from llm_client import OpenAiClient
 
 
 class FrameworkIdentifier:

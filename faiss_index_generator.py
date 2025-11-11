@@ -1,7 +1,7 @@
 from langchain_text_splitters import RecursiveCharacterTextSplitter, Language
 from langchain.vectorstores import FAISS
-from repo_to_swagger.llm_client import OpenAiClient
-from repo_to_swagger.utils import num_tokens_from_string
+from llm_client import OpenAiClient
+from utils import num_tokens_from_string
 
 
 class GenerateFaissIndex:

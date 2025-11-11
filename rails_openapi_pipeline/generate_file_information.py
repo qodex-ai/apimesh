@@ -4,7 +4,7 @@ from typing import Dict, List, Optional
 from tree_sitter import Language, Parser
 import tree_sitter_ruby
 
-from repo_to_swagger.config import Configurations
+from config import Configurations
 
 config = Configurations()
 

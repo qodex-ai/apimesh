@@ -1,6 +1,6 @@
 import re
 from pathlib import Path
-from repo_to_swagger.config import Configurations
+from config import Configurations
 
 config = Configurations()
 
@@ -50,4 +50,3 @@ def find_api_definition_files(directory):
         if file_contains_api_defs(node_file):
             api_files.append(str(node_file))
     return api_files
-

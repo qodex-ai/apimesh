@@ -6,7 +6,7 @@ class Configurations:
     def __init__(self, config_path=None):
         # Set default config path if not provided
         if config_path is None:
-            config_path = os.path.join(os.getcwd(), "repo_to_swagger/config.yml")
+            config_path = os.path.join(os.getcwd(), "config.yml")
 
         # Load YAML configurations
         self.config = self._load_config(config_path)

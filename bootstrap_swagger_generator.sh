@@ -95,5 +95,5 @@ done
 echo "Running the Python script..."
 source qodexai-virtual-env/bin/activate
 cd swagger-generator/
-python3 -m repo_to_swagger.run_swagger $REPO_PATH $OPENAI_API_KEY $PROJECT_API_KEY $AI_CHAT_ID
+python3 -m swagger_generation_cli $REPO_PATH $OPENAI_API_KEY $PROJECT_API_KEY $AI_CHAT_ID
 exit 1
