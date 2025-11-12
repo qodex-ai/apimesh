@@ -74,11 +74,7 @@ class UserConfigurations:
         # This ensures output files are created in the mounted volume when running in Docker
         # Check for OUTPUT_FILEPATH environment variable (set by Docker entrypoint)
         env_output_filepath = os.environ.get("OUTPUT_FILEPATH", "")
-        if env_output_filepath:
-            default_output_filepath = env_output_filepath
-        else:
-            repo_path_for_output = self.repo_path if self.repo_path else os.getcwd()
-            default_output_filepath = user_config.get("output_filepath", f"{repo_path_for_output}/swagger.json")
+        default_output_filepath = env_output_filepath
         output_filepath = default_output_filepath
         if not self.is_mcp:
             output_filepath = input(
