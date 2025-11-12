@@ -93,23 +93,7 @@ You can set up **Swagger Generator** in two ways:
 
 ---
 
-### Approach A — One-liner install & run (curl) ✅ *Quickest setup*  
-
-```bash
-curl -sSL https://raw.githubusercontent.com/qodex-ai/swagger-generator/refs/heads/main/bootstrap_swagger_generator.sh -o swagger_bootstrap.sh \
-  && chmod +x swagger_bootstrap.sh \
-  && ./swagger_bootstrap.sh --repo-path {repo_path} --project-api-key {project_api_key} --ai-chat-id {ai_chat_id}
-```
-
-Flags
-
---repo-path → Local path where the repo should be cloned / used
-
---project-api-key → Your project API key
-
---ai-chat-id → Target AI chat ID
-
-### Approach B — Run the MCP server directly
+### Approach 1 — Run the MCP server directly
 
 Download the MCP server file
 
@@ -130,6 +114,22 @@ Add this to your MCP settings
 ```
 
 Replace /path/to/swagger_mcp/swagger_mcp.py with the actual file path.
+
+### Approach 2 — One-liner install & run (curl) ✅ *Quickest setup*  
+
+```bash
+curl -sSL https://raw.githubusercontent.com/qodex-ai/swagger-generator/refs/heads/main/bootstrap_swagger_generator.sh -o swagger_bootstrap.sh \
+  && chmod +x swagger_bootstrap.sh \
+  && ./swagger_bootstrap.sh --repo-path {repo_path} --project-api-key {project_api_key} --ai-chat-id {ai_chat_id}
+```
+
+Flags
+
+--repo-path → Local path where the repo should be cloned / used
+
+--project-api-key → Your project API key
+
+--ai-chat-id → Target AI chat ID
 
 📄 Once complete, you’ll find a generated swagger.json in your repo path — ready to use with Swagger UI, OpenAPI tools, or API gateways.
 
