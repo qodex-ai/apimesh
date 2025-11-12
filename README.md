@@ -120,12 +120,12 @@ Replace /path/to/swagger_mcp/swagger_mcp.py with the actual file path.
 ```bash
 curl -sSL https://raw.githubusercontent.com/qodex-ai/swagger-generator/refs/heads/main/bootstrap_swagger_generator.sh -o swagger_bootstrap.sh \
   && chmod +x swagger_bootstrap.sh \
-  && ./swagger_bootstrap.sh --repo-path {repo_path} --project-api-key {project_api_key} --ai-chat-id {ai_chat_id}
+  && ./swagger_bootstrap.sh
 ```
 
 Flags
 
---repo-path → Local path where the repo should be cloned / used
+--repo-path → Local path of which repo should be used
 
 --project-api-key → Your project API key
 
