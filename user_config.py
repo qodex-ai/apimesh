@@ -1,3 +1,8 @@
+"""
+Utility helpers for capturing and persisting user-specific configuration
+for the Swagger Generator CLI.
+"""
+
 import os, json
 from config import Configurations
 configurations = Configurations()
@@ -18,6 +23,7 @@ class UserConfigurations:
             with open(config_file, "r") as file:
                 return json.load(file)
         return {}
+
     @staticmethod
     def save_user_config(config):
         with open(config_file, "w") as file:
@@ -33,9 +39,14 @@ class UserConfigurations:
             cleaned_value = str(value).strip()
         return cleaned_value if cleaned_value and cleaned_value.lower() != "null" else ""
 
+    @staticmethod
+    def _print_section_header(title):
+        line = "=" * max(len(title) + 10, 50)
+        print(f"\n{line}\n{title}\n{line}")
+
     def add_user_configs(self, project_api_key, openai_api_key):
         user_config = self.load_user_config()
-        print("***************************************************")
+        self._print_section_header("Repository Path Configuration")
         current_repo_path = "/".join(os.getcwd().split("/")[:-1])
         stored_repo_path = user_config.get("repo_path")
         default_repo_path = stored_repo_path or current_repo_path
@@ -58,7 +69,7 @@ class UserConfigurations:
         else:
             print("The directory does not exist.")
             exit(1)
-        print("***************************************************")
+        self._print_section_header("Output File Location")
         default_output_filepath = user_config.get("output_filepath", f"{os.getcwd()}/swagger.json")
         output_filepath = default_output_filepath
         if not self.is_mcp:
@@ -67,7 +78,7 @@ class UserConfigurations:
         user_config["output_filepath"] = output_filepath
         self.save_user_config(user_config)
 
-        print("***************************************************")
+        self._print_section_header("OpenAI Credentials")
         stored_openai_api_key = user_config.get("openai_api_key", "")
         sanitized_openai_api_key = self._sanitize_cli_value(openai_api_key)
         if sanitized_openai_api_key:
@@ -80,7 +91,7 @@ class UserConfigurations:
         user_config["openai_api_key"] = resolved_openai_api_key
         self.save_user_config(user_config)
 
-        print("***************************************************")
+        self._print_section_header("Model Selection")
         default_openai_model = user_config.get("openai_model", "gpt-4.1-2025-04-14")
         openai_model = default_openai_model
         if not self.is_mcp:
@@ -89,7 +100,7 @@ class UserConfigurations:
         user_config["openai_model"] = openai_model
         self.save_user_config(user_config)
 
-        print("***************************************************")
+        self._print_section_header("API Host Configuration")
         default_api_host = user_config.get("api_host", "https://api.example.com")
         api_host = default_api_host
         if not self.is_mcp:
@@ -101,6 +112,7 @@ class UserConfigurations:
             print("No api host provided. Exiting...")
             exit(1)
 
+        self._print_section_header("Qodex API Key")
         sanitized_project_api_key = self._sanitize_cli_value(project_api_key)
         stored_qodex_api_key = user_config.get("qodex_api_key", "")
         if sanitized_project_api_key:
@@ -114,6 +126,7 @@ class UserConfigurations:
         user_config["qodex_api_key"] = qodex_api_key
         self.save_user_config(user_config)
 
+        self._print_section_header("AI Chat Configuration")
         sanitized_ai_chat_id = self._sanitize_cli_value(self.ai_chat_id)
         if sanitized_ai_chat_id:
             user_config["ai_chat_id"] = sanitized_ai_chat_id
