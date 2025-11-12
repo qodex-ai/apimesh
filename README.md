@@ -1,6 +1,6 @@
 # Swagger Generator 🚀  
 
-**Open-source Swagger/OpenAPI Generator** – Automatically analyze your codebase and generate accurate, always up-to-date API documentation.  
+**Open-source Swagger/OpenAPI Generator** – Automatically analyze your codebase and generate accurate, always up-to-date **OpenAPI 3.0** documentation.  
 Save time, improve API visibility, and keep docs in sync with your source code.  
 
 [![LinkedIn](https://img.shields.io/badge/LinkedIn-0077B5?style=for-the-badge&logo=linkedin&logoColor=white)](https://www.linkedin.com/company/qodexai)  
@@ -13,7 +13,7 @@ Save time, improve API visibility, and keep docs in sync with your source code.
 Swagger Generator is an **open-source tool** that:  
 - Scans your codebase automatically.  
 - Detects REST API endpoints.  
-- Generates **Swagger/OpenAPI specifications** (`swagger.json`).  
+- Generates **OpenAPI 3.0 specifications** (`swagger.json`).  
 
 It removes the need for **manual API documentation** and ensures your API docs stay **accurate, searchable, and developer-friendly**.  
 
@@ -22,7 +22,7 @@ It removes the need for **manual API documentation** and ensures your API docs s
 ## ✨ Key Features  
 
 - 🔍 **Code Analysis** → Auto-discovers REST APIs from your code.  
-- 📄 **Swagger/OpenAPI Docs** → Instantly generates spec files (`swagger.json`).  
+- 📄 **OpenAPI 3.0 Docs** → Instantly generates spec files (`swagger.json`).  
 - 🌍 **Language Agnostic** → Works with popular frameworks & languages.  
 - ⚡ **Developer Friendly** → Lightweight, fast setup, fully open-source.  
 - 📈 **SEO & Visibility** → Great for publishing public API docs with **Swagger UI**.  
@@ -43,7 +43,7 @@ Swagger Generator follows a deterministic workflow so you can trust every emitte
 4. **Context + Intelligence**  
    `GenerateFaissIndex` chunks your codebase into vector embeddings so the LLM can pull nearby authentication logic, schemas, and helpers per endpoint.
 5. **Spec Generation**  
-   `SwaggerGeneration` prompts OpenAI with the gathered context, stitches every response into a valid `swagger.json`, and saves it to the configured output path.
+   `SwaggerGeneration` prompts OpenAI with the gathered context, stitches every response into a valid OpenAPI 3.0 `swagger.json`, and saves it to the configured output path.
 6. **Optional Upload**  
    If you provide a Project API key, the tool can push the resulting spec to Qodex AI for further automation (test generation, mocking, etc.).
 
@@ -65,7 +65,7 @@ You can extend `config.yml` to tweak ignored folders, routing regexes, or add ad
 ## 📦 Output & Customization  
 
 - **Artifacts**  
-  - `swagger.json` (default path: repo root)  
+  - OpenAPI 3.0 `swagger.json` (default path: repo root)  
   - Optional upload payload for Qodex AI collections  
 - **Configuration**  
   - `.qodexai/config.json` stores API keys, repo path, framework overrides, and desired host URL.  
@@ -131,7 +131,7 @@ Flags
 
 --ai-chat-id → Target AI chat ID
 
-📄 Once complete, you’ll find a generated swagger.json in your repo path — ready to use with Swagger UI, OpenAPI tools, or API gateways.
+📄 Once complete, you’ll find a generated OpenAPI 3.0 `swagger.json` in your repo path — ready to use with Swagger UI, OpenAPI tools, or API gateways.
 
 ## 🛠️ Installation
 
