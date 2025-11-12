@@ -13,8 +13,9 @@ import requests, json
 import sys
 
 class RunSwagger:
-    def __init__(self, project_api_key, openai_api_key, repo_path, is_mcp):
-        self.user_configurations = UserConfigurations(project_api_key, openai_api_key, repo_path, is_mcp)
+    def __init__(self, project_api_key, openai_api_key, repo_path, ai_chat_id, is_mcp):
+        self.ai_chat_id = ai_chat_id
+        self.user_configurations = UserConfigurations(project_api_key, openai_api_key, repo_path, ai_chat_id, is_mcp)
         self.user_config = self.user_configurations.load_user_config()
         self.framework_identifier = FrameworkIdentifier()
         self.file_scanner = FileScanner()
@@ -40,7 +41,14 @@ class RunSwagger:
             print("Fallback to old procedure")
         return swagger
 
-    def run(self, ai_chat_id):
+    def _resolve_ai_chat_id(self, ai_chat_id):
+        candidate = (ai_chat_id or "").strip()
+        if candidate and candidate.lower() != "null":
+            return candidate
+        return self.user_config.get("ai_chat_id", "null")
+
+    def run(self, ai_chat_id=None):
+        resolved_ai_chat_id = self._resolve_ai_chat_id(ai_chat_id if ai_chat_id is not None else self.ai_chat_id)
         try:
             file_paths = self.file_scanner.get_all_file_paths(self.user_config['repo_path'])
             print("\n***************************************************")
@@ -62,7 +70,7 @@ class RunSwagger:
             swagger = self.run_python_nodejs_ruby(framework)
             if swagger:
                 self.swagger_generator.save_swagger_json(swagger, self.user_config['output_filepath'])
-                self.upload_swagger_to_qodex(ai_chat_id)
+                self.upload_swagger_to_qodex(resolved_ai_chat_id)
                 exit()
             api_files = self.file_scanner.find_api_files(file_paths, framework)
             print("Completed finding files related to API information")
@@ -88,7 +96,7 @@ class RunSwagger:
         except Exception as ex:
             print("Swagger was not able to be uploaded to server. Please check your project api key and try again.")
         print("Swagger Generated Successfully")
-        self.upload_swagger_to_qodex(ai_chat_id)
+        self.upload_swagger_to_qodex(resolved_ai_chat_id)
         return
 
 
@@ -125,4 +133,4 @@ project_api_key = sys.argv[3]
 ai_chat_id = sys.argv[4]
 is_mcp = sys.argv[5] if len(sys.argv) > 5 else False
 
-RunSwagger(project_api_key, openai_api_key, repo_path, is_mcp).run(ai_chat_id)
+RunSwagger(project_api_key, openai_api_key, repo_path, ai_chat_id, is_mcp).run(ai_chat_id)

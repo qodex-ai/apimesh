@@ -6,10 +6,10 @@ config_file = os.path.join(config_dir, "config.json")
 os.makedirs(config_dir, exist_ok=True)
 
 class UserConfigurations:
-    def __init__(self, project_api_key, openai_api_key, repo_path, is_mcp):
+    def __init__(self, project_api_key, openai_api_key, repo_path, ai_chat_id, is_mcp):
         self.is_mcp = is_mcp
         self.repo_path = repo_path
-        self.openai_api_key = openai_api_key
+        self.ai_chat_id = ai_chat_id
         self.add_user_configs(project_api_key, openai_api_key)
 
     @staticmethod
@@ -23,13 +23,28 @@ class UserConfigurations:
         with open(config_file, "w") as file:
             json.dump(config, file, indent=4)
 
+    @staticmethod
+    def _sanitize_cli_value(value):
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            cleaned_value = value.strip()
+        else:
+            cleaned_value = str(value).strip()
+        return cleaned_value if cleaned_value and cleaned_value.lower() != "null" else ""
+
     def add_user_configs(self, project_api_key, openai_api_key):
         user_config = self.load_user_config()
         print("***************************************************")
         current_repo_path = "/".join(os.getcwd().split("/")[:-1])
-        default_repo_path = user_config.get("repo_path", current_repo_path)
-        repo_path = self.repo_path
-        if not self.is_mcp:
+        stored_repo_path = user_config.get("repo_path")
+        default_repo_path = stored_repo_path or current_repo_path
+        repo_path = default_repo_path
+        provided_repo_path = self._sanitize_cli_value(self.repo_path)
+
+        if provided_repo_path:
+            repo_path = provided_repo_path
+        elif not stored_repo_path and not self.is_mcp:
             repo_path = input(
                 f"Please enter the project repository path (default: {default_repo_path}): ") or default_repo_path
         user_config["repo_path"] = repo_path
@@ -52,12 +67,17 @@ class UserConfigurations:
         user_config["output_filepath"] = output_filepath
         self.save_user_config(user_config)
 
-        if str(openai_api_key) == 'null':
-            print("***************************************************")
-            openai_api_key = self.openai_api_key
-            if not self.is_mcp:
-                openai_api_key = input(f"Please enter openai api key (default: {openai_api_key}):")
-        user_config["openai_api_key"] = openai_api_key
+        print("***************************************************")
+        stored_openai_api_key = user_config.get("openai_api_key", "")
+        sanitized_openai_api_key = self._sanitize_cli_value(openai_api_key)
+        if sanitized_openai_api_key:
+            resolved_openai_api_key = sanitized_openai_api_key
+        elif not stored_openai_api_key and not self.is_mcp:
+            resolved_openai_api_key = input(
+                f"Please enter openai api key (default: {stored_openai_api_key}): ") or stored_openai_api_key
+        else:
+            resolved_openai_api_key = stored_openai_api_key
+        user_config["openai_api_key"] = resolved_openai_api_key
         self.save_user_config(user_config)
 
         print("***************************************************")
@@ -81,14 +101,20 @@ class UserConfigurations:
             print("No api host provided. Exiting...")
             exit(1)
 
-        if str(project_api_key) == 'null':
-            print("***************************************************")
-            default_qodex_api_key = user_config.get("qodex_api_key")
-            qodex_api_key = default_qodex_api_key
-            if not self.is_mcp:
-                qodex_api_key = input(f"Please enter qodex api key (default: {default_qodex_api_key}) (press enter to skip this): ") or default_qodex_api_key
+        sanitized_project_api_key = self._sanitize_cli_value(project_api_key)
+        stored_qodex_api_key = user_config.get("qodex_api_key", "")
+        if sanitized_project_api_key:
+            qodex_api_key = sanitized_project_api_key
+        elif not stored_qodex_api_key and not self.is_mcp:
+            qodex_api_key = input(
+                f"Please enter qodex api key (default: {stored_qodex_api_key}) (press enter to skip this): ") or stored_qodex_api_key
         else:
-            qodex_api_key = project_api_key
+            qodex_api_key = stored_qodex_api_key
 
         user_config["qodex_api_key"] = qodex_api_key
         self.save_user_config(user_config)
+
+        sanitized_ai_chat_id = self._sanitize_cli_value(self.ai_chat_id)
+        if sanitized_ai_chat_id:
+            user_config["ai_chat_id"] = sanitized_ai_chat_id
+            self.save_user_config(user_config)
