@@ -131,11 +131,120 @@ Flags
 
 --ai-chat-id → Target AI chat ID
 
-📄 Once complete, you’ll find a generated OpenAPI 3.0 `swagger.json` in your repo path — ready to use with Swagger UI, OpenAPI tools, or API gateways.
+📄 Once complete, you'll find a generated OpenAPI 3.0 `swagger.json` in your repo path — ready to use with Swagger UI, OpenAPI tools, or API gateways.
+
+### Approach 3 — Docker 🐳 *Containerized setup*
+
+#### Building the Docker Image
+
+```bash
+# Build the Docker image
+docker build -t qodexai/swagger-generator:latest .
+
+# Push to Docker Hub
+docker push qodexai/swagger-generator:latest
+```
+
+#### Using the Docker Image
+
+**Important:** Always run Docker commands from your repository directory.
+
+**Why the volume mount (`-v $(pwd):/workspace`) is required:**
+- The container needs to **read** your repository files to analyze them
+- The container needs to **write** the generated `swagger.json` file back to your repository
+- Docker containers are isolated from your host filesystem, so the volume mount shares files between your computer and the container
+
+**Step 1: Pull the image**
+```bash
+docker pull qodexai/swagger-generator:latest
+```
+
+**Step 2: Navigate to your repository and run**
+
+**Option 1: Interactive Mode (Prompts for missing inputs)**
+
+```bash
+# Navigate to your repository
+cd /path/to/your/repo
+
+# Run interactively - will prompt for any missing inputs
+docker run -it --rm -v $(pwd):/workspace qodexai/swagger-generator:latest
+```
+
+**Option 2: With Environment Variables**
+
+```bash
+# Navigate to your repository
+cd /path/to/your/repo
+
+# Run with all parameters as environment variables
+docker run --rm \
+  -v $(pwd):/workspace \
+  -e OPENAI_API_KEY=your_openai_api_key \
+  -e PROJECT_API_KEY=your_project_api_key \
+  -e AI_CHAT_ID=your_chat_id \
+  qodexai/swagger-generator:latest
+```
+
+**Option 3: With Command-Line Arguments**
+
+```bash
+# Navigate to your repository
+cd /path/to/your/repo
+
+# Run with command-line arguments
+docker run --rm \
+  -v $(pwd):/workspace \
+  qodexai/swagger-generator:latest \
+  --repo-path /workspace \
+  --openai-api-key your_key \
+  --project-api-key your_key \
+  --ai-chat-id your_chat_id
+```
+
+**Environment Variables (all optional - will prompt if not provided):**
+- `OPENAI_API_KEY` - Your OpenAI API key
+- `PROJECT_API_KEY` - Your project API key
+- `AI_CHAT_ID` - Target AI chat ID
+- `REPO_PATH` - Path to repository (default: `/workspace`)
+
+**Arguments (all optional - will prompt if not provided):**
+- `--repo-path` - Path to the repository inside container (default: `/workspace`)
+- `--openai-api-key` - Override OPENAI_API_KEY env var
+- `--project-api-key` - Override PROJECT_API_KEY env var
+- `--ai-chat-id` - Override AI_CHAT_ID env var
+
+**Quick Examples:**
+
+```bash
+# From your repo directory - minimal (will prompt for all inputs)
+cd /path/to/your/repo
+docker run -it --rm -v $(pwd):/workspace qodexai/swagger-generator:latest
+
+# From your repo directory - with OpenAI API key (will prompt for others)
+cd /path/to/your/repo
+docker run -it --rm \
+  -v $(pwd):/workspace \
+  -e OPENAI_API_KEY=sk-... \
+  qodexai/swagger-generator:latest
+
+# From your repo directory - fully automated (no prompts)
+cd /path/to/your/repo
+docker run --rm \
+  -v $(pwd):/workspace \
+  -e OPENAI_API_KEY=sk-... \
+  -e PROJECT_API_KEY=your_project_key \
+  qodexai/swagger-generator:latest
+```
+
+**Note:** 
+- Always run `docker run` commands from your repository directory
+- Use `-it` flags for interactive mode when running without parameters
+- The generated `swagger.json` will be created in your repository directory
 
 ## 🛠️ Installation
 
-Requires Python 3.9+ and uv.
+Requires Python 3.10+ and uv.
 
 Works on Linux, macOS, and Windows (via WSL).
 
