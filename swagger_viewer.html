@@ -13,8 +13,8 @@
 
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            padding: 20px;
+            background: #f5f7fa;
+            padding: 24px;
             min-height: 100vh;
         }
 
@@ -22,126 +22,117 @@
             max-width: 1400px;
             margin: 0 auto;
             background: white;
-            border-radius: 12px;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            border-radius: 8px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
             overflow: hidden;
         }
 
         .header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 30px;
-            text-align: center;
+            background: white;
+            color: #1a1a1a;
+            padding: 24px 32px;
+            border-bottom: 1px solid #e5e7eb;
         }
 
         .header h1 {
-            font-size: 2.5em;
-            margin-bottom: 10px;
+            font-size: 1.5em;
+            font-weight: 600;
+            margin-bottom: 0;
+            color: #212732;
         }
 
-        .header p {
-            opacity: 0.9;
-            font-size: 1.1em;
+        .summary-cards {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+            padding: 24px 32px;
+            background: white;
+            border-bottom: 1px solid #e5e7eb;
+        }
+
+        .summary-card {
+            background: white;
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .summary-card-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .summary-card-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+
+        .summary-card-dot.green { background: #10b981; }
+        .summary-card-dot.orange { background: #f59e0b; }
+        .summary-card-dot.blue { background: #3b82f6; }
+        .summary-card-dot.grey { background: #6b7280; }
+        .summary-card-dot.red { background: #ef4444; }
+
+        .summary-card-label {
+            font-size: 0.875rem;
+            color: #212732;
+            font-weight: 500;
+        }
+
+        .summary-card-content {
+            display: flex;
+            align-items: baseline;
+            gap: 8px;
+        }
+
+        .summary-card-count {
+            font-size: 1.875rem;
+            font-weight: 600;
+            color: #212732;
+        }
+
+        .summary-card-percentage {
+            font-size: 0.875rem;
+            color: #212732;
+            font-weight: 500;
         }
 
         .controls {
-            padding: 20px 30px;
-            background: #f8f9fa;
-            border-bottom: 1px solid #e9ecef;
+            padding: 16px 32px;
+            background: white;
+            border-bottom: 1px solid #e5e7eb;
             display: flex;
             justify-content: space-between;
             align-items: center;
             flex-wrap: wrap;
-            gap: 15px;
+            gap: 16px;
         }
 
         .search-box {
             flex: 1;
             min-width: 250px;
-            padding: 12px 20px;
-            border: 2px solid #e9ecef;
-            border-radius: 8px;
-            font-size: 16px;
-            transition: border-color 0.3s;
+            padding: 10px 16px;
+            border: 1px solid #d1d5db;
+            border-radius: 6px;
+            font-size: 14px;
+            transition: border-color 0.2s;
+            background: white;
         }
 
         .search-box:focus {
             outline: none;
-            border-color: #667eea;
-        }
-
-        .refresh-btn {
-            padding: 12px 24px;
-            background: #667eea;
-            color: white;
-            border: none;
-            border-radius: 8px;
-            cursor: pointer;
-            font-size: 16px;
-            font-weight: 600;
-            transition: background 0.3s;
-        }
-
-        .refresh-btn:hover {
-            background: #5568d3;
-        }
-
-        .refresh-btn:disabled {
-            background: #6c757d;
-            cursor: not-allowed;
-            opacity: 0.6;
-        }
-
-        .refresh-btn:disabled:hover {
-            background: #6c757d;
-        }
-
-        .auto-refresh {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-
-        .auto-refresh label {
-            font-weight: 500;
-            color: #495057;
-        }
-
-        .auto-refresh input[type="checkbox"] {
-            width: 20px;
-            height: 20px;
-            cursor: pointer;
-        }
-
-        .stats {
-            padding: 15px 30px;
-            background: #e7f3ff;
-            border-bottom: 1px solid #b3d9ff;
-            display: flex;
-            gap: 30px;
-            flex-wrap: wrap;
-        }
-
-        .stat-item {
-            display: flex;
-            flex-direction: column;
-        }
-
-        .stat-label {
-            font-size: 0.85em;
-            color: #666;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-
-        .stat-value {
-            font-size: 1.5em;
-            font-weight: bold;
-            color: #667eea;
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
         }
 
         .table-container {
-            padding: 30px;
+            padding: 0;
             overflow-x: auto;
         }
 
@@ -152,95 +143,99 @@
         }
 
         thead {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
+            background: #f9fafb;
+            border-bottom: 1px solid #dedfe1;
         }
 
         th {
-            padding: 18px 15px;
+            padding: 12px 16px;
             text-align: left;
             font-weight: 600;
-            font-size: 0.95em;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
+            font-size: 0.75rem;
+            text-transform: capitalize;
+            letter-spacing: 0.05em;
+            color: #767B85;
             position: sticky;
             top: 0;
+            background: #fff;
+            z-index: 10;
         }
 
         tbody tr {
-            border-bottom: 1px solid #e9ecef;
-            transition: background 0.2s;
+            border-bottom: 1px solid #dedfe1;
+            transition: background-color 0.15s ease;
+            background: white;
         }
 
         tbody tr:hover {
-            background: #f8f9fa;
+            background-color: #e7e9ec80;
+        }
+
+        tbody tr:last-child {
+            border-bottom: none;
         }
 
         td {
             padding: 18px 15px;
-            vertical-align: top;
-            color: #495057;
+            vertical-align: middle;
+            color: #212732;
             position: relative;
             overflow: visible;
+            font-size: 0.875rem;
+            background: inherit;
         }
 
         .method-badge {
             display: inline-block;
-            padding: 6px 12px;
-            border-radius: 6px;
+            padding: 4px 8px;
+            border-radius: 4px;
             font-weight: 600;
-            font-size: 0.85em;
+            font-size: 0.75rem;
             text-transform: uppercase;
-            letter-spacing: 0.5px;
+            letter-spacing: 0.025em;
         }
 
-        .method-get { background: #d4edda; color: #155724; }
-        .method-post { background: #cce5ff; color: #004085; }
-        .method-put { background: #fff3cd; color: #856404; }
-        .method-patch { background: #ffeaa7; color: #6c5ce7; }
-        .method-delete { background: #f8d7da; color: #721c24; }
-
-        .url {
-            font-family: 'Courier New', monospace;
-            font-weight: 600;
-            color: #667eea;
-            word-break: break-all;
-        }
+        .method-get { background: #dbeafe; color: #1e40af; }
+        .method-post { background: #fef3c7; color: #92400e; }
+        .method-put { background: #fce7f3; color: #9f1239; }
+        .method-patch { background: #e0e7ff; color: #3730a3; }
+        .method-delete { background: #fee2e2; color: #991b1b; }
 
         .body-type {
             padding: 4px 8px;
-            background: #e9ecef;
+            background: #f3f4f6;
             border-radius: 4px;
-            font-size: 0.85em;
+            font-size: 0.75rem;
             display: inline-block;
+            color: #212732;
         }
 
         .auth-yes {
             padding: 4px 8px;
-            background: #d4edda;
-            color: #155724;
+            background: #d1fae5;
+            color: #065f46;
             border-radius: 4px;
-            font-size: 0.85em;
+            font-size: 0.75rem;
             display: inline-block;
             font-weight: 600;
         }
 
         .auth-no {
             padding: 4px 8px;
-            background: #f8d7da;
-            color: #721c24;
+            background: #fee2e2;
+            color: #991b1b;
             border-radius: 4px;
-            font-size: 0.85em;
+            font-size: 0.75rem;
             display: inline-block;
             font-weight: 600;
         }
 
         .auth-na {
             padding: 4px 8px;
-            background: #e9ecef;
-            color: #6c757d;
+            background: #f3f4f6;
+            color: #6b7280;
             border-radius: 4px;
-            font-size: 0.85em;
+            font-size: 0.75rem;
             display: inline-block;
         }
 
@@ -307,9 +302,32 @@
             font-size: 1.1em;
         }
 
+        .footer {
+            padding: 24px 32px;
+            background: white;
+            border-top: 1px solid #e5e7eb;
+            text-align: center;
+            color: #6b7280;
+            font-size: 0.875rem;
+        }
+
+        .footer a {
+            color: #3b82f6;
+            text-decoration: none;
+            font-weight: 500;
+        }
+
+        .footer a:hover {
+            text-decoration: underline;
+        }
+
         @media (max-width: 768px) {
+            .summary-cards {
+                grid-template-columns: repeat(2, 1fr);
+            }
+
             .header h1 {
-                font-size: 1.8em;
+                font-size: 1.5em;
             }
 
             .controls {
@@ -334,28 +352,54 @@
 <body>
     <div class="container">
         <div class="header">
-            <h1>🔍 Swagger API Viewer</h1>
-            <p>Dynamic API Documentation Viewer</p>
+            <h1>API Documentation</h1>
+        </div>
+
+        <div class="summary-cards" id="summaryCards">
+            <div class="summary-card">
+                <div class="summary-card-header">
+                    <span class="summary-card-dot green"></span>
+                    <span class="summary-card-label">Total APIs</span>
+                </div>
+                <div class="summary-card-content">
+                    <span class="summary-card-count" id="totalApisCard">0</span>
+                    <span class="summary-card-percentage" id="totalApisPercent">0%</span>
+                </div>
+            </div>
+            <div class="summary-card">
+                <div class="summary-card-header">
+                    <span class="summary-card-dot green"></span>
+                    <span class="summary-card-label">Authorized</span>
+                </div>
+                <div class="summary-card-content">
+                    <span class="summary-card-count" id="authRequiredCard">0</span>
+                    <span class="summary-card-percentage" id="authRequiredPercent">0%</span>
+                </div>
+            </div>
+            <div class="summary-card">
+                <div class="summary-card-header">
+                    <span class="summary-card-dot red"></span>
+                    <span class="summary-card-label">Unauthorized</span>
+                </div>
+                <div class="summary-card-content">
+                    <span class="summary-card-count" id="noAuthCard">0</span>
+                    <span class="summary-card-percentage" id="noAuthPercent">0%</span>
+                </div>
+            </div>
+            <div class="summary-card">
+                <div class="summary-card-header">
+                    <span class="summary-card-dot grey"></span>
+                    <span class="summary-card-label">Filtered APIs</span>
+                </div>
+                <div class="summary-card-content">
+                    <span class="summary-card-count" id="filteredApisCard">0</span>
+                    <span class="summary-card-percentage" id="filteredApisPercent">0%</span>
+                </div>
+            </div>
         </div>
 
         <div class="controls">
             <input type="text" id="searchBox" class="search-box" placeholder="Search APIs by URL, method, or description...">
-            <button class="refresh-btn" onclick="loadSwagger()" id="refreshBtn">🔄 Refresh</button>
-            <div class="auto-refresh">
-                <input type="checkbox" id="autoRefresh" onchange="toggleAutoRefresh()">
-                <label for="autoRefresh">Auto-refresh (5s)</label>
-            </div>
-        </div>
-
-        <div class="stats" id="stats" style="display: none;">
-            <div class="stat-item">
-                <span class="stat-label">Total APIs</span>
-                <span class="stat-value" id="totalApis">0</span>
-            </div>
-            <div class="stat-item">
-                <span class="stat-label">Filtered</span>
-                <span class="stat-value" id="filteredApis">0</span>
-            </div>
         </div>
 
         <div class="table-container">
@@ -365,11 +409,11 @@
             <table id="apiTable" style="display: none;">
                 <thead>
                     <tr>
-                        <th>Request Type</th>
-                        <th>API Path</th>
+                        <th>Method</th>
+                        <th>Api Path</th>
                         <th>Summary & Description</th>
                         <th>Authorization Required</th>
-                        <th>Module Tag</th>
+                        <th>Module</th>
                         <th>Tags</th>
                     </tr>
                 </thead>
@@ -377,10 +421,13 @@
                 </tbody>
             </table>
         </div>
+
+        <div class="footer">
+            Powered By <a href="https://github.com/qodex-ai/apimesh" target="_blank">ApiMesh</a>
+        </div>
     </div>
 
     <script>
-        let autoRefreshInterval = null;
         const SWAGGER_FILE = 'swagger.json';
         
         // Check if swagger data is embedded (to avoid CORS issues)
@@ -464,12 +511,12 @@
                     if (isTruncated) {
                         descriptionHtml = `
                             <div class="description-container" style="display: inline-block;">
-                                <div style="font-size: 0.9em; color: #6c757d; line-height: 1.4;">${escapeHtml(truncatedDescription)}</div>
+                                <div style="font-size: 0.9em; color: #212732; line-height: 1.4;">${escapeHtml(truncatedDescription)}</div>
                                 <div class="tooltip">${escapeHtml(api.api_description)}</div>
                             </div>
                         `;
                     } else {
-                        descriptionHtml = `<div style="font-size: 0.9em; color: #6c757d; line-height: 1.4;">${escapeHtml(truncatedDescription)}</div>`;
+                        descriptionHtml = `<div style="font-size: 0.9em; color: #212732; line-height: 1.4;">${escapeHtml(truncatedDescription)}</div>`;
                     }
                 }
                 
@@ -478,20 +525,20 @@
                         <span class="method-badge method-${api.method.toLowerCase()}">${api.method}</span>
                     </td>
                     <td>
-                        <div class="url">${escapeHtml(api.path)}</div>
+                        ${escapeHtml(api.path)}
                     </td>
                     <td>
-                        ${api.summary ? `<div style="font-weight: 600; margin-bottom: 8px; color: #495057;">${escapeHtml(api.summary)}</div>` : ''}
+                        ${api.summary ? `<div style="font-weight: 600; margin-bottom: 8px; color: #212732;">${escapeHtml(api.summary)}</div>` : ''}
                         ${descriptionHtml}
                     </td>
                     <td>
                         <span class="${authorizationRequired === 'Yes' ? 'auth-yes' : authorizationRequired === 'No' ? 'auth-no' : 'auth-na'}">${escapeHtml(authorizationRequired)}</span>
                     </td>
                     <td>
-                        <span class="body-type">${escapeHtml(api.module_tag)}</span>
+                        ${escapeHtml(api.module_tag)}
                     </td>
                     <td>
-                        <div style="font-size: 0.9em; color: #495057;">${escapeHtml(tagsFormatted)}</div>
+                        ${escapeHtml(tagsFormatted)}
                     </td>
                 `;
                 tbody.appendChild(row);
@@ -517,10 +564,36 @@
             );
         }
 
-        function updateStats(total, filtered) {
-            document.getElementById('totalApis').textContent = total;
-            document.getElementById('filteredApis').textContent = filtered;
-            document.getElementById('stats').style.display = 'flex';
+        function updateStats(allApis, filteredApis) {
+            const total = allApis.length;
+            const filtered = filteredApis.length;
+            
+            // Calculate authorization stats
+            const authRequired = allApis.filter(api => {
+                const authTag = api.authorization_tag || '';
+                return authTag === 'Authorization Required';
+            }).length;
+            
+            const noAuth = total - authRequired;
+            
+            // Calculate percentages
+            const totalPercent = total > 0 ? Math.round((total / total) * 100) : 0;
+            const authRequiredPercent = total > 0 ? Math.round((authRequired / total) * 100) : 0;
+            const noAuthPercent = total > 0 ? Math.round((noAuth / total) * 100) : 0;
+            const filteredPercent = total > 0 ? Math.round((filtered / total) * 100) : 0;
+            
+            // Update summary cards
+            document.getElementById('totalApisCard').textContent = total;
+            document.getElementById('totalApisPercent').textContent = totalPercent + '%';
+            
+            document.getElementById('authRequiredCard').textContent = authRequired;
+            document.getElementById('authRequiredPercent').textContent = authRequiredPercent + '%';
+            
+            document.getElementById('noAuthCard').textContent = noAuth;
+            document.getElementById('noAuthPercent').textContent = noAuthPercent + '%';
+            
+            document.getElementById('filteredApisCard').textContent = filtered;
+            document.getElementById('filteredApisPercent').textContent = filteredPercent + '%';
         }
 
         async function loadSwagger() {
@@ -556,7 +629,7 @@
                 const filteredApis = filterAPIs(allApis, searchTerm);
                 
                 renderTable(filteredApis);
-                updateStats(allApis.length, filteredApis.length);
+                updateStats(allApis, filteredApis);
                 
                 loadingEl.style.display = 'none';
             } catch (error) {
@@ -602,46 +675,12 @@
             }
         }
 
-        function toggleAutoRefresh() {
-            const checkbox = document.getElementById('autoRefresh');
-            // Disable auto-refresh if using embedded data (no need to refresh static data)
-            if (!USE_EMBEDDED_DATA && checkbox.checked) {
-                autoRefreshInterval = setInterval(loadSwagger, 5000);
-            } else {
-                if (autoRefreshInterval) {
-                    clearInterval(autoRefreshInterval);
-                    autoRefreshInterval = null;
-                }
-                if (USE_EMBEDDED_DATA) {
-                    checkbox.disabled = true;
-                    checkbox.checked = false;
-                }
-            }
-        }
-
         // Search functionality
         document.getElementById('searchBox').addEventListener('input', function() {
             loadSwagger();
         });
 
-        // Initialize UI based on data source
-        function initializeUI() {
-            if (USE_EMBEDDED_DATA) {
-                // Disable refresh button and auto-refresh when using embedded data
-                const refreshBtn = document.getElementById('refreshBtn');
-                if (refreshBtn) {
-                    refreshBtn.disabled = true;
-                    refreshBtn.title = 'Using embedded data - no refresh needed';
-                }
-                const autoRefreshCheckbox = document.getElementById('autoRefresh');
-                if (autoRefreshCheckbox) {
-                    autoRefreshCheckbox.disabled = true;
-                }
-            }
-        }
-
         // Initial load
-        initializeUI();
         loadSwagger();
     </script>
 </body>
