@@ -98,5 +98,47 @@ class SwaggerGeneration:
             os.makedirs(directory, exist_ok=True)
         with open(filename, 'w', encoding='utf-8') as file:
             json.dump(swagger, file, indent=2)
-        print(f"Swagger JSON saved to {filename}.")
+        # Display relative path (remove /workspace prefix if present)
+        display_path = filename
+        if filename.startswith('/workspace/'):
+            display_path = filename[len('/workspace/'):]
+            if not display_path.startswith('./'):
+                display_path = './' + display_path
+        print(f"Swagger JSON saved to {display_path}.")
+        # Generate HTML viewer file in the same directory
+        SwaggerGeneration.generate_html_viewer(filename)
+
+    @staticmethod
+    def generate_html_viewer(swagger_json_path):
+        """
+        Generates an HTML viewer file in the same directory as the swagger.json file.
+
+        Args:
+            swagger_json_path (str): Path to the swagger.json file.
+        """
+        try:
+            # Get the directory of the swagger.json file
+            swagger_dir = os.path.dirname(swagger_json_path)
+            if not swagger_dir:
+                swagger_dir = '.'
+            
+            # Path to the HTML viewer template
+            html_template_path = os.path.join(os.path.dirname(__file__), 'swagger_viewer.html')
+            html_output_path = os.path.join(swagger_dir, 'swagger_viewer.html')
+            
+            # Copy the HTML template to the output directory
+            if os.path.exists(html_template_path):
+                import shutil
+                shutil.copy2(html_template_path, html_output_path)
+                # Display relative path (remove /workspace prefix if present)
+                display_path = html_output_path
+                if html_output_path.startswith('/workspace/'):
+                    display_path = html_output_path[len('/workspace/'):]
+                    if not display_path.startswith('./'):
+                        display_path = './' + display_path
+                print(f"HTML viewer saved to {display_path}.")
+            else:
+                print(f"Warning: HTML template not found at {html_template_path}")
+        except Exception as ex:
+            print(f"Warning: Could not generate HTML viewer: {ex}")
 

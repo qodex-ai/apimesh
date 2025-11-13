@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Swagger API Viewer</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            opacity: 0.9;
+            font-size: 1.1em;
+        }
+
+        .controls {
+            padding: 20px 30px;
+            background: #f8f9fa;
+            border-bottom: 1px solid #e9ecef;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 15px;
+        }
+
+        .search-box {
+            flex: 1;
+            min-width: 250px;
+            padding: 12px 20px;
+            border: 2px solid #e9ecef;
+            border-radius: 8px;
+            font-size: 16px;
+            transition: border-color 0.3s;
+        }
+
+        .search-box:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .refresh-btn {
+            padding: 12px 24px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 600;
+            transition: background 0.3s;
+        }
+
+        .refresh-btn:hover {
+            background: #5568d3;
+        }
+
+        .auto-refresh {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .auto-refresh label {
+            font-weight: 500;
+            color: #495057;
+        }
+
+        .auto-refresh input[type="checkbox"] {
+            width: 20px;
+            height: 20px;
+            cursor: pointer;
+        }
+
+        .stats {
+            padding: 15px 30px;
+            background: #e7f3ff;
+            border-bottom: 1px solid #b3d9ff;
+            display: flex;
+            gap: 30px;
+            flex-wrap: wrap;
+        }
+
+        .stat-item {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .stat-label {
+            font-size: 0.85em;
+            color: #666;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .stat-value {
+            font-size: 1.5em;
+            font-weight: bold;
+            color: #667eea;
+        }
+
+        .table-container {
+            padding: 30px;
+            overflow-x: auto;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background: white;
+        }
+
+        thead {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        th {
+            padding: 18px 15px;
+            text-align: left;
+            font-weight: 600;
+            font-size: 0.95em;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            position: sticky;
+            top: 0;
+        }
+
+        tbody tr {
+            border-bottom: 1px solid #e9ecef;
+            transition: background 0.2s;
+        }
+
+        tbody tr:hover {
+            background: #f8f9fa;
+        }
+
+        td {
+            padding: 18px 15px;
+            vertical-align: top;
+            color: #495057;
+        }
+
+        .method-badge {
+            display: inline-block;
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-weight: 600;
+            font-size: 0.85em;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .method-get { background: #d4edda; color: #155724; }
+        .method-post { background: #cce5ff; color: #004085; }
+        .method-put { background: #fff3cd; color: #856404; }
+        .method-patch { background: #ffeaa7; color: #6c5ce7; }
+        .method-delete { background: #f8d7da; color: #721c24; }
+
+        .url {
+            font-family: 'Courier New', monospace;
+            font-weight: 600;
+            color: #667eea;
+            word-break: break-all;
+        }
+
+        .params, .headers, .body {
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+            max-width: 300px;
+            word-break: break-word;
+        }
+
+        .json-content {
+            background: #f8f9fa;
+            padding: 10px;
+            border-radius: 6px;
+            border: 1px solid #e9ecef;
+            max-height: 200px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+        }
+
+        .body-type {
+            padding: 4px 8px;
+            background: #e9ecef;
+            border-radius: 4px;
+            font-size: 0.85em;
+            display: inline-block;
+        }
+
+        .error-message {
+            padding: 30px;
+            text-align: center;
+            color: #dc3545;
+            font-size: 1.1em;
+        }
+
+        .loading {
+            padding: 30px;
+            text-align: center;
+            color: #667eea;
+            font-size: 1.1em;
+        }
+
+        .no-results {
+            padding: 40px;
+            text-align: center;
+            color: #6c757d;
+            font-size: 1.1em;
+        }
+
+        @media (max-width: 768px) {
+            .header h1 {
+                font-size: 1.8em;
+            }
+
+            .controls {
+                flex-direction: column;
+                align-items: stretch;
+            }
+
+            .search-box {
+                width: 100%;
+            }
+
+            table {
+                font-size: 0.9em;
+            }
+
+            th, td {
+                padding: 12px 8px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🔍 Swagger API Viewer</h1>
+            <p>Dynamic API Documentation Viewer</p>
+        </div>
+
+        <div class="controls">
+            <input type="text" id="searchBox" class="search-box" placeholder="Search APIs by URL, method, or description...">
+            <button class="refresh-btn" onclick="loadSwagger()">🔄 Refresh</button>
+            <div class="auto-refresh">
+                <input type="checkbox" id="autoRefresh" onchange="toggleAutoRefresh()">
+                <label for="autoRefresh">Auto-refresh (5s)</label>
+            </div>
+        </div>
+
+        <div class="stats" id="stats" style="display: none;">
+            <div class="stat-item">
+                <span class="stat-label">Total APIs</span>
+                <span class="stat-value" id="totalApis">0</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">Filtered</span>
+                <span class="stat-value" id="filteredApis">0</span>
+            </div>
+        </div>
+
+        <div class="table-container">
+            <div id="loading" class="loading">Loading Swagger documentation...</div>
+            <div id="error" class="error-message" style="display: none;"></div>
+            <div id="noResults" class="no-results" style="display: none;">No APIs found matching your search.</div>
+            <table id="apiTable" style="display: none;">
+                <thead>
+                    <tr>
+                        <th>Request Type</th>
+                        <th>Request URL</th>
+                        <th>Params</th>
+                        <th>Headers</th>
+                        <th>Body</th>
+                        <th>Body Type</th>
+                    </tr>
+                </thead>
+                <tbody id="apiTableBody">
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        let autoRefreshInterval = null;
+        const SWAGGER_FILE = 'swagger.json';
+
+        function getSwaggerFilePath() {
+            // Try to get the swagger.json path relative to this HTML file
+            // If running from Docker, it should be in the same directory
+            const currentPath = window.location.pathname;
+            const htmlDir = currentPath.substring(0, currentPath.lastIndexOf('/'));
+            return htmlDir + '/' + SWAGGER_FILE;
+        }
+
+        function formatJSON(obj) {
+            if (!obj || Object.keys(obj).length === 0) return 'N/A';
+            return JSON.stringify(obj, null, 2);
+        }
+
+        function formatParams(parameters) {
+            if (!parameters || parameters.length === 0) return 'N/A';
+            const params = {};
+            parameters.forEach(param => {
+                params[param.name] = {
+                    in: param.in,
+                    required: param.required || false,
+                    schema: param.schema || {}
+                };
+            });
+            return formatJSON(params);
+        }
+
+        function formatHeaders(parameters) {
+            if (!parameters || parameters.length === 0) return 'N/A';
+            const headers = {};
+            parameters
+                .filter(param => param.in === 'header')
+                .forEach(param => {
+                    headers[param.name] = {
+                        required: param.required || false,
+                        schema: param.schema || {}
+                    };
+                });
+            return Object.keys(headers).length > 0 ? formatJSON(headers) : 'N/A';
+        }
+
+        function formatBody(requestBody) {
+            if (!requestBody || !requestBody.content) return 'N/A';
+            const content = requestBody.content;
+            const bodyType = Object.keys(content)[0] || 'N/A';
+            const schema = content[bodyType]?.schema || {};
+            return formatJSON(schema);
+        }
+
+        function getBodyType(requestBody) {
+            if (!requestBody || !requestBody.content) return 'N/A';
+            return Object.keys(requestBody.content)[0] || 'N/A';
+        }
+
+        function parseSwagger(swaggerData) {
+            const apis = [];
+            const paths = swaggerData.paths || {};
+            const baseUrl = swaggerData.servers && swaggerData.servers.length > 0 
+                ? swaggerData.servers[0].url 
+                : '';
+
+            Object.keys(paths).forEach(path => {
+                const pathItem = paths[path];
+                const methods = ['get', 'post', 'put', 'patch', 'delete', 'options', 'head'];
+                
+                methods.forEach(method => {
+                    if (pathItem[method]) {
+                        const operation = pathItem[method];
+                        const fullUrl = baseUrl + path;
+                        
+                        apis.push({
+                            method: method.toUpperCase(),
+                            url: fullUrl,
+                            path: path,
+                            params: operation.parameters || [],
+                            headers: operation.parameters || [],
+                            body: operation.requestBody,
+                            bodyType: getBodyType(operation.requestBody),
+                            summary: operation.summary || '',
+                            description: operation.description || ''
+                        });
+                    }
+                });
+            });
+
+            return apis;
+        }
+
+        function renderTable(apis) {
+            const tbody = document.getElementById('apiTableBody');
+            tbody.innerHTML = '';
+
+            if (apis.length === 0) {
+                document.getElementById('noResults').style.display = 'block';
+                document.getElementById('apiTable').style.display = 'none';
+                return;
+            }
+
+            document.getElementById('noResults').style.display = 'none';
+            document.getElementById('apiTable').style.display = 'table';
+
+            apis.forEach(api => {
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td>
+                        <span class="method-badge method-${api.method.toLowerCase()}">${api.method}</span>
+                    </td>
+                    <td>
+                        <div class="url">${escapeHtml(api.url)}</div>
+                        ${api.summary ? `<div style="margin-top: 5px; font-size: 0.85em; color: #6c757d;">${escapeHtml(api.summary)}</div>` : ''}
+                    </td>
+                    <td>
+                        <div class="params">
+                            <div class="json-content">${escapeHtml(formatParams(api.params))}</div>
+                        </div>
+                    </td>
+                    <td>
+                        <div class="headers">
+                            <div class="json-content">${escapeHtml(formatHeaders(api.headers))}</div>
+                        </div>
+                    </td>
+                    <td>
+                        <div class="body">
+                            <div class="json-content">${escapeHtml(formatBody(api.body))}</div>
+                        </div>
+                    </td>
+                    <td>
+                        <span class="body-type">${escapeHtml(api.bodyType)}</span>
+                    </td>
+                `;
+                tbody.appendChild(row);
+            });
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function filterAPIs(apis, searchTerm) {
+            if (!searchTerm) return apis;
+            const term = searchTerm.toLowerCase();
+            return apis.filter(api => 
+                api.method.toLowerCase().includes(term) ||
+                api.url.toLowerCase().includes(term) ||
+                api.path.toLowerCase().includes(term) ||
+                (api.summary && api.summary.toLowerCase().includes(term)) ||
+                (api.description && api.description.toLowerCase().includes(term))
+            );
+        }
+
+        function updateStats(total, filtered) {
+            document.getElementById('totalApis').textContent = total;
+            document.getElementById('filteredApis').textContent = filtered;
+            document.getElementById('stats').style.display = 'flex';
+        }
+
+        async function loadSwagger() {
+            const loadingEl = document.getElementById('loading');
+            const errorEl = document.getElementById('error');
+            const tableEl = document.getElementById('apiTable');
+            
+            loadingEl.style.display = 'block';
+            errorEl.style.display = 'none';
+            tableEl.style.display = 'none';
+
+            try {
+                const swaggerPath = getSwaggerFilePath();
+                const response = await fetch(swaggerPath + '?t=' + Date.now());
+                
+                if (!response.ok) {
+                    throw new Error(`Failed to load swagger.json: ${response.status} ${response.statusText}`);
+                }
+
+                const swaggerData = await response.json();
+                const allApis = parseSwagger(swaggerData);
+                
+                const searchTerm = document.getElementById('searchBox').value;
+                const filteredApis = filterAPIs(allApis, searchTerm);
+                
+                renderTable(filteredApis);
+                updateStats(allApis.length, filteredApis.length);
+                
+                loadingEl.style.display = 'none';
+            } catch (error) {
+                loadingEl.style.display = 'none';
+                errorEl.style.display = 'block';
+                
+                // Check if it's a CORS error (file:// protocol)
+                const isFileProtocol = window.location.protocol === 'file:';
+                const isCorsError = error.message.includes('CORS') || 
+                                   error.message.includes('fetch') ||
+                                   (isFileProtocol && error.name === 'TypeError');
+                
+                if (isCorsError || isFileProtocol) {
+                    const htmlDir = window.location.pathname.substring(0, window.location.pathname.lastIndexOf('/'));
+                    const htmlFileName = window.location.pathname.split('/').pop();
+                    errorEl.innerHTML = `
+                        <div style="max-width: 800px; margin: 0 auto; padding: 20px;">
+                            <h2 style="color: #dc3545; margin-bottom: 20px;">⚠️ CORS Error Detected</h2>
+                            <p style="margin-bottom: 15px; font-size: 1.1em;">
+                                This HTML file cannot load swagger.json when opened directly from the file system due to browser security restrictions.
+                            </p>
+                            <p style="margin-bottom: 20px; font-size: 1.1em;">
+                                <strong>Solution:</strong> Serve this file through a local HTTP server.
+                            </p>
+                            <div style="background: #f8f9fa; padding: 20px; border-radius: 8px; border-left: 4px solid #667eea;">
+                                <h3 style="margin-top: 0; color: #667eea;">Quick Fix:</h3>
+                                <ol style="line-height: 2; font-family: 'Courier New', monospace; font-size: 0.95em;">
+                                    <li>Open a terminal in this directory:<br>
+                                        <code style="background: #e9ecef; padding: 2px 6px; border-radius: 4px;">${htmlDir}</code>
+                                    </li>
+                                    <li>Run one of these commands:<br>
+                                        <code style="background: #e9ecef; padding: 2px 6px; border-radius: 4px; display: block; margin: 5px 0;">python3 -m http.server 8000</code>
+                                        <span style="color: #6c757d; font-size: 0.9em;">or</span><br>
+                                        <code style="background: #e9ecef; padding: 2px 6px; border-radius: 4px; display: block; margin: 5px 0;">python -m http.server 8000</code>
+                                    </li>
+                                    <li>Open in your browser:<br>
+                                        <code style="background: #e9ecef; padding: 2px 6px; border-radius: 4px;">http://localhost:8000/${htmlFileName}</code>
+                                    </li>
+                                </ol>
+                            </div>
+                        </div>
+                    `;
+                } else {
+                    errorEl.textContent = `Error loading Swagger file: ${error.message}. Make sure swagger.json exists in the same directory.`;
+                }
+                console.error('Error loading swagger:', error);
+            }
+        }
+
+        function toggleAutoRefresh() {
+            const checkbox = document.getElementById('autoRefresh');
+            if (checkbox.checked) {
+                autoRefreshInterval = setInterval(loadSwagger, 5000);
+            } else {
+                if (autoRefreshInterval) {
+                    clearInterval(autoRefreshInterval);
+                    autoRefreshInterval = null;
+                }
+            }
+        }
+
+        // Search functionality
+        document.getElementById('searchBox').addEventListener('input', function() {
+            loadSwagger();
+        });
+
+        // Initial load
+        loadSwagger();
+    </script>
+</body>
+</html>
+
