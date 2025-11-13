@@ -2,8 +2,8 @@
 set -euo pipefail
 
 VENV_DIR="qodexai-virtual-env"
-REPO_URL="${REPO_URL:-https://github.com/qodex-ai/swagger-generator.git}"
-REPO_NAME="swagger-generator"
+REPO_URL="${REPO_URL:-https://github.com/qodex-ai/apimesh.git}"
+REPO_NAME="apimesh"
 BRANCH_NAME="${BRANCH_NAME:-main}"
 
 PROJECT_API_KEY="null"

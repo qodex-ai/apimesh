@@ -1,8 +1,8 @@
 #!/bin/bash
 
 VENV_DIR="qodexai-virtual-env"
-REPO_URL="https://github.com/qodex-ai/swagger-generator.git"
-REPO_NAME="swagger-generator"
+REPO_URL="https://github.com/qodex-ai/apimesh.git"
+REPO_NAME="apimesh"
 
 # Check if the virtual environment directory exists
 if [[ -d "$VENV_DIR" ]]; then
@@ -47,7 +47,7 @@ else
 fi
 
 
-REPO_DIR="swagger-generator"
+REPO_DIR="apimesh"
 
 # Check if the directory exists
 if [ -d "$REPO_DIR" ]; then
@@ -94,6 +94,6 @@ done
 
 echo "Running the Python script..."
 source qodexai-virtual-env/bin/activate
-cd swagger-generator/
+cd apimesh/
 python3 -m swagger_generation_cli $REPO_PATH $OPENAI_API_KEY $PROJECT_API_KEY $AI_CHAT_ID
 exit 1

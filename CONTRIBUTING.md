@@ -27,7 +27,7 @@ By contributing, you agree that your contributions will be licensed under the
 ## 🧭 How to Contribute
 
 ### 1) Report bugs & request features
-- Search existing [Issues](https://github.com/qodex-ai/swagger-generator/issues) first.
+- Search existing [Issues](https://github.com/qodex-ai/apimesh/issues) first.
 - If none exist, open a new issue with:
   - **What happened** and **what you expected**
   - **Steps to reproduce** (repo, command, flags, logs)
@@ -50,8 +50,8 @@ By contributing, you agree that your contributions will be licensed under the
 
 ### Get the code
 ```bash
-git clone https://github.com/qodex-ai/swagger-generator.git
-cd swagger-generator
+git clone https://github.com/qodex-ai/apimesh.git
+cd apimesh
 ```
 
 ### Running the generator (two common paths)
@@ -59,7 +59,7 @@ cd swagger-generator
 **A) One-liner script (quickest)**
 ```bash
 # Fetch and run the helper script (see README for the latest command/flags)
-curl -sSL https://raw.githubusercontent.com/qodex-ai/swagger-generator/refs/heads/main/bootstrap_swagger_generator.sh -o swagger_bootstrap.sh
+curl -sSL https://raw.githubusercontent.com/qodex-ai/apimesh/refs/heads/main/bootstrap_swagger_generator.sh -o swagger_bootstrap.sh
 chmod +x swagger_bootstrap.sh
 ./swagger_bootstrap.sh --repo-path {repo_path} --project-api-key {project_api_key} --ai-chat-id {ai_chat_id}
 ```
@@ -68,12 +68,12 @@ chmod +x swagger_bootstrap.sh
 ```bash
 # Fetch the MCP server file if needed
 # (If you already have it locally from the clone, point to that path instead)
-wget https://raw.githubusercontent.com/qodex-ai/swagger-generator/main/swagger_mcp.py -O swagger_mcp.py
+wget https://raw.githubusercontent.com/qodex-ai/apimesh/main/swagger_mcp.py -O swagger_mcp.py
 
 # Example MCP client config snippet (adjust path/command to your setup)
 # {
 #   "mcpServers": {
-#     "swagger-generator": {
+#     "apimesh": {
 #       "command": "uv",
 #       "args": ["run", "/absolute/path/to/swagger_mcp.py"]
 #     }

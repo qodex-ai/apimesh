@@ -65,8 +65,7 @@ ignored_dirs:
   - .idea
   - .vscode
   - qodexai-virtual-env
-  - swagger-bot
-  - swagger-generator
+  - apimesh
 
 routing_patterns_map:
   ruby_on_rails:
