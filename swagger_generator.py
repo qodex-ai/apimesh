@@ -112,6 +112,7 @@ class SwaggerGeneration:
     def generate_html_viewer(swagger_json_path):
         """
         Generates an HTML viewer file in the same directory as the swagger.json file.
+        Embeds the swagger.json data directly into the HTML to avoid CORS issues.
 
         Args:
             swagger_json_path (str): Path to the swagger.json file.
@@ -126,10 +127,37 @@ class SwaggerGeneration:
             html_template_path = os.path.join(os.path.dirname(__file__), 'swagger_viewer.html')
             html_output_path = os.path.join(swagger_dir, 'swagger_viewer.html')
             
-            # Copy the HTML template to the output directory
+            # Read the swagger.json file
+            swagger_data = None
+            if os.path.exists(swagger_json_path):
+                with open(swagger_json_path, 'r', encoding='utf-8') as f:
+                    swagger_data = json.load(f)
+            
+            # Read the HTML template
             if os.path.exists(html_template_path):
-                import shutil
-                shutil.copy2(html_template_path, html_output_path)
+                with open(html_template_path, 'r', encoding='utf-8') as f:
+                    html_content = f.read()
+                
+                # Embed the swagger data as a JavaScript variable
+                if swagger_data:
+                    # Escape the JSON for embedding in JavaScript
+                    swagger_json_str = json.dumps(swagger_data, indent=2)
+                    # Replace the placeholder or add the embedded data before the closing script tag
+                    # We'll add it right after the script tag opens
+                    embedded_data_script = f'''
+        // Embedded Swagger data (to avoid CORS issues)
+        const EMBEDDED_SWAGGER_DATA = {swagger_json_str};
+'''
+                    # Find the script tag and insert the embedded data right after it
+                    script_start = html_content.find('<script>')
+                    if script_start != -1:
+                        insert_pos = script_start + len('<script>')
+                        html_content = html_content[:insert_pos] + embedded_data_script + html_content[insert_pos:]
+                
+                # Write the modified HTML to the output directory
+                with open(html_output_path, 'w', encoding='utf-8') as f:
+                    f.write(html_content)
+                
                 # Display relative path (remove /workspace prefix if present)
                 display_path = html_output_path
                 if html_output_path.startswith('/workspace/'):

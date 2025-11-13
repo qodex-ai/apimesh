@@ -86,6 +86,16 @@
             background: #5568d3;
         }
 
+        .refresh-btn:disabled {
+            background: #6c757d;
+            cursor: not-allowed;
+            opacity: 0.6;
+        }
+
+        .refresh-btn:disabled:hover {
+            background: #6c757d;
+        }
+
         .auto-refresh {
             display: flex;
             align-items: center;
@@ -274,7 +284,7 @@
 
         <div class="controls">
             <input type="text" id="searchBox" class="search-box" placeholder="Search APIs by URL, method, or description...">
-            <button class="refresh-btn" onclick="loadSwagger()">🔄 Refresh</button>
+            <button class="refresh-btn" onclick="loadSwagger()" id="refreshBtn">🔄 Refresh</button>
             <div class="auto-refresh">
                 <input type="checkbox" id="autoRefresh" onchange="toggleAutoRefresh()">
                 <label for="autoRefresh">Auto-refresh (5s)</label>
@@ -316,6 +326,9 @@
     <script>
         let autoRefreshInterval = null;
         const SWAGGER_FILE = 'swagger.json';
+        
+        // Check if swagger data is embedded (to avoid CORS issues)
+        const USE_EMBEDDED_DATA = typeof EMBEDDED_SWAGGER_DATA !== 'undefined';
 
         function getSwaggerFilePath() {
             // Try to get the swagger.json path relative to this HTML file
@@ -484,14 +497,23 @@
             tableEl.style.display = 'none';
 
             try {
-                const swaggerPath = getSwaggerFilePath();
-                const response = await fetch(swaggerPath + '?t=' + Date.now());
+                let swaggerData;
                 
-                if (!response.ok) {
-                    throw new Error(`Failed to load swagger.json: ${response.status} ${response.statusText}`);
+                // Use embedded data if available (avoids CORS issues)
+                if (USE_EMBEDDED_DATA) {
+                    swaggerData = EMBEDDED_SWAGGER_DATA;
+                } else {
+                    // Fallback to fetching from file (may have CORS issues)
+                    const swaggerPath = getSwaggerFilePath();
+                    const response = await fetch(swaggerPath + '?t=' + Date.now());
+                    
+                    if (!response.ok) {
+                        throw new Error(`Failed to load swagger.json: ${response.status} ${response.statusText}`);
+                    }
+
+                    swaggerData = await response.json();
                 }
 
-                const swaggerData = await response.json();
                 const allApis = parseSwagger(swaggerData);
                 
                 const searchTerm = document.getElementById('searchBox').value;
@@ -521,20 +543,16 @@
                                 This HTML file cannot load swagger.json when opened directly from the file system due to browser security restrictions.
                             </p>
                             <p style="margin-bottom: 20px; font-size: 1.1em;">
-                                <strong>Solution:</strong> Serve this file through a local HTTP server.
+                                <strong>Solution:</strong> Regenerate the HTML viewer using the swagger generator, which will embed the data directly into the HTML file to avoid CORS issues.
                             </p>
                             <div style="background: #f8f9fa; padding: 20px; border-radius: 8px; border-left: 4px solid #667eea;">
                                 <h3 style="margin-top: 0; color: #667eea;">Quick Fix:</h3>
                                 <ol style="line-height: 2; font-family: 'Courier New', monospace; font-size: 0.95em;">
-                                    <li>Open a terminal in this directory:<br>
-                                        <code style="background: #e9ecef; padding: 2px 6px; border-radius: 4px;">${htmlDir}</code>
-                                    </li>
-                                    <li>Run one of these commands:<br>
+                                    <li>Regenerate the HTML viewer using your swagger generator tool</li>
+                                    <li>Or serve this file through a local HTTP server:<br>
                                         <code style="background: #e9ecef; padding: 2px 6px; border-radius: 4px; display: block; margin: 5px 0;">python3 -m http.server 8000</code>
-                                        <span style="color: #6c757d; font-size: 0.9em;">or</span><br>
-                                        <code style="background: #e9ecef; padding: 2px 6px; border-radius: 4px; display: block; margin: 5px 0;">python -m http.server 8000</code>
                                     </li>
-                                    <li>Open in your browser:<br>
+                                    <li>Then open in your browser:<br>
                                         <code style="background: #e9ecef; padding: 2px 6px; border-radius: 4px;">http://localhost:8000/${htmlFileName}</code>
                                     </li>
                                 </ol>
@@ -550,12 +568,17 @@
 
         function toggleAutoRefresh() {
             const checkbox = document.getElementById('autoRefresh');
-            if (checkbox.checked) {
+            // Disable auto-refresh if using embedded data (no need to refresh static data)
+            if (!USE_EMBEDDED_DATA && checkbox.checked) {
                 autoRefreshInterval = setInterval(loadSwagger, 5000);
             } else {
                 if (autoRefreshInterval) {
                     clearInterval(autoRefreshInterval);
                     autoRefreshInterval = null;
+                }
+                if (USE_EMBEDDED_DATA) {
+                    checkbox.disabled = true;
+                    checkbox.checked = false;
                 }
             }
         }
@@ -565,7 +588,24 @@
             loadSwagger();
         });
 
+        // Initialize UI based on data source
+        function initializeUI() {
+            if (USE_EMBEDDED_DATA) {
+                // Disable refresh button and auto-refresh when using embedded data
+                const refreshBtn = document.getElementById('refreshBtn');
+                if (refreshBtn) {
+                    refreshBtn.disabled = true;
+                    refreshBtn.title = 'Using embedded data - no refresh needed';
+                }
+                const autoRefreshCheckbox = document.getElementById('autoRefresh');
+                if (autoRefreshCheckbox) {
+                    autoRefreshCheckbox.disabled = true;
+                }
+            }
+        }
+
         // Initial load
+        initializeUI();
         loadSwagger();
     </script>
 </body>
