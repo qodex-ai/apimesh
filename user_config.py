@@ -70,7 +70,7 @@ class UserConfigurations:
             print("The directory does not exist.")
             exit(1)
         self._print_section_header("Output File Location")
-        default_output_filepath = user_config.get("output_filepath", f"{repo_path}/swagger.json")
+        default_output_filepath = user_config.get("output_filepath", f"{repo_path}/apimesh/swagger.json")
 
         output_filepath = default_output_filepath
         if not self.is_mcp:

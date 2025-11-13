@@ -4,6 +4,7 @@ import prompts
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import time
+import os
 
 config = Configurations()
 
@@ -91,6 +92,10 @@ class SwaggerGeneration:
             swagger (dict): The Swagger JSON dictionary.
             filename (str): The output file name.
         """
+        # Create directory if it doesn't exist
+        directory = os.path.dirname(filename)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
         with open(filename, 'w', encoding='utf-8') as file:
             json.dump(swagger, file, indent=2)
         print(f"Swagger JSON saved to {filename}.")

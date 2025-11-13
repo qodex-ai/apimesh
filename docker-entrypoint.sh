@@ -106,7 +106,7 @@ fi
 # Set default output path environment variable for Python script to use
 # This ensures output goes to the mounted volume when running in Docker
 if [ -d "/workspace" ] && [ -z "${OUTPUT_FILEPATH:-}" ]; then
-  export OUTPUT_FILEPATH="/workspace/swagger.json"
+  export OUTPUT_FILEPATH="/workspace/apimesh/swagger.json"
 fi
 
 python3 swagger_generation_cli.py "$REPO_PATH" "$OPENAI_API_KEY" "$PROJECT_API_KEY" "$AI_CHAT_ID"
