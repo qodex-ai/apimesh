@@ -65,7 +65,7 @@ You can extend `config.yml` to tweak ignored folders, routing regexes, or add ad
 ## 📦 Output & Customization  
 
 - **Artifacts**  
-  - OpenAPI 3.0 `swagger.json` (default path: repo root)  
+  - OpenAPI 3.0 `swagger.json` (default path: `{repo_path}/apimesh/swagger.json`)  
   - Optional upload payload for Qodex AI collections  
 - **Configuration**  
   - `.qodexai/config.json` stores API keys, repo path, framework overrides, and desired host URL.  
@@ -131,7 +131,7 @@ Flags
 
 --ai-chat-id → Target AI chat ID
 
-📄 Once complete, you'll find a generated OpenAPI 3.0 `swagger.json` in your repo path — ready to use with Swagger UI, OpenAPI tools, or API gateways.
+📄 Once complete, you'll find a generated OpenAPI 3.0 `swagger.json` in `{repo_path}/apimesh/swagger.json` by default — ready to use with Swagger UI, OpenAPI tools, or API gateways.
 
 ### Approach 3 — Docker 🐳 *Containerized setup*
 
@@ -257,7 +257,7 @@ docker run --rm \
 **Note:** 
 - Always run `docker run` commands from your repository directory
 - Use `-it` flags for interactive mode when running without parameters
-- The generated `swagger.json` will be created in your repository directory
+- The generated `swagger.json` will be created in `{repo_path}/apimesh/swagger.json` by default
 
 ## 🛠️ Installation
 
