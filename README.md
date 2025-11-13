@@ -135,14 +135,25 @@ Flags
 
 ### Approach 3 — Docker 🐳 *Containerized setup*
 
-#### Building the Docker Image
+#### Option A: Use Pre-built Image (Recommended)
+
+Pull the pre-built image directly from Docker Hub:
 
 ```bash
+docker pull qodexai/apimesh:latest
+```
+
+#### Option B: Build Locally (Optional)
+
+If you want to build the Docker image locally by cloning this repository:
+
+```bash
+# Clone the repository
+git clone https://github.com/qodex-ai/apimesh.git
+cd apimesh
+
 # Build the Docker image
 docker build -t qodexai/apimesh:latest .
-
-# Push to Docker Hub
-docker push qodexai/apimesh:latest
 ```
 
 #### Using the Docker Image
@@ -154,12 +165,7 @@ docker push qodexai/apimesh:latest
 - The container needs to **write** the generated `swagger.json` file back to your repository
 - Docker containers are isolated from your host filesystem, so the volume mount shares files between your computer and the container
 
-**Step 1: Pull the image**
-```bash
-docker pull qodexai/apimesh:latest
-```
-
-**Step 2: Navigate to your repository and run**
+**Navigate to your repository and run**
 
 **Option 1: Interactive Mode (Prompts for missing inputs)**
 
