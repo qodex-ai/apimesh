@@ -28,6 +28,6 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 ENTRYPOINT ["docker-entrypoint.sh"]
 
 # Default command - run interactively if no arguments provided
-# Users can override by passing arguments: docker run ... qodexai/swagger-generator --help
+# Users can override by passing arguments: docker run ... qodexai/apimesh --help
 CMD []
 

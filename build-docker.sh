@@ -3,7 +3,7 @@ set -e
 
 # Default values
 DOCKER_USERNAME="${DOCKER_USERNAME:-qodex-ai}"
-IMAGE_NAME="swagger-generator"
+IMAGE_NAME="apimesh"
 TAG="${TAG:-latest}"
 FULL_IMAGE_NAME="${DOCKER_USERNAME}/${IMAGE_NAME}:${TAG}"
 
