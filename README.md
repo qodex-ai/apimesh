@@ -135,7 +135,24 @@ Flags
 
 ### Approach 3 — Docker 🐳 *Containerized setup*
 
-#### Building the Docker Image
+#### Automated Builds (GitHub Actions)
+
+Docker images are automatically built and pushed to Docker Hub when you create a git tag:
+
+```bash
+# Create and push a version tag (e.g., v1.0.0)
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+This will automatically:
+- Build the Docker image
+- Tag it as `qodexai/apimesh:v1.0.0`, `qodexai/apimesh:1.0.0`, and `qodexai/apimesh:latest`
+- Push all tags to Docker Hub
+
+See [.github/workflows/README.md](.github/workflows/README.md) for setup instructions.
+
+#### Manual Build
 
 ```bash
 # Build the Docker image
