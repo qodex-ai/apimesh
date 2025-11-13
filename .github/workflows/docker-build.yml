@@ -25,21 +25,11 @@ jobs:
         id: tag_version
         run: |
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            # Remove 'v' prefix if present (e.g., v1.0.0 -> 1.0.0)
-            VERSION=${GITHUB_REF#refs/tags/v}
-            VERSION=${VERSION#refs/tags/}
-            echo "version=$VERSION" >> $GITHUB_OUTPUT
             echo "tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
           else
             # For manual dispatch, use a default version
-            echo "version=dev" >> $GITHUB_OUTPUT
             echo "tag=dev" >> $GITHUB_OUTPUT
           fi
-          
-          # Extract short SHA
-          COMMIT_SHA="${{ github.sha }}"
-          SHORT_SHA=$(echo "$COMMIT_SHA" | cut -c1-7)
-          echo "short_sha=$SHORT_SHA" >> $GITHUB_OUTPUT
 
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
@@ -54,8 +44,6 @@ jobs:
           push: true
           tags: |
             ${{ env.DOCKER_HUB_USERNAME }}/${{ env.IMAGE_NAME }}:${{ steps.tag_version.outputs.tag }}
-            ${{ env.DOCKER_HUB_USERNAME }}/${{ env.IMAGE_NAME }}:${{ steps.tag_version.outputs.version }}
-            ${{ env.DOCKER_HUB_USERNAME }}/${{ env.IMAGE_NAME }}:${{ steps.tag_version.outputs.short_sha }}
             ${{ env.DOCKER_HUB_USERNAME }}/${{ env.IMAGE_NAME }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -65,7 +53,5 @@ jobs:
         run: |
           echo "Image pushed with tags:"
           echo "  - ${{ steps.tag_version.outputs.tag }}"
-          echo "  - ${{ steps.tag_version.outputs.version }}"
-          echo "  - ${{ steps.tag_version.outputs.short_sha }}"
           echo "  - latest"
 

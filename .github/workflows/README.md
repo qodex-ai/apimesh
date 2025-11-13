@@ -10,8 +10,6 @@ This workflow automatically builds and pushes Docker images to Docker Hub when t
 2. **Build**: Builds the Docker image using the Dockerfile
 3. **Tag**: Tags the image with:
    - The full tag name (e.g., `v1.0.0`)
-   - The version without 'v' prefix (e.g., `1.0.0`)
-   - Short commit SHA (e.g., `abc1234`)
    - `latest` (always updated to the newest tag)
 4. **Push**: Pushes all tags to Docker Hub
 
@@ -41,8 +39,6 @@ This workflow automatically builds and pushes Docker images to Docker Hub when t
 - Tag format: `v1.0.0`, `v2.1.3`, etc.
 - Images will be tagged as:
   - `qodexai/apimesh:v1.0.0` (full tag)
-  - `qodexai/apimesh:1.0.0` (version only)
-  - `qodexai/apimesh:abc1234` (short commit SHA)
   - `qodexai/apimesh:latest` (always points to newest)
 
 ### Manual Trigger:
