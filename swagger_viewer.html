@@ -180,6 +180,8 @@
             padding: 18px 15px;
             vertical-align: top;
             color: #495057;
+            position: relative;
+            overflow: visible;
         }
 
         .method-badge {
@@ -205,29 +207,83 @@
             word-break: break-all;
         }
 
-        .params, .headers, .body {
-            font-family: 'Courier New', monospace;
-            font-size: 0.9em;
-            max-width: 300px;
-            word-break: break-word;
-        }
-
-        .json-content {
-            background: #f8f9fa;
-            padding: 10px;
-            border-radius: 6px;
-            border: 1px solid #e9ecef;
-            max-height: 200px;
-            overflow-y: auto;
-            white-space: pre-wrap;
-        }
-
         .body-type {
             padding: 4px 8px;
             background: #e9ecef;
             border-radius: 4px;
             font-size: 0.85em;
             display: inline-block;
+        }
+
+        .auth-yes {
+            padding: 4px 8px;
+            background: #d4edda;
+            color: #155724;
+            border-radius: 4px;
+            font-size: 0.85em;
+            display: inline-block;
+            font-weight: 600;
+        }
+
+        .auth-no {
+            padding: 4px 8px;
+            background: #f8d7da;
+            color: #721c24;
+            border-radius: 4px;
+            font-size: 0.85em;
+            display: inline-block;
+            font-weight: 600;
+        }
+
+        .auth-na {
+            padding: 4px 8px;
+            background: #e9ecef;
+            color: #6c757d;
+            border-radius: 4px;
+            font-size: 0.85em;
+            display: inline-block;
+        }
+
+        .description-container {
+            position: relative;
+            cursor: help;
+        }
+
+        .description-container:hover .tooltip {
+            visibility: visible;
+            opacity: 1;
+        }
+
+        .tooltip {
+            visibility: hidden;
+            opacity: 0;
+            position: absolute;
+            z-index: 1000;
+            bottom: 100%;
+            left: 0;
+            margin-bottom: 8px;
+            background-color: #333;
+            color: white;
+            padding: 10px 14px;
+            border-radius: 6px;
+            font-size: 0.9em;
+            max-width: 400px;
+            word-wrap: break-word;
+            white-space: normal;
+            line-height: 1.4;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+            transition: opacity 0.3s, visibility 0.3s;
+            pointer-events: none;
+        }
+
+        .tooltip::after {
+            content: "";
+            position: absolute;
+            top: 100%;
+            left: 20px;
+            border-width: 6px;
+            border-style: solid;
+            border-color: #333 transparent transparent transparent;
         }
 
         .error-message {
@@ -310,11 +366,11 @@
                 <thead>
                     <tr>
                         <th>Request Type</th>
-                        <th>Request URL</th>
-                        <th>Params</th>
-                        <th>Headers</th>
-                        <th>Body</th>
-                        <th>Body Type</th>
+                        <th>API Path</th>
+                        <th>Summary & Description</th>
+                        <th>Authorization Required</th>
+                        <th>Module Tag</th>
+                        <th>Tags</th>
                     </tr>
                 </thead>
                 <tbody id="apiTableBody">
@@ -338,57 +394,25 @@
             return htmlDir + '/' + SWAGGER_FILE;
         }
 
-        function formatJSON(obj) {
-            if (!obj || Object.keys(obj).length === 0) return 'N/A';
-            return JSON.stringify(obj, null, 2);
+        function truncateText(text, maxLength) {
+            if (!text) return '';
+            if (text.length <= maxLength) return text;
+            return text.substring(0, maxLength) + '...';
         }
 
-        function formatParams(parameters) {
-            if (!parameters || parameters.length === 0) return 'N/A';
-            const params = {};
-            parameters.forEach(param => {
-                params[param.name] = {
-                    in: param.in,
-                    required: param.required || false,
-                    schema: param.schema || {}
-                };
-            });
-            return formatJSON(params);
+        function getAuthorizationRequired(authorizationTag) {
+            if (!authorizationTag) return 'N/A';
+            return authorizationTag === 'Authorization Required' ? 'Yes' : 'No';
         }
 
-        function formatHeaders(parameters) {
-            if (!parameters || parameters.length === 0) return 'N/A';
-            const headers = {};
-            parameters
-                .filter(param => param.in === 'header')
-                .forEach(param => {
-                    headers[param.name] = {
-                        required: param.required || false,
-                        schema: param.schema || {}
-                    };
-                });
-            return Object.keys(headers).length > 0 ? formatJSON(headers) : 'N/A';
-        }
-
-        function formatBody(requestBody) {
-            if (!requestBody || !requestBody.content) return 'N/A';
-            const content = requestBody.content;
-            const bodyType = Object.keys(content)[0] || 'N/A';
-            const schema = content[bodyType]?.schema || {};
-            return formatJSON(schema);
-        }
-
-        function getBodyType(requestBody) {
-            if (!requestBody || !requestBody.content) return 'N/A';
-            return Object.keys(requestBody.content)[0] || 'N/A';
+        function formatTags(tags) {
+            if (!tags || !Array.isArray(tags) || tags.length === 0) return 'N/A';
+            return tags.join(', ');
         }
 
         function parseSwagger(swaggerData) {
             const apis = [];
             const paths = swaggerData.paths || {};
-            const baseUrl = swaggerData.servers && swaggerData.servers.length > 0 
-                ? swaggerData.servers[0].url 
-                : '';
 
             Object.keys(paths).forEach(path => {
                 const pathItem = paths[path];
@@ -397,18 +421,15 @@
                 methods.forEach(method => {
                     if (pathItem[method]) {
                         const operation = pathItem[method];
-                        const fullUrl = baseUrl + path;
                         
                         apis.push({
                             method: method.toUpperCase(),
-                            url: fullUrl,
                             path: path,
-                            params: operation.parameters || [],
-                            headers: operation.parameters || [],
-                            body: operation.requestBody,
-                            bodyType: getBodyType(operation.requestBody),
                             summary: operation.summary || '',
-                            description: operation.description || ''
+                            api_description: operation.api_description || '',
+                            authorization_tag: operation.authorization_tag || '',
+                            module_tag: operation.module_tag || '',
+                            tags: operation.tags || []
                         });
                     }
                 });
@@ -432,31 +453,45 @@
 
             apis.forEach(api => {
                 const row = document.createElement('tr');
+                const truncatedDescription = truncateText(api.api_description, 100);
+                const authorizationRequired = getAuthorizationRequired(api.authorization_tag);
+                const tagsFormatted = formatTags(api.tags);
+                const isTruncated = api.api_description && api.api_description.length > 100;
+                
+                // Build description HTML with tooltip if truncated
+                let descriptionHtml = '';
+                if (truncatedDescription) {
+                    if (isTruncated) {
+                        descriptionHtml = `
+                            <div class="description-container" style="display: inline-block;">
+                                <div style="font-size: 0.9em; color: #6c757d; line-height: 1.4;">${escapeHtml(truncatedDescription)}</div>
+                                <div class="tooltip">${escapeHtml(api.api_description)}</div>
+                            </div>
+                        `;
+                    } else {
+                        descriptionHtml = `<div style="font-size: 0.9em; color: #6c757d; line-height: 1.4;">${escapeHtml(truncatedDescription)}</div>`;
+                    }
+                }
+                
                 row.innerHTML = `
                     <td>
                         <span class="method-badge method-${api.method.toLowerCase()}">${api.method}</span>
                     </td>
                     <td>
-                        <div class="url">${escapeHtml(api.url)}</div>
-                        ${api.summary ? `<div style="margin-top: 5px; font-size: 0.85em; color: #6c757d;">${escapeHtml(api.summary)}</div>` : ''}
+                        <div class="url">${escapeHtml(api.path)}</div>
                     </td>
                     <td>
-                        <div class="params">
-                            <div class="json-content">${escapeHtml(formatParams(api.params))}</div>
-                        </div>
+                        ${api.summary ? `<div style="font-weight: 600; margin-bottom: 8px; color: #495057;">${escapeHtml(api.summary)}</div>` : ''}
+                        ${descriptionHtml}
                     </td>
                     <td>
-                        <div class="headers">
-                            <div class="json-content">${escapeHtml(formatHeaders(api.headers))}</div>
-                        </div>
+                        <span class="${authorizationRequired === 'Yes' ? 'auth-yes' : authorizationRequired === 'No' ? 'auth-no' : 'auth-na'}">${escapeHtml(authorizationRequired)}</span>
                     </td>
                     <td>
-                        <div class="body">
-                            <div class="json-content">${escapeHtml(formatBody(api.body))}</div>
-                        </div>
+                        <span class="body-type">${escapeHtml(api.module_tag)}</span>
                     </td>
                     <td>
-                        <span class="body-type">${escapeHtml(api.bodyType)}</span>
+                        <div style="font-size: 0.9em; color: #495057;">${escapeHtml(tagsFormatted)}</div>
                     </td>
                 `;
                 tbody.appendChild(row);
@@ -474,10 +509,11 @@
             const term = searchTerm.toLowerCase();
             return apis.filter(api => 
                 api.method.toLowerCase().includes(term) ||
-                api.url.toLowerCase().includes(term) ||
                 api.path.toLowerCase().includes(term) ||
                 (api.summary && api.summary.toLowerCase().includes(term)) ||
-                (api.description && api.description.toLowerCase().includes(term))
+                (api.api_description && api.api_description.toLowerCase().includes(term)) ||
+                (api.module_tag && api.module_tag.toLowerCase().includes(term)) ||
+                (api.tags && api.tags.some(tag => tag.toLowerCase().includes(term)))
             );
         }
 
