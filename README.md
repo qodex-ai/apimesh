@@ -1,99 +1,89 @@
-# Swagger Generator 🚀  
+# ApiMesh 🚀
 
-**Open-source Swagger/OpenAPI Generator** – Automatically analyze your codebase and generate accurate, always up-to-date **OpenAPI 3.0** documentation.  
-Save time, improve API visibility, and keep docs in sync with your source code.  
+**Open-Source OpenAPI Generator** – Automatically scan your codebase, generate **accurate OpenAPI 3.0 specs**, and render a **beautiful interactive HTML API UI** for instant exploration.
 
-[![LinkedIn](https://img.shields.io/badge/LinkedIn-0077B5?style=for-the-badge&logo=linkedin&logoColor=white)](https://www.linkedin.com/company/qodexai)  
-[![X](https://img.shields.io/badge/Follow%20on%20X-000000?style=for-the-badge&logo=twitter&logoColor=white)](https://x.com/qodex_ai)  
+**From code to live API docs in seconds** — no manual writing, no drift, no hassle.
 
 ---
 
-## 📖 What is Swagger Generator?  
+## Overview
 
-Swagger Generator is an **open-source tool** that:  
-- Scans your codebase automatically.  
-- Detects REST API endpoints.  
-- Generates **OpenAPI 3.0 specifications** (`swagger.json`).  
+**ApiMesh** is the AI-powered open-source tool that:
 
-It removes the need for **manual API documentation** and ensures your API docs stay **accurate, searchable, and developer-friendly**.  
+- Scans your codebase automatically.
+- Discovers all REST API endpoints, parameters, auth, and schemas.
+- Generates a **valid `swagger.json` (OpenAPI 3.0)**.
+- **Renders `apimesh-docs.html`** — a **fully interactive API UI** powered by Swagger UI.
 
----
-
-## ✨ Key Features  
-
-- 🔍 **Code Analysis** → Auto-discovers REST APIs from your code.  
-- 📄 **OpenAPI 3.0 Docs** → Instantly generates spec files (`swagger.json`).  
-- 🌍 **Language Agnostic** → Works with popular frameworks & languages.  
-- ⚡ **Developer Friendly** → Lightweight, fast setup, fully open-source.  
-- 📈 **SEO & Visibility** → Great for publishing public API docs with **Swagger UI**.  
+> **Open the HTML file in any browser. No server. No setup. Just click and explore.**
 
 ---
 
-## 🧠 How It Works  
+## ✨ Key Features
 
-Swagger Generator follows a deterministic workflow so you can trust every emitted spec:
-
-1. **Repository Scan**  
-   `FileScanner` walks your repo (respecting `config.yml` ignores) and collects relevant source files across Python, Node/TypeScript, Ruby on Rails, and Go.
-2. **Framework Detection**  
-   `FrameworkIdentifier` uses routing heuristics + LLM verification to determine the dominant framework (Express, Django/FastAPI/Flask, Rails, etc.).
-3. **Endpoint Harvesting**  
-   - *Language pipelines* (`python_openapi_pipeline`, `nodejs_openapi_pipeline`, `rails_openapi_pipeline`) parse route files and controllers directly whenever possible.  
-   - If native parsing is insufficient, `EndpointsExtractor` asks the LLM to interpret tricky files (custom routers, decorators, DSLs).
-4. **Context + Intelligence**  
-   `GenerateFaissIndex` chunks your codebase into vector embeddings so the LLM can pull nearby authentication logic, schemas, and helpers per endpoint.
-5. **Spec Generation**  
-   `SwaggerGeneration` prompts OpenAI with the gathered context, stitches every response into a valid OpenAPI 3.0 `swagger.json`, and saves it to the configured output path.
-6. **Optional Upload**  
-   If you provide a Project API key, the tool can push the resulting spec to Qodex AI for further automation (test generation, mocking, etc.).
+| Feature | Benefit |
+|-------|--------|
+| 🔍 **Smart Code Discovery** | Finds endpoints across frameworks — no annotations needed |
+| 📄 **OpenAPI 3.0 Spec** | `swagger.json` ready for CI/CD, gateways, and tools |
+| 🌐 **Interactive HTML UI** | `apimesh-docs.html` — **instant API playground** with try-it-out |
+| 🌍 **Multi-Language** | Python, Node.js, Ruby on Rails, Go, and more |
+| ⚡ **Zero Config Start** | One command → full docs + UI |
+| 📱 **Self-Contained HTML** | Share via email, GitHub, or CDN — works offline |
 
 ---
 
-## 🌐 Supported Frameworks & Languages  
+## 🧠 How It Works
 
-| Ecosystem | Detection Signals | Pipeline | Notes |
-|-----------|------------------|----------|-------|
-| **Python** | `urls.py`, `@app.route`, FastAPI decorators | `python_openapi_pipeline` | Works with Django, Flask, FastAPI, DRF-style routes |
-| **Node.js / TypeScript** | `express.Router`, `app.get`, decorators | `nodejs_openapi_pipeline` | Supports Express and similar router abstractions |
-| **Ruby on Rails** | `config/routes.rb`, controller naming | `rails_openapi_pipeline` | Parses controllers + routes via Tree-sitter |
-| **Other stacks** | Golang routers, generic REST hints | fallback LLM extraction | Still improves coverage even without a native pipeline |
+A **precise, AI-augmented pipeline** ensures reliable, up-to-date docs:
 
-You can extend `config.yml` to tweak ignored folders, routing regexes, or add additional language heuristics. Feel free to open a PR with your custom pipeline!
-
----
-
-## 📦 Output & Customization  
-
-- **Artifacts**  
-  - OpenAPI 3.0 `swagger.json` (default path: `{repo_path}/apimesh/swagger.json`)  
-  - Optional upload payload for Qodex AI collections  
-- **Configuration**  
-  - `.qodexai/config.json` stores API keys, repo path, framework overrides, and desired host URL.  
-  - `config.yml` lets you refine ignored directories and routing hints.  
-  - You can supply CLI flags (`--project-api-key`, `--openai-api-key`, `--ai-chat-id`, `--repo-path`) to avoid prompts.  
-- **Usage Tips**  
-  - Commit the generated `swagger.json` if you want versioned docs, or add it to `.gitignore` for on-demand generation.  
-  - Pair with Swagger UI / Redoc to publish a live portal in minutes.  
+1. **Scan Repo** → `FileScanner` walks your code (respects `.gitignore` + `config.yml`)
+2. **Detect Framework** → Heuristics + LLM identify Express, FastAPI, Rails, etc.
+3. **Harvest Endpoints** → Native parsers + LLM extract routes, methods, schemas
+4. **Enrich Context** → Vector embeddings pull auth, models, examples per endpoint
+5. **Generate Spec** → `swagger.json` built with OpenAI precision
+6. **Render UI** → **`apimesh-docs.html`** embedded with **Swagger UI** — fully interactive
+7. **Optional Sync** → Push to **Qodex.ai** for auto-tests and security scans
 
 ---
 
-## 🚀 Why Use Swagger Generator?  
+## 🌐 Supported Languages & Frameworks
 
-- ⏱️ **Eliminate manual documentation** → No more writing Swagger files by hand.  
-- 🔄 **Keep docs always in sync** → Docs auto-update with your codebase.  
-- 👨‍💻 **Improve onboarding** → Easier for developers, clients, and external users.  
-- 🛠️ **Integrate with Swagger UI** → Interactive API documentation out of the box.  
-- ✅ **Ideal for** → Startups, open-source projects, and enterprise teams managing APIs.  
+| Language | Frameworks | Detection Method |
+|--------|------------|------------------|
+| **Python** | Django, Flask, FastAPI, DRF | Route files + decorators |
+| **Node.js / TS** | Express, NestJS | `app.get`, `Router`, decorators |
+| **Ruby on Rails** | Rails | `routes.rb` + controllers |
+| **Go, Java, etc.** | Any REST | LLM fallback + patterns |
 
----
-
-## ⚡ Quick Start Guide  
-
-You can set up **Swagger Generator** in two ways:  
+> Add custom patterns in `config.yml` — PRs welcome!
 
 ---
 
-### Approach 1 — Run the MCP server directly
+## 📂 Output Files
+
+| File | Location | Purpose |
+|------|----------|--------|
+| `swagger.json` | `apimesh/swagger.json` | OpenAPI 3.0 spec |
+| **`apimesh-docs.html`** | `apimesh/apimesh-docs.html` | **Interactive API UI** — open in browser |
+| `config.yml` | Repo root | Customize scan, host, ignores |
+
+> **Deploy `apimesh-docs.html` to GitHub Pages, Netlify, or Vercel in 1 click.**
+
+---
+
+## 🚀 Quick Start (30 Seconds)
+
+### Option 1: docker (Fastest)
+
+```bash
+# Navigate to your repository
+cd /path/to/your/repo
+
+# Run interactively - will prompt for any missing inputs
+docker run -it --rm -v $(pwd):/workspace qodexai/apimesh:latest
+```
+
+### Option 2: Using MCP
 
 Download the MCP server file
 
@@ -115,7 +105,8 @@ Add this to your MCP settings
 
 Replace /path/to/swagger_mcp/swagger_mcp.py with the actual file path.
 
-### Approach 2 — One-liner install & run (curl) ✅ *Quickest setup*  
+
+### Option 3: Curl
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/qodex-ai/apimesh/refs/heads/main/bootstrap_swagger_generator.sh -o swagger_bootstrap.sh \
@@ -123,138 +114,7 @@ curl -sSL https://raw.githubusercontent.com/qodex-ai/apimesh/refs/heads/main/boo
   && ./swagger_bootstrap.sh
 ```
 
-Flags
-
---repo-path → Local path of which repo should be used
-
---project-api-key → Your project API key
-
---ai-chat-id → Target AI chat ID
-
-📄 Once complete, you'll find a generated OpenAPI 3.0 `swagger.json` in `{repo_path}/apimesh/swagger.json` by default — ready to use with Swagger UI, OpenAPI tools, or API gateways.
-
-### Approach 3 — Docker 🐳 *Containerized setup*
-
-#### Option A: Use Pre-built Image (Recommended)
-
-Pull the pre-built image directly from Docker Hub:
-
-```bash
-docker pull qodexai/apimesh:latest
-```
-
-#### Option B: Build Locally (Optional)
-
-If you want to build the Docker image locally by cloning this repository:
-
-```bash
-# Clone the repository
-git clone https://github.com/qodex-ai/apimesh.git
-cd apimesh
-
-# Build the Docker image
-docker build -t qodexai/apimesh:latest .
-```
-
-#### Using the Docker Image
-
-**Important:** Always run Docker commands from your repository directory.
-
-**Why the volume mount (`-v $(pwd):/workspace`) is required:**
-- The container needs to **read** your repository files to analyze them
-- The container needs to **write** the generated `swagger.json` file back to your repository
-- Docker containers are isolated from your host filesystem, so the volume mount shares files between your computer and the container
-
-**Navigate to your repository and run**
-
-**Option 1: Interactive Mode (Prompts for missing inputs)**
-
-```bash
-# Navigate to your repository
-cd /path/to/your/repo
-
-# Run interactively - will prompt for any missing inputs
-docker run -it --rm -v $(pwd):/workspace qodexai/apimesh:latest
-```
-
-**Option 2: With Environment Variables**
-
-```bash
-# Navigate to your repository
-cd /path/to/your/repo
-
-# Run with all parameters as environment variables
-docker run --rm \
-  -v $(pwd):/workspace \
-  -e OPENAI_API_KEY=your_openai_api_key \
-  -e PROJECT_API_KEY=your_project_api_key \
-  -e AI_CHAT_ID=your_chat_id \
-  qodexai/apimesh:latest
-```
-
-**Option 3: With Command-Line Arguments**
-
-```bash
-# Navigate to your repository
-cd /path/to/your/repo
-
-# Run with command-line arguments
-docker run --rm \
-  -v $(pwd):/workspace \
-  qodexai/apimesh:latest \
-  --repo-path /workspace \
-  --openai-api-key your_key \
-  --project-api-key your_key \
-  --ai-chat-id your_chat_id
-```
-
-**Environment Variables (all optional - will prompt if not provided):**
-- `OPENAI_API_KEY` - Your OpenAI API key
-- `PROJECT_API_KEY` - Your project API key
-- `AI_CHAT_ID` - Target AI chat ID
-- `REPO_PATH` - Path to repository (default: `/workspace`)
-
-**Arguments (all optional - will prompt if not provided):**
-- `--repo-path` - Path to the repository inside container (default: `/workspace`)
-- `--openai-api-key` - Override OPENAI_API_KEY env var
-- `--project-api-key` - Override PROJECT_API_KEY env var
-- `--ai-chat-id` - Override AI_CHAT_ID env var
-
-**Quick Examples:**
-
-```bash
-# From your repo directory - minimal (will prompt for all inputs)
-cd /path/to/your/repo
-docker run -it --rm -v $(pwd):/workspace qodexai/apimesh:latest
-
-# From your repo directory - with OpenAI API key (will prompt for others)
-cd /path/to/your/repo
-docker run -it --rm \
-  -v $(pwd):/workspace \
-  -e OPENAI_API_KEY=sk-... \
-  qodexai/apimesh:latest
-
-# From your repo directory - fully automated (no prompts)
-cd /path/to/your/repo
-docker run --rm \
-  -v $(pwd):/workspace \
-  -e OPENAI_API_KEY=sk-... \
-  -e PROJECT_API_KEY=your_project_key \
-  qodexai/apimesh:latest
-```
-
-**Note:** 
-- Always run `docker run` commands from your repository directory
-- Use `-it` flags for interactive mode when running without parameters
-- The generated `swagger.json` will be created in `{repo_path}/apimesh/swagger.json` by default
-
-## 🛠️ Installation
-
-Requires Python 3.10+ and uv.
-
-Works on Linux, macOS, and Windows (via WSL).
-
-Lightweight, no heavy dependencies.
+---
 
 ## 🤝 Contributing
 
