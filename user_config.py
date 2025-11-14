@@ -55,9 +55,9 @@ class UserConfigurations:
 
         if provided_repo_path:
             repo_path = provided_repo_path
-        elif not stored_repo_path and not self.is_mcp:
-            repo_path = input(
-                f"Please enter the project repository path (default: {default_repo_path}): ") or default_repo_path
+        # elif not stored_repo_path and not self.is_mcp:
+            # repo_path = input(
+            #     f"Please enter the project repository path (default: {default_repo_path}): ") or default_repo_path
         user_config["repo_path"] = repo_path
         user_config['repo_name'] = os.path.basename(repo_path)
         self.save_user_config(user_config)
@@ -73,9 +73,9 @@ class UserConfigurations:
         default_output_filepath = user_config.get("output_filepath", f"{repo_path}/apimesh/swagger.json")
 
         output_filepath = default_output_filepath
-        if not self.is_mcp:
-            output_filepath = input(
-                f"Please enter the output file path (default: {default_output_filepath}): ") or default_output_filepath
+        # if not self.is_mcp:
+        #     output_filepath = input(
+        #         f"Please enter the output file path (default: {default_output_filepath}): ") or default_output_filepath
         user_config["output_filepath"] = output_filepath
         self.save_user_config(user_config)
 
@@ -95,17 +95,17 @@ class UserConfigurations:
         self._print_section_header("Model Selection")
         default_openai_model = user_config.get("openai_model", "gpt-4.1-2025-04-14")
         openai_model = default_openai_model
-        if not self.is_mcp:
-            openai_model = input(
-                f"Please enter openai api model (default: {default_openai_model}): choices: gpt-4.1-2025-04-14/o3/gpt-5.1 ") or default_openai_model
+        # if not self.is_mcp:
+        #     openai_model = input(
+        #         f"Please enter openai api model (default: {default_openai_model}): choices: gpt-4.1-2025-04-14/o3/gpt-5.1 ") or default_openai_model
         user_config["openai_model"] = openai_model
         self.save_user_config(user_config)
 
         self._print_section_header("API Host Configuration")
         default_api_host = user_config.get("api_host", "https://api.example.com")
         api_host = default_api_host
-        if not self.is_mcp:
-            api_host = input(f"Please enter host of any of your servers (default: {default_api_host}): ") or default_api_host
+        # if not self.is_mcp:
+        #     api_host = input(f"Please enter host of any of your servers (default: {default_api_host}): ") or default_api_host
         user_config["api_host"] = api_host
         self.save_user_config(user_config)
         # Check if the user entered something
