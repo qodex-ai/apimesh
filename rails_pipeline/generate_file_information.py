@@ -26,11 +26,18 @@ def _node_text(source: str, node) -> str:
 def _gather_class_info(node, source: str) -> Dict:
     name_node = node.child_by_field_name("name")
     name = _node_text(source, name_node) if name_node else "<anonymous>"
+    superclass_node = node.child_by_field_name("superclass")
+    superclass = None
+    if superclass_node:
+        superclass = _node_text(source, superclass_node).strip()
+        if superclass:
+            superclass = superclass.lstrip("<").strip()
     return {
         "type": "class",
         "name": name,
         "start_line": node.start_point[0] + 1,
         "end_line": node.end_point[0] + 1,
+        "superclass": superclass,
     }
 
 
