@@ -124,8 +124,8 @@ class SwaggerGeneration:
                 swagger_dir = '.'
             
             # Path to the HTML viewer template
-            html_template_path = os.path.join(os.path.dirname(__file__), 'swagger_viewer.html')
-            html_output_path = os.path.join(swagger_dir, 'swagger_viewer.html')
+            html_template_path = os.path.join(os.path.dirname(__file__), 'apimesh-docs.html')
+            html_output_path = os.path.join(swagger_dir, 'apimesh-docs.html')
             
             # Read the swagger.json file
             swagger_data = None

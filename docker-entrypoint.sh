@@ -120,20 +120,20 @@ open_html_viewer() {
   # 1. Check OUTPUT_FILEPATH environment variable
   if [ -n "${OUTPUT_FILEPATH:-}" ]; then
     SWAGGER_DIR=$(dirname "$OUTPUT_FILEPATH")
-    HTML_FILE="$SWAGGER_DIR/swagger_viewer.html"
+    HTML_FILE="$SWAGGER_DIR/apimesh-docs.html"
   fi
   
   # 2. Check default Docker location
   if [ -z "$HTML_FILE" ] || [ ! -f "$HTML_FILE" ]; then
     if [ -d "/workspace" ]; then
-      HTML_FILE="/workspace/apimesh/swagger_viewer.html"
+      HTML_FILE="/workspace/apimesh/apimesh-docs.html"
     fi
   fi
   
-  # 3. Search for swagger_viewer.html in common locations
+  # 3. Search for apimesh-docs.html in common locations
   if [ -z "$HTML_FILE" ] || [ ! -f "$HTML_FILE" ]; then
     if [ -d "/workspace" ]; then
-      FOUND_FILE=$(find /workspace -name "swagger_viewer.html" -type f 2>/dev/null | head -n 1)
+      FOUND_FILE=$(find /workspace -name "apimesh-docs.html" -type f 2>/dev/null | head -n 1)
       if [ -n "$FOUND_FILE" ]; then
         HTML_FILE="$FOUND_FILE"
       fi
