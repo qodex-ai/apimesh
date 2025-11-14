@@ -15,7 +15,18 @@ class Configurations:
         self.ignored_dirs = set(self.config.get("ignored_dirs", []))
         self.routing_patters_map = self.config.get("routing_patterns_map", {})
         self.gpt_4o_model_name = self.config.get("gpt_4o_model_name", "gpt-4o")
-        self.user_config_file_dir = os.path.join(os.getcwd(), self.config.get("user_config_file_dir", ".qodexai"))
+
+        # Determine user config directory - prioritize user-mounted folders
+        config_dir_name = self.config.get("user_config_file_dir", "apimesh/.qodexai")
+
+        # Check if /workspace exists (Docker mounted volume)
+        if os.path.exists("/workspace") and os.path.isdir("/workspace"):
+            # Use mounted volume directory
+            self.user_config_file_dir = os.path.join("/workspace", config_dir_name)
+        else:
+            # Use user's home directory for config
+            home_dir = os.path.expanduser("~")
+            self.user_config_file_dir = os.path.join(home_dir, config_dir_name)
 
     def _load_config(self, config_path):
         """Loads configuration from a YAML file."""

@@ -77,7 +77,7 @@ routing_patterns_map:
     - 'post\s+[''"]/\w+'
     - 'put\s+[''"]/\w+'
     - 'delete\s+[''"]/\w+'
-  
+
   django:
     - 'path\([''"]'
     - 'include\([''"]'
@@ -86,17 +86,17 @@ routing_patterns_map:
     - '@route\([''"]'
     - '\.(?:get|post|put|delete)_api\('
     - '@api_view\(\[[''""](?:GET|POST|PUT|DELETE)[''"]'
-    - 'ListAPIView'
-    - 'CreateAPIView'
-    - 'UpdateAPIView'
-    - 'DestroyAPIView'
-  
+    - "ListAPIView"
+    - "CreateAPIView"
+    - "UpdateAPIView"
+    - "DestroyAPIView"
+
   express:
     - 'app\.(?:get|post|put|delete)\([''"]'
     - 'router\.(?:get|post|put|delete)\([''"]'
     - 'express\.Router\(\)'
     - 'app\.use\([''"]'
-  
+
   flask:
     - '@app\.route\([''"]'
     - 'app\.(?:get|post|put|delete)\([''"]'
@@ -107,30 +107,30 @@ routing_patterns_map:
     - 'Api\('
     - 'Resource\)'
     - 'def (?:get|post|put|delete)\('
-  
+
   fastapi:
     - '@app\.(?:get|post|put|delete)\([''"]'
     - '@router\.(?:get|post|put|delete)\([''"]'
     - 'APIRouter\(\)'
     - 'app\.include_router\('
     - '@app\.middleware\([''"]'
-  
+
   laravel:
     - 'Route::(?:get|post|put|delete)\([''"]'
     - 'Route::resource\([''"]'
     - 'Route::group\('
     - '->middleware\([''"]'
-  
+
   spring:
     - '@RequestMapping\([''"]'
     - '@GetMapping\([''"]'
     - '@PostMapping\([''"]'
     - '@PutMapping\([''"]'
     - '@DeleteMapping\([''"]'
-    - '@RestController'
-    - '@Controller'
-    - '@RequestParam'
-    - '@PathVariable'
+    - "@RestController"
+    - "@Controller"
+    - "@RequestParam"
+    - "@PathVariable"
 
   golang:
     # net/http (standard library)
@@ -156,7 +156,5 @@ routing_patterns_map:
     - 'fiber\.New\('
     - '\b\w+\.(Get|Post|Put|Delete|Patch|Options|Head)\([''"]'
 
-
-
 gpt_4o_model_name: "gpt-4.1-2025-04-14"
-user_config_file_dir: ".qodexai"
+user_config_file_dir: "apimesh/.qodexai"
