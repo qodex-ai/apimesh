@@ -70,7 +70,7 @@ class RunSwagger:
             swagger = self.run_python_nodejs_ruby(framework)
             if swagger:
                 self.swagger_generator.save_swagger_json(swagger, self.user_config['output_filepath'])
-                self.upload_swagger_to_qodex(resolved_ai_chat_id)
+                #self.upload_swagger_to_qodex(resolved_ai_chat_id)
                 exit()
             api_files = self.file_scanner.find_api_files(file_paths, framework)
             print("Completed finding files related to API information")
@@ -96,7 +96,7 @@ class RunSwagger:
         except Exception as ex:
             print("Swagger was not able to be uploaded to server. Please check your project api key and try again.")
         print("Swagger Generated Successfully")
-        self.upload_swagger_to_qodex(resolved_ai_chat_id)
+        #self.upload_swagger_to_qodex(resolved_ai_chat_id)
         return
 
 

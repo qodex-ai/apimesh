@@ -97,7 +97,7 @@ class UserConfigurations:
         openai_model = default_openai_model
         if not self.is_mcp:
             openai_model = input(
-                f"Please enter openai api model (default: {default_openai_model}): choices: gpt-4.1-2025-04-14/gpt-4o ") or default_openai_model
+                f"Please enter openai api model (default: {default_openai_model}): choices: gpt-4.1-2025-04-14/o3/gpt-5.1 ") or default_openai_model
         user_config["openai_model"] = openai_model
         self.save_user_config(user_config)
 
@@ -113,22 +113,22 @@ class UserConfigurations:
             print("No api host provided. Exiting...")
             exit(1)
 
-        self._print_section_header("Qodex API Key")
-        sanitized_project_api_key = self._sanitize_cli_value(project_api_key)
-        stored_qodex_api_key = user_config.get("qodex_api_key", "")
-        if sanitized_project_api_key:
-            qodex_api_key = sanitized_project_api_key
-        elif not stored_qodex_api_key and not self.is_mcp:
-            qodex_api_key = input(
-                f"Please enter qodex api key (default: {stored_qodex_api_key}) (press enter to skip this): ") or stored_qodex_api_key
-        else:
-            qodex_api_key = stored_qodex_api_key
-
-        user_config["qodex_api_key"] = qodex_api_key
-        self.save_user_config(user_config)
-
-        self._print_section_header("AI Chat Configuration")
-        sanitized_ai_chat_id = self._sanitize_cli_value(self.ai_chat_id)
-        if sanitized_ai_chat_id:
-            user_config["ai_chat_id"] = sanitized_ai_chat_id
-            self.save_user_config(user_config)
+        # self._print_section_header("Qodex API Key")
+        # sanitized_project_api_key = self._sanitize_cli_value(project_api_key)
+        # stored_qodex_api_key = user_config.get("qodex_api_key", "")
+        # if sanitized_project_api_key:
+        #     qodex_api_key = sanitized_project_api_key
+        # elif not stored_qodex_api_key and not self.is_mcp:
+        #     qodex_api_key = input(
+        #         f"Please enter qodex api key (default: {stored_qodex_api_key}) (press enter to skip this): ") or stored_qodex_api_key
+        # else:
+        #     qodex_api_key = stored_qodex_api_key
+        #
+        # user_config["qodex_api_key"] = qodex_api_key
+        # self.save_user_config(user_config)
+        #
+        # self._print_section_header("AI Chat Configuration")
+        # sanitized_ai_chat_id = self._sanitize_cli_value(self.ai_chat_id)
+        # if sanitized_ai_chat_id:
+        #     user_config["ai_chat_id"] = sanitized_ai_chat_id
+        #     self.save_user_config(user_config)
