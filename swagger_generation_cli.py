@@ -9,6 +9,7 @@ from faiss_index_generator import GenerateFaissIndex
 from nodejs_pipeline.run_swagger_generation import run_swagger_generation as nodejs_swagger_generator
 from python_pipeline.run_swagger_generation import run_swagger_generation as python_swagger_generator
 from rails_pipeline.run_swagger_generation import run_swagger_generation as ruby_on_rails_swagger_generator
+from golang_pipeline.run_swagger_generation import run_swagger_generation as golang_swagger_generator
 import requests, json
 import sys
 
@@ -36,6 +37,12 @@ class RunSwagger:
             elif framework == "ruby_on_rails":
                 swagger = ruby_on_rails_swagger_generator(self.user_config['repo_path'], self.user_config['api_host'],
                                                           self.user_config['repo_name'])
+            elif framework == "golang":
+                swagger = golang_swagger_generator(
+                    self.user_config['repo_path'],
+                    self.user_config['api_host'],
+                    self.user_config['repo_name'],
+                )
         except Exception as ex:
             traceback.print_exc()
             print("Fallback to old procedure")

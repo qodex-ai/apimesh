@@ -450,20 +450,81 @@ generic_swagger_generation_prompt = """
                         Output only valid JSON without any explanations.
                 """
 
+golang_swagger_generation_prompt = """
+            You are an API documentation assistant specializing in Golang HTTP services
+            (Gin, Echo, Fiber, Chi, Gorilla Mux, net/http). Generate Swagger (OpenAPI 3.0)
+            JSON for the provided handler using only the supplied code and context.
+
+            Method: {endpoint_method}
+            Path: {endpoint_path}
+            Handler Context:
+            {endpoint_info}
+            Authentication/Authorization Information:
+            {authentication_information}
+
+            Follow these rules exactly:
+            1. api_description: Describe the endpoint’s purpose and parameter limitations.
+            2. Request Parameters: Explicitly list query, path, and header parameters with
+               fully resolved schemas (no $ref). Treat context hints such as `# header: x-user-id`
+               as required headers unless explicitly optional.
+            3. Request Body: When the handler binds or decodes JSON, describe the body schema
+               and include an example.
+            4. Responses: Include all inferred response codes (success + errors) with schemas
+               and example payloads. Never omit error responses that appear in code.
+            5. HTTP Method: The resulting spec must use the exact method provided above.
+            6. Tags: Use UpperCamelCase, pluralized (e.g., "Users", "Orders").
+            7. authorization_tag: "Authorization Required" when authentication is needed;
+               otherwise "Authorization Not Required".
+            8. module_tag: Use the controller/module name inferred from the handler.
+            9. auth_tag: Include "Auth API" only for authentication-related routes
+               (login, signup, token exchange, etc.).
+
+            Output must follow the sample OpenAPI structure shown below (same nesting, fields,
+            and key ordering). Replace all placeholders with the real endpoint data.
+
+            {{
+              "openapi": "3.0.0",
+              "info": {{
+                "title": "Sample Title",
+                "version": "1.0.0"
+              }},
+              "paths": {{
+                "{endpoint_path}": {{
+                  "{endpoint_method_lower}": {{
+                    "summary": "...",
+                    "api_description": "...",
+                    "tags": ["Example"],
+                    "parameters": [...],
+                    "requestBody": {{ ... }},
+                    "authorization_tag": "...",
+                    "module_tag": "...",
+                    "auth_tag": "...",
+                    "responses": {{
+                      "200": {{ ... }},
+                      "400": {{ ... }}
+                    }}
+                  }}
+                }}
+              }}
+            }}
+
+            The final answer must be valid JSON with no additional commentary or code fences.
+        """
+
 swagger_generation_system_prompt = "You are a helpful assistant for generating API documentation."
 node_js_prompt = """
     You are given a **Node.js API definition** (such as an Express route handler `app.get("/path", (req, res) => {{...}})`, `router.post(...)`, or controller function) along with its context (request/response handling, variables used, and purpose).
     Using this, generate a valid **OpenAPI 3.0 specification** for that endpoint with the following rules:
 
-    1. **api\_description**: Write a detailed description of the API endpoint's purpose and parameter limitations.
+    1. **api_description**: Write a detailed description of the API endpoint's purpose and parameter limitations.
     2. **Request Parameters**: Explicitly list query, path, and body parameters with **fully resolved schemas**. Do **not** use `$ref`.
     3. **Example Schemas**: Provide both example request and response schemas, fully expanded without references.
     4. **Responses**: Include all possible response codes (200, 400, 404, 422, etc.) with proper descriptions and example payloads.
     5. **HTTP Method**: The method in the spec must match the Node.js route method (`get`, `post`, `put`, `delete`, etc.).
     6. **Tags**: Tags should be **UpperCamelCase**, pluralized (e.g., `"Users"`, `"Orders"`).
-    7. **authorization\_tag**: Set to `"Authorization Required"` if the endpoint requires authentication (like tokens). Otherwise `"Authorization Not Required"`.
-    8. **module\_tag**: This should represent the module or controller name where the endpoint resides.
-    9. **auth\_tag**: Add `"Auth API"` only if the endpoint is handling authentication-related functionality (login, signup, password reset, confirmation, token exchange, etc.).
+    7. **authorization_tag**: Set to `"Authorization Required"` if the endpoint requires authentication (like tokens). Otherwise `"Authorization Not Required"`.
+    8. **module_tag**: This should represent the module or controller name where the endpoint resides.
+    9. **auth_tag**: Add `"Auth API"` only if the endpoint is handling authentication-related functionality (login, signup, password reset, confirmation, token exchange, etc.).
 
 
     The output must follow the structure of the provided sample OpenAPI spec:
