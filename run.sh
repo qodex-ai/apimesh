@@ -32,8 +32,10 @@ resolve_target_repo_path() {
     return 0
 }
 
-ensure_workspace_config() {
+sync_workspace_config() {
     local expected="$APIMESH_PARENT_DIR/config.json"
+    mkdir -p "$(dirname "$expected")"
+
     if [[ -s "$expected" ]]; then
         echo "Configuration saved at '$expected'."
         return 0
@@ -48,11 +50,10 @@ ensure_workspace_config() {
     fi
 
     if [[ -n "$fallback" && -s "$fallback" ]]; then
-        mkdir -p "$(dirname "$expected")"
         cp "$fallback" "$expected"
         echo "Relocated config.json from '$fallback' to '$expected'."
     else
-        echo "Warning: config.json not found. Please rerun the setup to capture user configuration."
+        echo "No existing config found for '$expected'."
     fi
 }
 
@@ -184,6 +185,7 @@ WORKSPACE_DIR="$REPO_PATH/apimesh"
 mkdir -p "$WORKSPACE_DIR"
 APIMESH_PARENT_DIR="$(cd "$WORKSPACE_DIR" && pwd -P)"
 export APIMESH_PARENT_DIR
+sync_workspace_config
 
 TARGET_RUN_SCRIPT="$(cd "$APIMESH_PARENT_DIR" && pwd -P)/run.sh"
 if [[ "$SCRIPT_PATH" != "$TARGET_RUN_SCRIPT" ]]; then
@@ -200,7 +202,7 @@ echo "Running the Python script..."
 )
 CLI_EXIT_CODE=$?
 
-ensure_workspace_config
+sync_workspace_config
 
 echo "Swagger generation finished with status $CLI_EXIT_CODE."
 exit "$CLI_EXIT_CODE"
