@@ -89,6 +89,7 @@ inject_clone_config() {
     mkdir -p "$legacy_target"
     cp "$source" "$legacy_target/$CONFIG_FILE_NAME"
 }
+
 cleanup() {
     local exit_code=$?
     trap - EXIT
