@@ -34,26 +34,25 @@ resolve_target_repo_path() {
 
 ensure_workspace_config() {
     local expected="$APIMESH_PARENT_DIR/config.json"
-    if [[ -f "$expected" ]]; then
+    if [[ -s "$expected" ]]; then
         echo "Configuration saved at '$expected'."
         return 0
     fi
+
     local fallback=""
-    if [[ -n "$CLONE_DIR" ]]; then
-        for candidate in "$CLONE_DIR/config.json" "$CLONE_DIR/apimesh/config.json"; do
-            if [[ -f "$candidate" ]]; then
-                fallback="$candidate"
-                break
-            fi
-        done
+    if [[ -d "$APIMESH_PARENT_DIR" ]]; then
+        fallback=$(find "$APIMESH_PARENT_DIR" -type f -name "config.json" ! -path "$expected" -print -quit 2>/dev/null || true)
     fi
-    mkdir -p "$(dirname "$expected")"
-    if [[ -n "$fallback" && -f "$fallback" ]]; then
+    if [[ -z "$fallback" && -n "$CLONE_DIR" && -d "$CLONE_DIR" ]]; then
+        fallback=$(find "$CLONE_DIR" -type f -name "config.json" -print -quit 2>/dev/null || true)
+    fi
+
+    if [[ -n "$fallback" && -s "$fallback" ]]; then
+        mkdir -p "$(dirname "$expected")"
         cp "$fallback" "$expected"
         echo "Relocated config.json from '$fallback' to '$expected'."
     else
-        echo "{}" > "$expected"
-        echo "Created placeholder config at '$expected'."
+        echo "Warning: config.json not found. Please rerun the setup to capture user configuration."
     fi
 }
 
