@@ -65,6 +65,7 @@ A **precise, AI-augmented pipeline** ensures reliable, up-to-date docs:
 |------|----------|--------|
 | `swagger.json` | `apimesh/swagger.json` | OpenAPI 3.0 spec |
 | **`apimesh-docs.html`** | `apimesh/apimesh-docs.html` | **Interactive API UI** — open in browser |
+| `config.json` | `apimesh/config.json` | Persisted CLI configuration (repo path, host, API keys) |
 | `config.yml` | Repo root | Customize scan, host, ignores |
 
 > **Deploy `apimesh-docs.html` to GitHub Pages, Netlify, or Vercel in 1 click.**
@@ -108,8 +109,6 @@ Replace /path/to/swagger_mcp/swagger_mcp.py with the actual file path.
 
 ### Option 3: Curl
 
-Create a dedicated `apimesh` folder in your repo root so the generator can safely clone itself without touching your code.
-
 ```bash
 # Navigate to your repository
 cd /path/to/your/repo
@@ -122,7 +121,7 @@ mkdir -p apimesh \
   && ./run.sh
 ```
 
-> The bootstrap script automatically targets the parent repo directory when you run it from inside `apimesh`. If your project isn't tracked by Git, append `--repo-path ..` to the final command to force the correct path. The helper script cleans up its temporary clone and virtual environment after your docs are generated, so rerun the command whenever you need a fresh snapshot.
+> Each run leaves `swagger.json`, `apimesh-docs.html`, `run.sh`, and `config.json` side-by-side inside the `apimesh/` workspace folder. If your project isn't tracked by Git, append `--repo-path ..` to the final command to force the correct path.
 
 ---
 

@@ -4,13 +4,58 @@ VENV_DIR="qodexai-virtual-env"
 REPO_URL="https://github.com/qodex-ai/apimesh.git"
 REPO_NAME="apimesh"
 CURRENT_DIR="$(pwd)"
-DEFAULT_REPO_PATH="$CURRENT_DIR"
-PARENT_DIR="$(dirname "$CURRENT_DIR")"
 CLONE_DIR="$CURRENT_DIR/$REPO_NAME"
 VENV_PATH="$CURRENT_DIR/$VENV_DIR"
 SCRIPT_SOURCE="${BASH_SOURCE[0]:-$0}"
 SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_SOURCE")" && pwd -P)"
 SCRIPT_PATH="$SCRIPT_DIR/$(basename "$SCRIPT_SOURCE")"
+
+resolve_target_repo_path() {
+    local dir="$1"
+    while [[ -n "$dir" && "$dir" != "/" ]]; do
+        if [[ -d "$dir/.git" ]]; then
+            local remote
+            remote=$(git -C "$dir" config --get remote.origin.url 2>/dev/null || echo "")
+            if [[ -z "$remote" || "$remote" != "$REPO_URL" ]]; then
+                echo "$dir"
+                return 0
+            fi
+        fi
+        local parent
+        parent="$(dirname "$dir")"
+        if [[ "$parent" == "$dir" ]]; then
+            break
+        fi
+        dir="$parent"
+    done
+    echo "$1"
+    return 0
+}
+
+ensure_workspace_config() {
+    local expected="$APIMESH_PARENT_DIR/config.json"
+    if [[ -f "$expected" ]]; then
+        echo "Configuration saved at '$expected'."
+        return 0
+    fi
+    local fallback=""
+    if [[ -n "$CLONE_DIR" ]]; then
+        for candidate in "$CLONE_DIR/config.json" "$CLONE_DIR/apimesh/config.json"; do
+            if [[ -f "$candidate" ]]; then
+                fallback="$candidate"
+                break
+            fi
+        done
+    fi
+    mkdir -p "$(dirname "$expected")"
+    if [[ -n "$fallback" && -f "$fallback" ]]; then
+        cp "$fallback" "$expected"
+        echo "Relocated config.json from '$fallback' to '$expected'."
+    else
+        echo "{}" > "$expected"
+        echo "Created placeholder config at '$expected'."
+    fi
+}
 
 cleanup() {
     local exit_code=$?
@@ -34,10 +79,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if [[ ! -d "$DEFAULT_REPO_PATH/.git" && "$PARENT_DIR" != "$CURRENT_DIR" && -d "$PARENT_DIR/.git" ]]; then
-    DEFAULT_REPO_PATH="$PARENT_DIR"
-fi
-
+DEFAULT_REPO_PATH="$(resolve_target_repo_path "$CURRENT_DIR")"
 REPO_PATH="$DEFAULT_REPO_PATH"
 
 # Check if the virtual environment directory exists
@@ -158,6 +200,8 @@ echo "Running the Python script..."
   python3 -m swagger_generation_cli "$REPO_PATH" "$OPENAI_API_KEY" "$PROJECT_API_KEY" "$AI_CHAT_ID"
 )
 CLI_EXIT_CODE=$?
+
+ensure_workspace_config
 
 echo "Swagger generation finished with status $CLI_EXIT_CODE."
 exit "$CLI_EXIT_CODE"

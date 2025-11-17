@@ -67,6 +67,8 @@ chmod +x run.sh
 ./run.sh --repo-path .. --project-api-key {project_api_key} --ai-chat-id {ai_chat_id}
 ```
 
+> After completion you should always see `config.json`, `swagger.json`, `apimesh-docs.html`, and `run.sh` inside your repo's `apimesh/` workspace.
+
 > The bootstrap helper removes its temporary clone and virtual environment after it finishes generating docs, so rerun the snippet whenever you need to refresh the output.
 
 **B) Run as an MCP server**
