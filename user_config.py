@@ -55,6 +55,7 @@ class UserConfigurations:
 
         if provided_repo_path:
             repo_path = provided_repo_path
+        repo_path = os.path.abspath(repo_path)
         # elif not stored_repo_path and not self.is_mcp:
             # repo_path = input(
             #     f"Please enter the project repository path (default: {default_repo_path}): ") or default_repo_path
@@ -70,7 +71,10 @@ class UserConfigurations:
             print("The directory does not exist.")
             exit(1)
         self._print_section_header("Output File Location")
-        default_output_filepath = user_config.get("output_filepath", f"{repo_path}/apimesh/swagger.json")
+        default_output_filepath = user_config.get(
+            "output_filepath",
+            os.path.join(repo_path, "apimesh", "swagger.json"),
+        )
 
         output_filepath = default_output_filepath
         # if not self.is_mcp:

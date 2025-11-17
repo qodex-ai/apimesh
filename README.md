@@ -65,6 +65,7 @@ A **precise, AI-augmented pipeline** ensures reliable, up-to-date docs:
 |------|----------|--------|
 | `swagger.json` | `apimesh/swagger.json` | OpenAPI 3.0 spec |
 | **`apimesh-docs.html`** | `apimesh/apimesh-docs.html` | **Interactive API UI** — open in browser |
+| `config.json` | `apimesh/config.json` | Persisted CLI configuration (repo path, host, API keys) |
 | `config.yml` | Repo root | Customize scan, host, ignores |
 
 > **Deploy `apimesh-docs.html` to GitHub Pages, Netlify, or Vercel in 1 click.**
@@ -109,10 +110,18 @@ Replace /path/to/swagger_mcp/swagger_mcp.py with the actual file path.
 ### Option 3: Curl
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/qodex-ai/apimesh/refs/heads/main/bootstrap_swagger_generator.sh -o swagger_bootstrap.sh \
-  && chmod +x swagger_bootstrap.sh \
-  && ./swagger_bootstrap.sh
+# Navigate to your repository
+cd /path/to/your/repo
+
+# Inside your repo root
+mkdir -p apimesh \
+  && cd apimesh \
+  && curl -sSL https://raw.githubusercontent.com/qodex-ai/apimesh/refs/heads/main/run.sh -o run.sh \
+  && chmod +x run.sh \
+  && ./run.sh
 ```
+
+> Each run leaves `swagger.json`, `apimesh-docs.html`, `run.sh`, and `config.json` side-by-side inside the `apimesh/` workspace folder.
 
 ---
 

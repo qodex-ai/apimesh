@@ -56,13 +56,20 @@ cd apimesh
 
 ### Running the generator (two common paths)
 
-**A) One-liner script (quickest)**
+**A) One-liner script (quickest)**  
+Create a dedicated `apimesh` workspace folder inside the repo you want to analyze.
 ```bash
 # Fetch and run the helper script (see README for the latest command/flags)
-curl -sSL https://raw.githubusercontent.com/qodex-ai/apimesh/refs/heads/main/bootstrap_swagger_generator.sh -o swagger_bootstrap.sh
-chmod +x swagger_bootstrap.sh
-./swagger_bootstrap.sh --repo-path {repo_path} --project-api-key {project_api_key} --ai-chat-id {ai_chat_id}
+mkdir -p apimesh
+cd apimesh
+curl -sSL https://raw.githubusercontent.com/qodex-ai/apimesh/refs/heads/main/run.sh -o run.sh
+chmod +x run.sh
+./run.sh --repo-path .. --project-api-key {project_api_key} --ai-chat-id {ai_chat_id}
 ```
+
+> After completion you should always see `config.json`, `swagger.json`, `apimesh-docs.html`, and `run.sh` inside your repo's `apimesh/` workspace.
+
+> The bootstrap helper removes its temporary clone and virtual environment after it finishes generating docs, so rerun the snippet whenever you need to refresh the output.
 
 **B) Run as an MCP server**
 ```bash
@@ -109,7 +116,7 @@ We aim for clear, readable Python and tidy shell scripts.
 Before you open a PR:
 
 - [ ] The change is documented (README or inline comments as needed).
-- [ ] Scripts still work (`bootstrap_swagger_generator.sh`, `bootstrap_mcp_runner.sh` if applicable).
+- [ ] Scripts still work (`run.sh`, `bootstrap_mcp_runner.sh` if applicable).
 - [ ] Any new flags or behavior are reflected in the README examples.
 - [ ] Code is reasonably linted/typed (if you added type hints).
 - [ ] Tests added or manual test steps documented (see below).
@@ -142,7 +149,7 @@ If you add unit tests:
 ## 🧱 Project Structure (high level)
 
 - `swagger_mcp.py` — MCP server entry and core orchestration.
-- `legacy_swagger_pipeline.py`, `bootstrap_swagger_generator.sh`, `bootstrap_mcp_runner.sh` — runner/helper scripts.
+- `legacy_swagger_pipeline.py`, `run.sh`, `bootstrap_mcp_runner.sh` — runner/helper scripts.
 - `ruby_dependencies.py` — language-specific helpers (example).
 - `README.md`, `CODE_OF_CONDUCT.md`, `security.md`, `LICENSE.md` — docs & policies.
 
