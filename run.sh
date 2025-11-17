@@ -228,7 +228,7 @@ if [[ "$SCRIPT_PATH" != "$TARGET_RUN_SCRIPT" ]]; then
 fi
 inject_clone_config
 
-if [[ -z "$OPENAI_API_KEY" ]]; then
+if [[ -z "$OPENAI_API_KEY" || "$OPENAI_API_KEY" == "null" ]]; then
   OPENAI_API_KEY="$(load_config_value "openai_api_key" | tr -d '\r\n')"
 fi
 
