@@ -30,6 +30,7 @@ pip3 install tree-sitter==0.25.1
 pip3 install tree-sitter-python==0.23.6
 pip3 install tree-sitter-javascript==0.23.1
 pip3 install tree-sitter-ruby==0.23.1
+pip3 install tree-sitter-go==0.25.0
 pip3 install esprima==4.0.1
 echo "Installed the requirements"
 echo ""
