@@ -80,6 +80,15 @@ sync_workspace_config() {
     fi
 }
 
+inject_clone_config() {
+    local source="$APIMESH_PARENT_DIR/$CONFIG_FILE_NAME"
+    if [[ ! -s "$source" || -z "$CLONE_DIR" || ! -d "$CLONE_DIR" ]]; then
+        return
+    }
+    local legacy_target="$CLONE_DIR/apimesh/.qodexai"
+    mkdir -p "$legacy_target"
+    cp "$source" "$legacy_target/$CONFIG_FILE_NAME"
+}
 cleanup() {
     local exit_code=$?
     trap - EXIT
@@ -216,6 +225,7 @@ if [[ "$SCRIPT_PATH" != "$TARGET_RUN_SCRIPT" ]]; then
   chmod +x "$TARGET_RUN_SCRIPT"
   echo "Ensured workspace bootstrap script is up to date at '$TARGET_RUN_SCRIPT'."
 fi
+inject_clone_config
 
 if [[ -z "$OPENAI_API_KEY" ]]; then
   OPENAI_API_KEY="$(load_config_value "openai_api_key" | tr -d '\r\n')"
