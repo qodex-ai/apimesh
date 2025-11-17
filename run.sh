@@ -9,6 +9,7 @@ VENV_PATH="$CURRENT_DIR/$VENV_DIR"
 SCRIPT_SOURCE="${BASH_SOURCE[0]:-$0}"
 SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_SOURCE")" && pwd -P)"
 SCRIPT_PATH="$SCRIPT_DIR/$(basename "$SCRIPT_SOURCE")"
+CONFIG_FILE_NAME="config.json"
 
 resolve_target_repo_path() {
     local dir="$1"
@@ -32,8 +33,30 @@ resolve_target_repo_path() {
     return 0
 }
 
+load_config_value() {
+    local key="$1"
+    local file="$APIMESH_PARENT_DIR/$CONFIG_FILE_NAME"
+    if [[ ! -f "$file" ]]; then
+        return
+    fi
+    python3 - "$file" "$key" <<'PY'
+import json, sys
+path, key = sys.argv[1], sys.argv[2]
+try:
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    value = data.get(key, "")
+    if isinstance(value, str):
+        print(value.strip())
+    else:
+        print(value)
+except Exception:
+    pass
+PY
+}
+
 sync_workspace_config() {
-    local expected="$APIMESH_PARENT_DIR/config.json"
+    local expected="$APIMESH_PARENT_DIR/$CONFIG_FILE_NAME"
     mkdir -p "$(dirname "$expected")"
 
     if [[ -s "$expected" ]]; then
@@ -192,6 +215,10 @@ if [[ "$SCRIPT_PATH" != "$TARGET_RUN_SCRIPT" ]]; then
   cp "$SCRIPT_PATH" "$TARGET_RUN_SCRIPT"
   chmod +x "$TARGET_RUN_SCRIPT"
   echo "Ensured workspace bootstrap script is up to date at '$TARGET_RUN_SCRIPT'."
+fi
+
+if [[ -z "$OPENAI_API_KEY" ]]; then
+  OPENAI_API_KEY="$(load_config_value "openai_api_key" | tr -d '\r\n')"
 fi
 
 
