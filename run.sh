@@ -84,7 +84,7 @@ inject_clone_config() {
     local source="$APIMESH_PARENT_DIR/$CONFIG_FILE_NAME"
     if [[ ! -s "$source" || -z "$CLONE_DIR" || ! -d "$CLONE_DIR" ]]; then
         return
-    }
+    fi
     local legacy_target="$CLONE_DIR/apimesh/.qodexai"
     mkdir -p "$legacy_target"
     cp "$source" "$legacy_target/$CONFIG_FILE_NAME"
