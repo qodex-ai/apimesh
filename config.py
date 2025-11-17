@@ -25,8 +25,7 @@ class Configurations:
             self.user_config_file_dir = os.path.join("/workspace", config_dir_name)
         else:
             # Use user's home directory for config
-            home_dir = os.path.expanduser("~")
-            self.user_config_file_dir = os.path.join(home_dir, config_dir_name)
+            self.user_config_file_dir = os.path.join(os.getcwd(), config_dir_name)
 
     def _load_config(self, config_path):
         """Loads configuration from a YAML file."""
