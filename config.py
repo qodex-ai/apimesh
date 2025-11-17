@@ -16,16 +16,26 @@ class Configurations:
         self.routing_patters_map = self.config.get("routing_patterns_map", {})
         self.gpt_4o_model_name = self.config.get("gpt_4o_model_name", "gpt-4o")
 
-        # Determine user config directory - prioritize user-mounted folders
-        config_dir_name = self.config.get("user_config_file_dir", "apimesh/.qodexai")
+        config_dir_name = self.config.get("user_config_file_dir", "apimesh")
+        workspace_override = os.environ.get("APIMESH_PARENT_DIR")
 
-        # Check if /workspace exists (Docker mounted volume)
-        if os.path.exists("/workspace") and os.path.isdir("/workspace"):
-            # Use mounted volume directory
-            self.user_config_file_dir = os.path.join("/workspace", config_dir_name)
+        if workspace_override:
+            self.user_config_file_dir = os.path.abspath(workspace_override)
         else:
-            # Use user's home directory for config
-            self.user_config_file_dir = os.path.join(os.getcwd(), config_dir_name)
+            base_dir = "/workspace" if os.path.exists("/workspace") and os.path.isdir("/workspace") else os.getcwd()
+            if os.path.isabs(config_dir_name):
+                resolved_dir = config_dir_name
+            else:
+                resolved_dir = os.path.abspath(os.path.join(base_dir, config_dir_name))
+
+            current_dir = os.getcwd()
+            current_name = os.path.basename(current_dir.rstrip(os.sep))
+            parent_dir = os.path.dirname(current_dir)
+            parent_name = os.path.basename(parent_dir.rstrip(os.sep))
+            if current_name and current_name == parent_name:
+                resolved_dir = parent_dir
+
+            self.user_config_file_dir = resolved_dir
 
     def _load_config(self, config_path):
         """Loads configuration from a YAML file."""
@@ -34,5 +44,4 @@ class Configurations:
 
         with open(config_path, "r", encoding="utf-8") as file:
             return yaml.safe_load(file)
-
 

@@ -865,7 +865,11 @@ class RepoToSwagger:
 
 
 
-config_dir = f"{os.getcwd()}/.qodexai"
+workspace_override = os.environ.get("APIMESH_PARENT_DIR")
+if workspace_override:
+    config_dir = os.path.abspath(workspace_override)
+else:
+    config_dir = os.path.abspath(os.path.join(os.getcwd(), "apimesh"))
 config_file = os.path.join(config_dir, "config.json")
 os.makedirs(config_dir, exist_ok=True)
 def load_config():

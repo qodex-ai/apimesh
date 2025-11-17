@@ -108,11 +108,21 @@ Replace /path/to/swagger_mcp/swagger_mcp.py with the actual file path.
 
 ### Option 3: Curl
 
+Create a dedicated `apimesh` folder in your repo root so the generator can safely clone itself without touching your code.
+
 ```bash
-curl -sSL https://raw.githubusercontent.com/qodex-ai/apimesh/refs/heads/main/bootstrap_swagger_generator.sh -o swagger_bootstrap.sh \
-  && chmod +x swagger_bootstrap.sh \
-  && ./swagger_bootstrap.sh
+# Navigate to your repository
+cd /path/to/your/repo
+
+# Inside your repo root
+mkdir -p apimesh \
+  && cd apimesh \
+  && curl -sSL https://raw.githubusercontent.com/qodex-ai/apimesh/refs/heads/main/run.sh -o run.sh \
+  && chmod +x run.sh \
+  && ./run.sh
 ```
+
+> The bootstrap script automatically targets the parent repo directory when you run it from inside `apimesh`. If your project isn't tracked by Git, append `--repo-path ..` to the final command to force the correct path. The helper script cleans up its temporary clone and virtual environment after your docs are generated, so rerun the command whenever you need a fresh snapshot.
 
 ---
 
