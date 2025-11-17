@@ -121,7 +121,7 @@ mkdir -p apimesh \
   && ./run.sh
 ```
 
-> Each run leaves `swagger.json`, `apimesh-docs.html`, `run.sh`, and `config.json` side-by-side inside the `apimesh/` workspace folder. If your project isn't tracked by Git, append `--repo-path ..` to the final command to force the correct path.
+> Each run leaves `swagger.json`, `apimesh-docs.html`, `run.sh`, and `config.json` side-by-side inside the `apimesh/` workspace folder.
 
 ---
 
