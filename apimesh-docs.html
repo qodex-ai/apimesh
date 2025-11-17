@@ -1,652 +1,842 @@
 <!DOCTYPE html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Swagger API Viewer</title>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          "Helvetica Neue", Arial, sans-serif;
+        background: #f5f7fa;
+        padding: 24px;
+        min-height: 100vh;
+      }
+
+      .container {
+        max-width: 1400px;
+        margin: 0 auto;
+        background: white;
+        border-radius: 8px;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+        overflow: hidden;
+      }
+
+      .header {
+        background: white;
+        color: #1a1a1a;
+        padding: 24px 32px;
+        border-bottom: 1px solid #e5e7eb;
+      }
+
+      .header h1 {
+        font-size: 1.5em;
+        font-weight: 600;
+        margin-bottom: 12px;
+        color: #212732;
+      }
+
+      .header-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 24px;
+        font-size: 0.875rem;
+        color: #6b7280;
+      }
+
+      .header-meta-item {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .header-meta-label {
+        font-weight: 500;
+        color: #767b85;
+      }
+
+        .header-meta-value {
+          color: #212732;
+          font-family: "Courier New", monospace;
+          font-size: 0.875rem;
         }
 
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-            background: #f5f7fa;
-            padding: 24px;
-            min-height: 100vh;
+        .header-meta-value a {
+          color: #3b82f6;
+          text-decoration: none;
+          transition: color 0.2s;
         }
 
-        .container {
-            max-width: 1400px;
-            margin: 0 auto;
-            background: white;
-            border-radius: 8px;
-            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-            overflow: hidden;
+        .header-meta-value a:hover {
+          color: #2563eb;
+          text-decoration: underline;
         }
 
-        .header {
-            background: white;
-            color: #1a1a1a;
-            padding: 24px 32px;
-            border-bottom: 1px solid #e5e7eb;
+      .summary-cards {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 16px;
+        padding: 24px 32px;
+        background: white;
+        border-bottom: 1px solid #e5e7eb;
+      }
+
+      .summary-card {
+        background: white;
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        padding: 20px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+
+      .summary-card-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .summary-card-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        display: inline-block;
+      }
+
+      .summary-card-dot.green {
+        background: #10b981;
+      }
+      .summary-card-dot.orange {
+        background: #f59e0b;
+      }
+      .summary-card-dot.blue {
+        background: #3b82f6;
+      }
+      .summary-card-dot.grey {
+        background: #6b7280;
+      }
+      .summary-card-dot.red {
+        background: #ef4444;
+      }
+
+      .summary-card-label {
+        font-size: 0.875rem;
+        color: #212732;
+        font-weight: 500;
+      }
+
+      .summary-card-content {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+      }
+
+      .summary-card-count {
+        font-size: 1.875rem;
+        font-weight: 600;
+        color: #212732;
+      }
+
+      .summary-card-percentage {
+        font-size: 0.875rem;
+        color: #212732;
+        font-weight: 500;
+      }
+
+      .controls {
+        padding: 16px 32px;
+        background: white;
+        border-bottom: 1px solid #e5e7eb;
+        display: flex;
+        align-items: flex-end;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+
+      .search-box {
+        flex: 1;
+        min-width: 250px;
+        padding: 10px 16px;
+        border: 1px solid #d1d5db;
+        border-radius: 6px;
+        font-size: 14px;
+        transition: border-color 0.2s;
+        background: white;
+        height: 38px;
+        box-sizing: border-box;
+      }
+
+      .search-box:focus {
+        outline: none;
+        border-color: #3b82f6;
+        box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+      }
+
+      .filters-container {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        align-items: flex-end;
+        flex: 2;
+        min-width: 0;
+      }
+
+      .filter-group {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        min-width: 120px;
+        flex: 0 1 auto;
+      }
+
+      .filter-label {
+        font-size: 0.75rem;
+        font-weight: 600;
+        color: #767b85;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+
+      .filter-select {
+        padding: 8px 12px;
+        border: 1px solid #d1d5db;
+        border-radius: 6px;
+        font-size: 14px;
+        background: white;
+        color: #212732;
+        cursor: pointer;
+        transition: border-color 0.2s;
+        height: 38px;
+        box-sizing: border-box;
+      }
+
+      .filter-select:focus {
+        outline: none;
+        border-color: #3b82f6;
+        box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+      }
+
+      .filter-select option {
+        padding: 8px 12px;
+      }
+
+
+      .table-container {
+        padding: 0;
+        overflow-x: auto;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        background: white;
+      }
+
+      thead {
+        background: #f9fafb;
+        border-bottom: 1px solid #dedfe1;
+      }
+
+      th {
+        padding: 12px 16px;
+        text-align: left;
+        font-weight: 600;
+        font-size: 0.75rem;
+        text-transform: capitalize;
+        letter-spacing: 0.05em;
+        color: #767b85;
+        position: sticky;
+        top: 0;
+        background: #fff;
+        z-index: 10;
+      }
+
+      tbody tr {
+        border-bottom: 1px solid #dedfe1;
+        transition: background-color 0.15s ease;
+        background: white;
+      }
+
+      tbody tr:hover {
+        background-color: #e7e9ec80;
+      }
+
+      tbody tr:last-child {
+        border-bottom: none;
+      }
+
+      td {
+        padding: 18px 15px;
+        vertical-align: middle;
+        color: #212732;
+        position: relative;
+        overflow: visible;
+        font-size: 0.875rem;
+        background: inherit;
+      }
+
+      .method-badge {
+        display: inline-block;
+        padding: 4px 8px;
+        border-radius: 4px;
+        font-weight: 600;
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.025em;
+      }
+
+      .method-get {
+        background: #dbeafe;
+        color: #1e40af;
+      }
+      .method-post {
+        background: #fef3c7;
+        color: #92400e;
+      }
+      .method-put {
+        background: #fce7f3;
+        color: #9f1239;
+      }
+      .method-patch {
+        background: #e0e7ff;
+        color: #3730a3;
+      }
+      .method-delete {
+        background: #fee2e2;
+        color: #991b1b;
+      }
+
+      .body-type {
+        padding: 4px 8px;
+        background: #f3f4f6;
+        border-radius: 4px;
+        font-size: 0.75rem;
+        display: inline-block;
+        color: #212732;
+      }
+
+      .auth-yes {
+        padding: 4px 8px;
+        background: #d1fae5;
+        color: #065f46;
+        border-radius: 4px;
+        font-size: 0.75rem;
+        display: inline-block;
+        font-weight: 600;
+      }
+
+      .auth-no {
+        padding: 4px 8px;
+        background: #fee2e2;
+        color: #991b1b;
+        border-radius: 4px;
+        font-size: 0.75rem;
+        display: inline-block;
+        font-weight: 600;
+      }
+
+      .auth-na {
+        padding: 4px 8px;
+        background: #f3f4f6;
+        color: #6b7280;
+        border-radius: 4px;
+        font-size: 0.75rem;
+        display: inline-block;
+      }
+
+      .description-container {
+        position: relative;
+        cursor: help;
+      }
+
+      .description-container:hover .tooltip {
+        visibility: visible;
+        opacity: 1;
+      }
+
+      .tooltip {
+        visibility: hidden;
+        opacity: 0;
+        position: absolute;
+        z-index: 1000;
+        bottom: 100%;
+        left: 0;
+        margin-bottom: 8px;
+        background-color: #333;
+        color: white;
+        padding: 10px 14px;
+        border-radius: 6px;
+        font-size: 0.9em;
+        max-width: 400px;
+        word-wrap: break-word;
+        white-space: normal;
+        line-height: 1.4;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+        transition: opacity 0.3s, visibility 0.3s;
+        pointer-events: none;
+      }
+
+      .tooltip::after {
+        content: "";
+        position: absolute;
+        top: 100%;
+        left: 20px;
+        border-width: 6px;
+        border-style: solid;
+        border-color: #333 transparent transparent transparent;
+      }
+
+      .error-message {
+        padding: 30px;
+        text-align: center;
+        color: #dc3545;
+        font-size: 1.1em;
+      }
+
+      .loading {
+        padding: 30px;
+        text-align: center;
+        color: #667eea;
+        font-size: 1.1em;
+      }
+
+      .no-results {
+        padding: 40px;
+        text-align: center;
+        color: #6c757d;
+        font-size: 1.1em;
+      }
+
+      .footer {
+        padding: 24px 32px;
+        background: white;
+        border-top: 1px solid #e5e7eb;
+        text-align: center;
+        color: #6b7280;
+        font-size: 0.875rem;
+      }
+
+      .footer a {
+        color: #3b82f6;
+        text-decoration: none;
+        font-weight: 500;
+      }
+
+      .footer a:hover {
+        text-decoration: underline;
+      }
+
+      @media (max-width: 768px) {
+        .summary-cards {
+          grid-template-columns: repeat(2, 1fr);
         }
 
         .header h1 {
-            font-size: 1.5em;
-            font-weight: 600;
-            margin-bottom: 0;
-            color: #212732;
+          font-size: 1.5em;
         }
 
-        .summary-cards {
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            gap: 16px;
-            padding: 24px 32px;
-            background: white;
-            border-bottom: 1px solid #e5e7eb;
+        .header-meta {
+          flex-direction: column;
+          gap: 12px;
         }
 
-        .summary-card {
-            background: white;
-            border: 1px solid #e5e7eb;
-            border-radius: 8px;
-            padding: 20px;
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-        }
-
-        .summary-card-header {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        .summary-card-dot {
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            display: inline-block;
-        }
-
-        .summary-card-dot.green { background: #10b981; }
-        .summary-card-dot.orange { background: #f59e0b; }
-        .summary-card-dot.blue { background: #3b82f6; }
-        .summary-card-dot.grey { background: #6b7280; }
-        .summary-card-dot.red { background: #ef4444; }
-
-        .summary-card-label {
-            font-size: 0.875rem;
-            color: #212732;
-            font-weight: 500;
-        }
-
-        .summary-card-content {
-            display: flex;
-            align-items: baseline;
-            gap: 8px;
-        }
-
-        .summary-card-count {
-            font-size: 1.875rem;
-            font-weight: 600;
-            color: #212732;
-        }
-
-        .summary-card-percentage {
-            font-size: 0.875rem;
-            color: #212732;
-            font-weight: 500;
+        .header-meta-item {
+          flex-direction: column;
+          align-items: flex-start;
+          gap: 4px;
         }
 
         .controls {
-            padding: 16px 32px;
-            background: white;
-            border-bottom: 1px solid #e5e7eb;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            flex-wrap: wrap;
-            gap: 16px;
+          flex-direction: column;
+          align-items: stretch;
         }
 
         .search-box {
-            flex: 1;
-            min-width: 250px;
-            padding: 10px 16px;
-            border: 1px solid #d1d5db;
-            border-radius: 6px;
-            font-size: 14px;
-            transition: border-color 0.2s;
-            background: white;
-        }
-
-        .search-box:focus {
-            outline: none;
-            border-color: #3b82f6;
-            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+          width: 100%;
         }
 
         .filters-container {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 12px;
-            width: 100%;
-            margin-top: 16px;
+          width: 100%;
+          flex: 1 1 100%;
         }
 
         .filter-group {
-            display: flex;
-            flex-direction: column;
-            gap: 6px;
-            min-width: 150px;
-            flex: 1;
+          flex: 1 1 calc(50% - 6px);
+          min-width: 120px;
         }
 
-        .filter-label {
-            font-size: 0.75rem;
-            font-weight: 600;
-            color: #767B85;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-        }
-
-        .filter-select {
-            padding: 8px 12px;
-            border: 1px solid #d1d5db;
-            border-radius: 6px;
-            font-size: 14px;
-            background: white;
-            color: #212732;
-            cursor: pointer;
-            transition: border-color 0.2s;
-            min-height: 38px;
-        }
-
-        .filter-select:focus {
-            outline: none;
-            border-color: #3b82f6;
-            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
-        }
-
-        .filter-select option {
-            padding: 8px 12px;
-        }
-
-        .clear-filters {
-            padding: 8px 16px;
-            background: #f3f4f6;
-            border: 1px solid #d1d5db;
-            border-radius: 6px;
-            font-size: 14px;
-            color: #212732;
-            cursor: pointer;
-            transition: all 0.2s;
-            align-self: flex-end;
-            margin-top: 24px;
-        }
-
-        .clear-filters:hover {
-            background: #e5e7eb;
-            border-color: #9ca3af;
-        }
-
-        .table-container {
-            padding: 0;
-            overflow-x: auto;
-        }
 
         table {
-            width: 100%;
-            border-collapse: collapse;
-            background: white;
+          font-size: 0.9em;
         }
 
-        thead {
-            background: #f9fafb;
-            border-bottom: 1px solid #dedfe1;
-        }
-
-        th {
-            padding: 12px 16px;
-            text-align: left;
-            font-weight: 600;
-            font-size: 0.75rem;
-            text-transform: capitalize;
-            letter-spacing: 0.05em;
-            color: #767B85;
-            position: sticky;
-            top: 0;
-            background: #fff;
-            z-index: 10;
-        }
-
-        tbody tr {
-            border-bottom: 1px solid #dedfe1;
-            transition: background-color 0.15s ease;
-            background: white;
-        }
-
-        tbody tr:hover {
-            background-color: #e7e9ec80;
-        }
-
-        tbody tr:last-child {
-            border-bottom: none;
-        }
-
+        th,
         td {
-            padding: 18px 15px;
-            vertical-align: middle;
-            color: #212732;
-            position: relative;
-            overflow: visible;
-            font-size: 0.875rem;
-            background: inherit;
+          padding: 12px 8px;
         }
-
-        .method-badge {
-            display: inline-block;
-            padding: 4px 8px;
-            border-radius: 4px;
-            font-weight: 600;
-            font-size: 0.75rem;
-            text-transform: uppercase;
-            letter-spacing: 0.025em;
-        }
-
-        .method-get { background: #dbeafe; color: #1e40af; }
-        .method-post { background: #fef3c7; color: #92400e; }
-        .method-put { background: #fce7f3; color: #9f1239; }
-        .method-patch { background: #e0e7ff; color: #3730a3; }
-        .method-delete { background: #fee2e2; color: #991b1b; }
-
-        .body-type {
-            padding: 4px 8px;
-            background: #f3f4f6;
-            border-radius: 4px;
-            font-size: 0.75rem;
-            display: inline-block;
-            color: #212732;
-        }
-
-        .auth-yes {
-            padding: 4px 8px;
-            background: #d1fae5;
-            color: #065f46;
-            border-radius: 4px;
-            font-size: 0.75rem;
-            display: inline-block;
-            font-weight: 600;
-        }
-
-        .auth-no {
-            padding: 4px 8px;
-            background: #fee2e2;
-            color: #991b1b;
-            border-radius: 4px;
-            font-size: 0.75rem;
-            display: inline-block;
-            font-weight: 600;
-        }
-
-        .auth-na {
-            padding: 4px 8px;
-            background: #f3f4f6;
-            color: #6b7280;
-            border-radius: 4px;
-            font-size: 0.75rem;
-            display: inline-block;
-        }
-
-        .description-container {
-            position: relative;
-            cursor: help;
-        }
-
-        .description-container:hover .tooltip {
-            visibility: visible;
-            opacity: 1;
-        }
-
-        .tooltip {
-            visibility: hidden;
-            opacity: 0;
-            position: absolute;
-            z-index: 1000;
-            bottom: 100%;
-            left: 0;
-            margin-bottom: 8px;
-            background-color: #333;
-            color: white;
-            padding: 10px 14px;
-            border-radius: 6px;
-            font-size: 0.9em;
-            max-width: 400px;
-            word-wrap: break-word;
-            white-space: normal;
-            line-height: 1.4;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-            transition: opacity 0.3s, visibility 0.3s;
-            pointer-events: none;
-        }
-
-        .tooltip::after {
-            content: "";
-            position: absolute;
-            top: 100%;
-            left: 20px;
-            border-width: 6px;
-            border-style: solid;
-            border-color: #333 transparent transparent transparent;
-        }
-
-        .error-message {
-            padding: 30px;
-            text-align: center;
-            color: #dc3545;
-            font-size: 1.1em;
-        }
-
-        .loading {
-            padding: 30px;
-            text-align: center;
-            color: #667eea;
-            font-size: 1.1em;
-        }
-
-        .no-results {
-            padding: 40px;
-            text-align: center;
-            color: #6c757d;
-            font-size: 1.1em;
-        }
-
-        .footer {
-            padding: 24px 32px;
-            background: white;
-            border-top: 1px solid #e5e7eb;
-            text-align: center;
-            color: #6b7280;
-            font-size: 0.875rem;
-        }
-
-        .footer a {
-            color: #3b82f6;
-            text-decoration: none;
-            font-weight: 500;
-        }
-
-        .footer a:hover {
-            text-decoration: underline;
-        }
-
-        @media (max-width: 768px) {
-            .summary-cards {
-                grid-template-columns: repeat(2, 1fr);
-            }
-
-            .header h1 {
-                font-size: 1.5em;
-            }
-
-            .controls {
-                flex-direction: column;
-                align-items: stretch;
-            }
-
-            .search-box {
-                width: 100%;
-            }
-
-            .filters-container {
-                flex-direction: column;
-            }
-
-            .filter-group {
-                width: 100%;
-            }
-
-            .clear-filters {
-                align-self: stretch;
-                margin-top: 12px;
-            }
-
-            table {
-                font-size: 0.9em;
-            }
-
-            th, td {
-                padding: 12px 8px;
-            }
-        }
+      }
     </style>
-</head>
-<body>
+  </head>
+  <body>
     <div class="container">
-        <div class="header">
-            <h1>API Documentation</h1>
+      <div class="header">
+        <h1>API Documentation</h1>
+        <div class="header-meta">
+          <div
+            class="header-meta-item"
+            id="timestampMeta"
+            style="display: none"
+          >
+            <span class="header-meta-label">Generated:</span>
+            <span class="header-meta-value" id="timestampValue"></span>
+          </div>
+          <div class="header-meta-item" id="commitMeta" style="display: none">
+            <span class="header-meta-label">Commit:</span>
+            <span class="header-meta-value" id="commitValue"></span>
+          </div>
         </div>
+      </div>
 
-        <div class="summary-cards" id="summaryCards">
-            <div class="summary-card">
-                <div class="summary-card-header">
-                    <span class="summary-card-dot green"></span>
-                    <span class="summary-card-label">Total APIs</span>
-                </div>
-                <div class="summary-card-content">
-                    <span class="summary-card-count" id="totalApisCard">0</span>
-                    <span class="summary-card-percentage" id="totalApisPercent">0%</span>
-                </div>
-            </div>
-            <div class="summary-card">
-                <div class="summary-card-header">
-                    <span class="summary-card-dot green"></span>
-                    <span class="summary-card-label">Authorized</span>
-                </div>
-                <div class="summary-card-content">
-                    <span class="summary-card-count" id="authRequiredCard">0</span>
-                    <span class="summary-card-percentage" id="authRequiredPercent">0%</span>
-                </div>
-            </div>
-            <div class="summary-card">
-                <div class="summary-card-header">
-                    <span class="summary-card-dot red"></span>
-                    <span class="summary-card-label">Unauthorized</span>
-                </div>
-                <div class="summary-card-content">
-                    <span class="summary-card-count" id="noAuthCard">0</span>
-                    <span class="summary-card-percentage" id="noAuthPercent">0%</span>
-                </div>
-            </div>
-            <div class="summary-card">
-                <div class="summary-card-header">
-                    <span class="summary-card-dot grey"></span>
-                    <span class="summary-card-label">Filtered APIs</span>
-                </div>
-                <div class="summary-card-content">
-                    <span class="summary-card-count" id="filteredApisCard">0</span>
-                    <span class="summary-card-percentage" id="filteredApisPercent">0%</span>
-                </div>
-            </div>
+      <div class="summary-cards" id="summaryCards">
+        <div class="summary-card">
+          <div class="summary-card-header">
+            <span class="summary-card-dot green"></span>
+            <span class="summary-card-label">Total APIs</span>
+          </div>
+          <div class="summary-card-content">
+            <span class="summary-card-count" id="totalApisCard">0</span>
+            <span class="summary-card-percentage" id="totalApisPercent"
+              >0%</span
+            >
+          </div>
         </div>
+        <div class="summary-card">
+          <div class="summary-card-header">
+            <span class="summary-card-dot green"></span>
+            <span class="summary-card-label">Authorized</span>
+          </div>
+          <div class="summary-card-content">
+            <span class="summary-card-count" id="authRequiredCard">0</span>
+            <span class="summary-card-percentage" id="authRequiredPercent"
+              >0%</span
+            >
+          </div>
+        </div>
+        <div class="summary-card">
+          <div class="summary-card-header">
+            <span class="summary-card-dot red"></span>
+            <span class="summary-card-label">Unauthorized</span>
+          </div>
+          <div class="summary-card-content">
+            <span class="summary-card-count" id="noAuthCard">0</span>
+            <span class="summary-card-percentage" id="noAuthPercent">0%</span>
+          </div>
+        </div>
+        <div class="summary-card">
+          <div class="summary-card-header">
+            <span class="summary-card-dot grey"></span>
+            <span class="summary-card-label">Filtered APIs</span>
+          </div>
+          <div class="summary-card-content">
+            <span class="summary-card-count" id="filteredApisCard">0</span>
+            <span class="summary-card-percentage" id="filteredApisPercent"
+              >0%</span
+            >
+          </div>
+        </div>
+      </div>
 
-        <div class="controls">
-            <input type="text" id="searchBox" class="search-box" placeholder="Search APIs by URL, method, or description...">
-            <div class="filters-container">
-                <div class="filter-group">
-                    <label class="filter-label" for="methodFilter">Method</label>
-                    <select id="methodFilter" class="filter-select">
-                        <option value="">All</option>
-                        <option value="GET">GET</option>
-                        <option value="POST">POST</option>
-                        <option value="PUT">PUT</option>
-                        <option value="PATCH">PATCH</option>
-                        <option value="DELETE">DELETE</option>
-                        <option value="OPTIONS">OPTIONS</option>
-                        <option value="HEAD">HEAD</option>
-                    </select>
-                </div>
-                <div class="filter-group">
-                    <label class="filter-label" for="authFilter">Authorization</label>
-                    <select id="authFilter" class="filter-select">
-                        <option value="">All</option>
-                        <option value="Yes">Yes</option>
-                        <option value="No">No</option>
-                        <option value="N/A">N/A</option>
-                    </select>
-                </div>
-                <div class="filter-group">
-                    <label class="filter-label" for="moduleFilter">Module</label>
-                    <select id="moduleFilter" class="filter-select">
-                        <option value="">All</option>
-                    </select>
-                </div>
-                <div class="filter-group">
-                    <label class="filter-label" for="tagFilter">Tags</label>
-                    <select id="tagFilter" class="filter-select">
-                        <option value="">All</option>
-                    </select>
-                </div>
-                <button class="clear-filters" id="clearFilters">Clear Filters</button>
-            </div>
+      <div class="controls">
+        <input
+          type="text"
+          id="searchBox"
+          class="search-box"
+          placeholder="Search APIs by URL, method, or description..."
+        />
+        <div class="filters-container">
+          <div class="filter-group">
+            <label class="filter-label" for="methodFilter">Method</label>
+            <select id="methodFilter" class="filter-select">
+              <option value="">All</option>
+              <option value="GET">GET</option>
+              <option value="POST">POST</option>
+              <option value="PUT">PUT</option>
+              <option value="PATCH">PATCH</option>
+              <option value="DELETE">DELETE</option>
+              <option value="OPTIONS">OPTIONS</option>
+              <option value="HEAD">HEAD</option>
+            </select>
+          </div>
+          <div class="filter-group">
+            <label class="filter-label" for="authFilter">Authorization</label>
+            <select id="authFilter" class="filter-select">
+              <option value="">All</option>
+              <option value="Yes">Yes</option>
+              <option value="No">No</option>
+              <option value="N/A">N/A</option>
+            </select>
+          </div>
+          <div class="filter-group">
+            <label class="filter-label" for="moduleFilter">Module</label>
+            <select id="moduleFilter" class="filter-select">
+              <option value="">All</option>
+            </select>
+          </div>
+          <div class="filter-group">
+            <label class="filter-label" for="tagFilter">Tags</label>
+            <select id="tagFilter" class="filter-select">
+              <option value="">All</option>
+            </select>
+          </div>
         </div>
+      </div>
 
-        <div class="table-container">
-            <div id="loading" class="loading">Loading Swagger documentation...</div>
-            <div id="error" class="error-message" style="display: none;"></div>
-            <div id="noResults" class="no-results" style="display: none;">No APIs found matching your search.</div>
-            <table id="apiTable" style="display: none;">
-                <thead>
-                    <tr>
-                        <th>Method</th>
-                        <th>Api Path</th>
-                        <th>Summary & Description</th>
-                        <th>Authorization Required</th>
-                        <th>Module</th>
-                        <th>Tags</th>
-                    </tr>
-                </thead>
-                <tbody id="apiTableBody">
-                </tbody>
-            </table>
+      <div class="table-container">
+        <div id="loading" class="loading">Loading Swagger documentation...</div>
+        <div id="error" class="error-message" style="display: none"></div>
+        <div id="noResults" class="no-results" style="display: none">
+          No APIs found matching your search.
         </div>
+        <table id="apiTable" style="display: none">
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>Api Path</th>
+              <th>Summary & Description</th>
+              <th>Authorization Required</th>
+              <th>Module</th>
+              <th>Tags</th>
+            </tr>
+          </thead>
+          <tbody id="apiTableBody"></tbody>
+        </table>
+      </div>
 
-        <div class="footer">
-            Powered By <a href="https://github.com/qodex-ai/apimesh" target="_blank">ApiMesh</a>
-        </div>
+      <div class="footer">
+        Powered By
+        <a href="https://github.com/qodex-ai/apimesh" target="_blank"
+          >ApiMesh</a
+        >
+      </div>
     </div>
 
     <script>
-        const SWAGGER_FILE = 'swagger.json';
-        
-        // Check if swagger data is embedded (to avoid CORS issues)
-        const USE_EMBEDDED_DATA = typeof EMBEDDED_SWAGGER_DATA !== 'undefined';
+      const SWAGGER_FILE = "swagger.json";
 
-        function getSwaggerFilePath() {
-            // Try to get the swagger.json path relative to this HTML file
-            // If running from Docker, it should be in the same directory
-            const currentPath = window.location.pathname;
-            const htmlDir = currentPath.substring(0, currentPath.lastIndexOf('/'));
-            return htmlDir + '/' + SWAGGER_FILE;
+      // Check if swagger data is embedded (to avoid CORS issues)
+      const USE_EMBEDDED_DATA = typeof EMBEDDED_SWAGGER_DATA !== "undefined";
+
+      function getSwaggerFilePath() {
+        // Try to get the swagger.json path relative to this HTML file
+        // If running from Docker, it should be in the same directory
+        const currentPath = window.location.pathname;
+        const htmlDir = currentPath.substring(0, currentPath.lastIndexOf("/"));
+        return htmlDir + "/" + SWAGGER_FILE;
+      }
+
+      function truncateText(text, maxLength) {
+        if (!text) return "";
+        if (text.length <= maxLength) return text;
+        return text.substring(0, maxLength) + "...";
+      }
+
+      function getAuthorizationRequired(authorizationTag) {
+        if (!authorizationTag) return "N/A";
+        return authorizationTag === "Authorization Required" ? "Yes" : "No";
+      }
+
+      function formatTags(tags) {
+        if (!tags || !Array.isArray(tags) || tags.length === 0) return "N/A";
+        return tags.join(", ");
+      }
+
+      function formatTimestamp(timestamp) {
+        if (!timestamp) return null;
+
+        try {
+          // Try to parse as ISO date string
+          const date = new Date(timestamp);
+          if (isNaN(date.getTime())) return timestamp; // Return as-is if not a valid date
+
+          // Format as: "Jan 15, 2024 at 3:45 PM"
+          const options = {
+            year: "numeric",
+            month: "short",
+            day: "numeric",
+            hour: "numeric",
+            minute: "2-digit",
+            hour12: true,
+          };
+          return date.toLocaleString("en-US", options);
+        } catch (e) {
+          return timestamp; // Return as-is if parsing fails
+        }
+      }
+
+      function displayMetadata(swaggerData) {
+        // Try multiple possible locations for timestamp
+        let timestamp =
+          swaggerData.generated_at ||
+          swaggerData.timestamp ||
+          swaggerData.generatedAt ||
+          (swaggerData.info && swaggerData.info.generated_at) ||
+          (swaggerData.info && swaggerData.info.timestamp) ||
+          (swaggerData.info && swaggerData.info.generatedAt);
+
+        // Try multiple possible locations for commit reference
+        let commitRef =
+          swaggerData.commit_reference ||
+          swaggerData.commit ||
+          swaggerData.commitReference ||
+          (swaggerData.info && swaggerData.info.commit_reference) ||
+          (swaggerData.info && swaggerData.info.commit) ||
+          (swaggerData.info && swaggerData.info.commitReference);
+
+        // Try multiple possible locations for GitHub repo URL
+        let githubRepoUrl =
+          swaggerData.github_repo_url ||
+          swaggerData.githubRepoUrl ||
+          (swaggerData.info && swaggerData.info.github_repo_url) ||
+          (swaggerData.info && swaggerData.info.githubRepoUrl);
+
+        // Display timestamp if available
+        if (timestamp) {
+          const formattedTimestamp = formatTimestamp(timestamp);
+          document.getElementById("timestampValue").textContent =
+            formattedTimestamp;
+          document.getElementById("timestampMeta").style.display = "flex";
         }
 
-        function truncateText(text, maxLength) {
-            if (!text) return '';
-            if (text.length <= maxLength) return text;
-            return text.substring(0, maxLength) + '...';
+        // Display commit reference if available
+        if (commitRef) {
+          const commitValueEl = document.getElementById("commitValue");
+          
+          // If GitHub repo URL is available, make it a clickable link
+          if (githubRepoUrl && commitRef) {
+            const commitUrl = `${githubRepoUrl}/commits/${commitRef}`;
+            commitValueEl.innerHTML = `<a href="${escapeHtml(commitUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(commitRef.substring(0, 7))}</a>`;
+          } else {
+            commitValueEl.textContent = commitRef;
+          }
+          
+          document.getElementById("commitMeta").style.display = "flex";
         }
+      }
 
-        function getAuthorizationRequired(authorizationTag) {
-            if (!authorizationTag) return 'N/A';
-            return authorizationTag === 'Authorization Required' ? 'Yes' : 'No';
-        }
+      function parseSwagger(swaggerData) {
+        const apis = [];
+        const paths = swaggerData.paths || {};
 
-        function formatTags(tags) {
-            if (!tags || !Array.isArray(tags) || tags.length === 0) return 'N/A';
-            return tags.join(', ');
-        }
+        Object.keys(paths).forEach((path) => {
+          const pathItem = paths[path];
+          const methods = [
+            "get",
+            "post",
+            "put",
+            "patch",
+            "delete",
+            "options",
+            "head",
+          ];
 
-        function parseSwagger(swaggerData) {
-            const apis = [];
-            const paths = swaggerData.paths || {};
+          methods.forEach((method) => {
+            if (pathItem[method]) {
+              const operation = pathItem[method];
 
-            Object.keys(paths).forEach(path => {
-                const pathItem = paths[path];
-                const methods = ['get', 'post', 'put', 'patch', 'delete', 'options', 'head'];
-                
-                methods.forEach(method => {
-                    if (pathItem[method]) {
-                        const operation = pathItem[method];
-                        
-                        apis.push({
-                            method: method.toUpperCase(),
-                            path: path,
-                            summary: operation.summary || '',
-                            api_description: operation.api_description || '',
-                            authorization_tag: operation.authorization_tag || '',
-                            module_tag: operation.module_tag || '',
-                            tags: operation.tags || []
-                        });
-                    }
-                });
-            });
-
-            return apis;
-        }
-
-        function renderTable(apis) {
-            const tbody = document.getElementById('apiTableBody');
-            tbody.innerHTML = '';
-
-            if (apis.length === 0) {
-                document.getElementById('noResults').style.display = 'block';
-                document.getElementById('apiTable').style.display = 'none';
-                return;
+              apis.push({
+                method: method.toUpperCase(),
+                path: path,
+                summary: operation.summary || "",
+                api_description: operation.api_description || "",
+                authorization_tag: operation.authorization_tag || "",
+                module_tag: operation.module_tag || "",
+                tags: operation.tags || [],
+              });
             }
+          });
+        });
 
-            document.getElementById('noResults').style.display = 'none';
-            document.getElementById('apiTable').style.display = 'table';
+        return apis;
+      }
 
-            apis.forEach(api => {
-                const row = document.createElement('tr');
-                const truncatedDescription = truncateText(api.api_description, 100);
-                const authorizationRequired = getAuthorizationRequired(api.authorization_tag);
-                const tagsFormatted = formatTags(api.tags);
-                const isTruncated = api.api_description && api.api_description.length > 100;
-                
-                // Build description HTML with tooltip if truncated
-                let descriptionHtml = '';
-                if (truncatedDescription) {
-                    if (isTruncated) {
-                        descriptionHtml = `
+      function renderTable(apis) {
+        const tbody = document.getElementById("apiTableBody");
+        tbody.innerHTML = "";
+
+        if (apis.length === 0) {
+          document.getElementById("noResults").style.display = "block";
+          document.getElementById("apiTable").style.display = "none";
+          return;
+        }
+
+        document.getElementById("noResults").style.display = "none";
+        document.getElementById("apiTable").style.display = "table";
+
+        apis.forEach((api) => {
+          const row = document.createElement("tr");
+          const truncatedDescription = truncateText(api.api_description, 100);
+          const authorizationRequired = getAuthorizationRequired(
+            api.authorization_tag
+          );
+          const tagsFormatted = formatTags(api.tags);
+          const isTruncated =
+            api.api_description && api.api_description.length > 100;
+
+          // Build description HTML with tooltip if truncated
+          let descriptionHtml = "";
+          if (truncatedDescription) {
+            if (isTruncated) {
+              descriptionHtml = `
                             <div class="description-container" style="display: inline-block;">
-                                <div style="font-size: 0.9em; color: #212732; line-height: 1.4;">${escapeHtml(truncatedDescription)}</div>
-                                <div class="tooltip">${escapeHtml(api.api_description)}</div>
+                                <div style="font-size: 0.9em; color: #212732; line-height: 1.4;">${escapeHtml(
+                                  truncatedDescription
+                                )}</div>
+                                <div class="tooltip">${escapeHtml(
+                                  api.api_description
+                                )}</div>
                             </div>
                         `;
-                    } else {
-                        descriptionHtml = `<div style="font-size: 0.9em; color: #212732; line-height: 1.4;">${escapeHtml(truncatedDescription)}</div>`;
-                    }
-                }
-                
-                row.innerHTML = `
+            } else {
+              descriptionHtml = `<div style="font-size: 0.9em; color: #212732; line-height: 1.4;">${escapeHtml(
+                truncatedDescription
+              )}</div>`;
+            }
+          }
+
+          row.innerHTML = `
                     <td>
-                        <span class="method-badge method-${api.method.toLowerCase()}">${api.method}</span>
+                        <span class="method-badge method-${api.method.toLowerCase()}">${
+            api.method
+          }</span>
                     </td>
                     <td>
                         ${escapeHtml(api.path)}
                     </td>
                     <td>
-                        ${api.summary ? `<div style="font-weight: 600; margin-bottom: 8px; color: #212732;">${escapeHtml(api.summary)}</div>` : ''}
+                        ${
+                          api.summary
+                            ? `<div style="font-weight: 600; margin-bottom: 8px; color: #212732;">${escapeHtml(
+                                api.summary
+                              )}</div>`
+                            : ""
+                        }
                         ${descriptionHtml}
                     </td>
                     <td>
-                        <span class="${authorizationRequired === 'Yes' ? 'auth-yes' : authorizationRequired === 'No' ? 'auth-no' : 'auth-na'}">${escapeHtml(authorizationRequired)}</span>
+                        <span class="${
+                          authorizationRequired === "Yes"
+                            ? "auth-yes"
+                            : authorizationRequired === "No"
+                            ? "auth-no"
+                            : "auth-na"
+                        }">${escapeHtml(authorizationRequired)}</span>
                     </td>
                     <td>
                         ${escapeHtml(api.module_tag)}
@@ -655,194 +845,222 @@
                         ${escapeHtml(tagsFormatted)}
                     </td>
                 `;
-                tbody.appendChild(row);
-            });
+          tbody.appendChild(row);
+        });
+      }
+
+      function escapeHtml(text) {
+        const div = document.createElement("div");
+        div.textContent = text;
+        return div.innerHTML;
+      }
+
+      function getSelectedValue(selectElement) {
+        return selectElement.value || "";
+      }
+
+      function filterAPIs(apis, searchTerm, filters) {
+        let filtered = apis;
+
+        // Apply search filter
+        if (searchTerm) {
+          const term = searchTerm.toLowerCase();
+          filtered = filtered.filter(
+            (api) =>
+              api.method.toLowerCase().includes(term) ||
+              api.path.toLowerCase().includes(term) ||
+              (api.summary && api.summary.toLowerCase().includes(term)) ||
+              (api.api_description &&
+                api.api_description.toLowerCase().includes(term)) ||
+              (api.module_tag && api.module_tag.toLowerCase().includes(term)) ||
+              (api.tags &&
+                api.tags.some((tag) => tag.toLowerCase().includes(term)))
+          );
         }
 
-        function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
+        // Apply method filter
+        if (filters.method && filters.method !== "") {
+          filtered = filtered.filter((api) => api.method === filters.method);
         }
 
-        function getSelectedValue(selectElement) {
-            return selectElement.value || '';
+        // Apply authorization filter
+        if (filters.auth && filters.auth !== "") {
+          filtered = filtered.filter((api) => {
+            const authRequired = getAuthorizationRequired(
+              api.authorization_tag
+            );
+            return authRequired === filters.auth;
+          });
         }
 
-        function filterAPIs(apis, searchTerm, filters) {
-            let filtered = apis;
-
-            // Apply search filter
-            if (searchTerm) {
-                const term = searchTerm.toLowerCase();
-                filtered = filtered.filter(api => 
-                    api.method.toLowerCase().includes(term) ||
-                    api.path.toLowerCase().includes(term) ||
-                    (api.summary && api.summary.toLowerCase().includes(term)) ||
-                    (api.api_description && api.api_description.toLowerCase().includes(term)) ||
-                    (api.module_tag && api.module_tag.toLowerCase().includes(term)) ||
-                    (api.tags && api.tags.some(tag => tag.toLowerCase().includes(term)))
-                );
-            }
-
-            // Apply method filter
-            if (filters.method && filters.method !== '') {
-                filtered = filtered.filter(api => api.method === filters.method);
-            }
-
-            // Apply authorization filter
-            if (filters.auth && filters.auth !== '') {
-                filtered = filtered.filter(api => {
-                    const authRequired = getAuthorizationRequired(api.authorization_tag);
-                    return authRequired === filters.auth;
-                });
-            }
-
-            // Apply module filter
-            if (filters.module && filters.module !== '') {
-                filtered = filtered.filter(api => {
-                    if (!api.module_tag) return false;
-                    return api.module_tag === filters.module;
-                });
-            }
-
-            // Apply tags filter
-            if (filters.tag && filters.tag !== '') {
-                filtered = filtered.filter(api => {
-                    if (!api.tags || api.tags.length === 0) return false;
-                    return api.tags.includes(filters.tag);
-                });
-            }
-
-            return filtered;
+        // Apply module filter
+        if (filters.module && filters.module !== "") {
+          filtered = filtered.filter((api) => {
+            if (!api.module_tag) return false;
+            return api.module_tag === filters.module;
+          });
         }
 
-        function populateDynamicFilters(apis) {
-            // Extract unique modules
-            const modules = new Set();
-            apis.forEach(api => {
-                if (api.module_tag) {
-                    modules.add(api.module_tag);
-                }
-            });
-            const moduleSelect = document.getElementById('moduleFilter');
-            const currentModuleValue = moduleSelect.value; // Preserve current selection
-            moduleSelect.innerHTML = '<option value="">All</option>';
-            Array.from(modules).sort().forEach(module => {
-                const option = document.createElement('option');
-                option.value = module;
-                option.textContent = module;
-                moduleSelect.appendChild(option);
-            });
-            // Restore previous selection if it still exists
-            if (currentModuleValue && Array.from(modules).includes(currentModuleValue)) {
-                moduleSelect.value = currentModuleValue;
-            }
-
-            // Extract unique tags
-            const tags = new Set();
-            apis.forEach(api => {
-                if (api.tags && Array.isArray(api.tags)) {
-                    api.tags.forEach(tag => tags.add(tag));
-                }
-            });
-            const tagSelect = document.getElementById('tagFilter');
-            const currentTagValue = tagSelect.value; // Preserve current selection
-            tagSelect.innerHTML = '<option value="">All</option>';
-            Array.from(tags).sort().forEach(tag => {
-                const option = document.createElement('option');
-                option.value = tag;
-                option.textContent = tag;
-                tagSelect.appendChild(option);
-            });
-            // Restore previous selection if it still exists
-            if (currentTagValue && Array.from(tags).includes(currentTagValue)) {
-                tagSelect.value = currentTagValue;
-            }
+        // Apply tags filter
+        if (filters.tag && filters.tag !== "") {
+          filtered = filtered.filter((api) => {
+            if (!api.tags || api.tags.length === 0) return false;
+            return api.tags.includes(filters.tag);
+          });
         }
 
-        function updateStats(allApis, filteredApis) {
-            const total = allApis.length;
-            const filtered = filteredApis.length;
-            
-            // Calculate authorization stats
-            const authRequired = allApis.filter(api => {
-                const authTag = api.authorization_tag || '';
-                return authTag === 'Authorization Required';
-            }).length;
-            
-            const noAuth = total - authRequired;
-            
-            // Calculate percentages
-            const totalPercent = total > 0 ? Math.round((total / total) * 100) : 0;
-            const authRequiredPercent = total > 0 ? Math.round((authRequired / total) * 100) : 0;
-            const noAuthPercent = total > 0 ? Math.round((noAuth / total) * 100) : 0;
-            const filteredPercent = total > 0 ? Math.round((filtered / total) * 100) : 0;
-            
-            // Update summary cards
-            document.getElementById('totalApisCard').textContent = total;
-            document.getElementById('totalApisPercent').textContent = totalPercent + '%';
-            
-            document.getElementById('authRequiredCard').textContent = authRequired;
-            document.getElementById('authRequiredPercent').textContent = authRequiredPercent + '%';
-            
-            document.getElementById('noAuthCard').textContent = noAuth;
-            document.getElementById('noAuthPercent').textContent = noAuthPercent + '%';
-            
-            document.getElementById('filteredApisCard').textContent = filtered;
-            document.getElementById('filteredApisPercent').textContent = filteredPercent + '%';
+        return filtered;
+      }
+
+      function populateDynamicFilters(apis) {
+        // Extract unique modules
+        const modules = new Set();
+        apis.forEach((api) => {
+          if (api.module_tag) {
+            modules.add(api.module_tag);
+          }
+        });
+        const moduleSelect = document.getElementById("moduleFilter");
+        const currentModuleValue = moduleSelect.value; // Preserve current selection
+        moduleSelect.innerHTML = '<option value="">All</option>';
+        Array.from(modules)
+          .sort()
+          .forEach((module) => {
+            const option = document.createElement("option");
+            option.value = module;
+            option.textContent = module;
+            moduleSelect.appendChild(option);
+          });
+        // Restore previous selection if it still exists
+        if (
+          currentModuleValue &&
+          Array.from(modules).includes(currentModuleValue)
+        ) {
+          moduleSelect.value = currentModuleValue;
         }
 
-        async function loadSwagger() {
-            const loadingEl = document.getElementById('loading');
-            const errorEl = document.getElementById('error');
-            const tableEl = document.getElementById('apiTable');
-            
-            loadingEl.style.display = 'block';
-            errorEl.style.display = 'none';
-            tableEl.style.display = 'none';
+        // Extract unique tags
+        const tags = new Set();
+        apis.forEach((api) => {
+          if (api.tags && Array.isArray(api.tags)) {
+            api.tags.forEach((tag) => tags.add(tag));
+          }
+        });
+        const tagSelect = document.getElementById("tagFilter");
+        const currentTagValue = tagSelect.value; // Preserve current selection
+        tagSelect.innerHTML = '<option value="">All</option>';
+        Array.from(tags)
+          .sort()
+          .forEach((tag) => {
+            const option = document.createElement("option");
+            option.value = tag;
+            option.textContent = tag;
+            tagSelect.appendChild(option);
+          });
+        // Restore previous selection if it still exists
+        if (currentTagValue && Array.from(tags).includes(currentTagValue)) {
+          tagSelect.value = currentTagValue;
+        }
+      }
 
-            try {
-                let swaggerData;
-                
-                // Use embedded data if available (avoids CORS issues)
-                if (USE_EMBEDDED_DATA) {
-                    swaggerData = EMBEDDED_SWAGGER_DATA;
-                } else {
-                    // Fallback to fetching from file (may have CORS issues)
-                    const swaggerPath = getSwaggerFilePath();
-                    const response = await fetch(swaggerPath + '?t=' + Date.now());
-                    
-                    if (!response.ok) {
-                        throw new Error(`Failed to load swagger.json: ${response.status} ${response.statusText}`);
-                    }
+      function updateStats(allApis, filteredApis) {
+        const total = allApis.length;
+        const filtered = filteredApis.length;
 
-                    swaggerData = await response.json();
-                }
+        // Calculate authorization stats
+        const authRequired = allApis.filter((api) => {
+          const authTag = api.authorization_tag || "";
+          return authTag === "Authorization Required";
+        }).length;
 
-                allApisData = parseSwagger(swaggerData);
-                
-                // Populate dynamic filters (module and tags)
-                populateDynamicFilters(allApisData);
-                
-                // Apply filters and render
-                applyFilters();
-                
-                loadingEl.style.display = 'none';
-            } catch (error) {
-                loadingEl.style.display = 'none';
-                errorEl.style.display = 'block';
-                
-                // Check if it's a CORS error (file:// protocol)
-                const isFileProtocol = window.location.protocol === 'file:';
-                const isCorsError = error.message.includes('CORS') || 
-                                   error.message.includes('fetch') ||
-                                   (isFileProtocol && error.name === 'TypeError');
-                
-                if (isCorsError || isFileProtocol) {
-                    const htmlDir = window.location.pathname.substring(0, window.location.pathname.lastIndexOf('/'));
-                    const htmlFileName = window.location.pathname.split('/').pop();
-                    errorEl.innerHTML = `
+        const noAuth = total - authRequired;
+
+        // Calculate percentages
+        const totalPercent = total > 0 ? Math.round((total / total) * 100) : 0;
+        const authRequiredPercent =
+          total > 0 ? Math.round((authRequired / total) * 100) : 0;
+        const noAuthPercent =
+          total > 0 ? Math.round((noAuth / total) * 100) : 0;
+        const filteredPercent =
+          total > 0 ? Math.round((filtered / total) * 100) : 0;
+
+        // Update summary cards
+        document.getElementById("totalApisCard").textContent = total;
+        document.getElementById("totalApisPercent").textContent =
+          totalPercent + "%";
+
+        document.getElementById("authRequiredCard").textContent = authRequired;
+        document.getElementById("authRequiredPercent").textContent =
+          authRequiredPercent + "%";
+
+        document.getElementById("noAuthCard").textContent = noAuth;
+        document.getElementById("noAuthPercent").textContent =
+          noAuthPercent + "%";
+
+        document.getElementById("filteredApisCard").textContent = filtered;
+        document.getElementById("filteredApisPercent").textContent =
+          filteredPercent + "%";
+      }
+
+      async function loadSwagger() {
+        const loadingEl = document.getElementById("loading");
+        const errorEl = document.getElementById("error");
+        const tableEl = document.getElementById("apiTable");
+
+        loadingEl.style.display = "block";
+        errorEl.style.display = "none";
+        tableEl.style.display = "none";
+
+        try {
+          let swaggerData;
+
+          // Use embedded data if available (avoids CORS issues)
+          if (USE_EMBEDDED_DATA) {
+            swaggerData = EMBEDDED_SWAGGER_DATA;
+          } else {
+            // Fallback to fetching from file (may have CORS issues)
+            const swaggerPath = getSwaggerFilePath();
+            const response = await fetch(swaggerPath + "?t=" + Date.now());
+
+            if (!response.ok) {
+              throw new Error(
+                `Failed to load swagger.json: ${response.status} ${response.statusText}`
+              );
+            }
+
+            swaggerData = await response.json();
+          }
+
+          allApisData = parseSwagger(swaggerData);
+
+          // Display metadata (timestamp and commit reference)
+          displayMetadata(swaggerData);
+
+          // Populate dynamic filters (module and tags)
+          populateDynamicFilters(allApisData);
+
+          // Apply filters and render
+          applyFilters();
+
+          loadingEl.style.display = "none";
+        } catch (error) {
+          loadingEl.style.display = "none";
+          errorEl.style.display = "block";
+
+          // Check if it's a CORS error (file:// protocol)
+          const isFileProtocol = window.location.protocol === "file:";
+          const isCorsError =
+            error.message.includes("CORS") ||
+            error.message.includes("fetch") ||
+            (isFileProtocol && error.name === "TypeError");
+
+          if (isCorsError || isFileProtocol) {
+            const htmlDir = window.location.pathname.substring(
+              0,
+              window.location.pathname.lastIndexOf("/")
+            );
+            const htmlFileName = window.location.pathname.split("/").pop();
+            errorEl.innerHTML = `
                         <div style="max-width: 800px; margin: 0 auto; padding: 20px;">
                             <h2 style="color: #dc3545; margin-bottom: 20px;">⚠️ CORS Error Detected</h2>
                             <p style="margin-bottom: 15px; font-size: 1.1em;">
@@ -865,54 +1083,53 @@
                             </div>
                         </div>
                     `;
-                } else {
-                    errorEl.textContent = `Error loading Swagger file: ${error.message}. Make sure swagger.json exists in the same directory.`;
-                }
-                console.error('Error loading swagger:', error);
-            }
+          } else {
+            errorEl.textContent = `Error loading Swagger file: ${error.message}. Make sure swagger.json exists in the same directory.`;
+          }
+          console.error("Error loading swagger:", error);
         }
+      }
 
-        // Store APIs globally for filtering
-        let allApisData = [];
+      // Store APIs globally for filtering
+      let allApisData = [];
 
-        function applyFilters() {
-            if (allApisData.length === 0) return;
-            
-            const searchTerm = document.getElementById('searchBox').value;
-            const filters = {
-                method: getSelectedValue(document.getElementById('methodFilter')),
-                auth: getSelectedValue(document.getElementById('authFilter')),
-                module: getSelectedValue(document.getElementById('moduleFilter')),
-                tag: getSelectedValue(document.getElementById('tagFilter'))
-            };
-            
-            const filteredApis = filterAPIs(allApisData, searchTerm, filters);
-            renderTable(filteredApis);
-            updateStats(allApisData, filteredApis);
-        }
+      function applyFilters() {
+        if (allApisData.length === 0) return;
 
-        function clearFilters() {
-            document.getElementById('searchBox').value = '';
-            document.getElementById('methodFilter').value = '';
-            document.getElementById('authFilter').value = '';
-            document.getElementById('moduleFilter').value = '';
-            document.getElementById('tagFilter').value = '';
-            applyFilters();
-        }
+        const searchTerm = document.getElementById("searchBox").value;
+        const filters = {
+          method: getSelectedValue(document.getElementById("methodFilter")),
+          auth: getSelectedValue(document.getElementById("authFilter")),
+          module: getSelectedValue(document.getElementById("moduleFilter")),
+          tag: getSelectedValue(document.getElementById("tagFilter")),
+        };
 
-        // Search functionality
-        document.getElementById('searchBox').addEventListener('input', applyFilters);
+        const filteredApis = filterAPIs(allApisData, searchTerm, filters);
+        renderTable(filteredApis);
+        updateStats(allApisData, filteredApis);
+      }
 
-        // Filter event listeners
-        document.getElementById('methodFilter').addEventListener('change', applyFilters);
-        document.getElementById('authFilter').addEventListener('change', applyFilters);
-        document.getElementById('moduleFilter').addEventListener('change', applyFilters);
-        document.getElementById('tagFilter').addEventListener('change', applyFilters);
-        document.getElementById('clearFilters').addEventListener('click', clearFilters);
+      // Search functionality
+      document
+        .getElementById("searchBox")
+        .addEventListener("input", applyFilters);
 
-        // Initial load
-        loadSwagger();
+      // Filter event listeners
+      document
+        .getElementById("methodFilter")
+        .addEventListener("change", applyFilters);
+      document
+        .getElementById("authFilter")
+        .addEventListener("change", applyFilters);
+      document
+        .getElementById("moduleFilter")
+        .addEventListener("change", applyFilters);
+      document
+        .getElementById("tagFilter")
+        .addEventListener("change", applyFilters);
+
+      // Initial load
+      loadSwagger();
     </script>
-</body>
+  </body>
 </html>
-
