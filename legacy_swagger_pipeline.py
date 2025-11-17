@@ -10,7 +10,7 @@ import time
 import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
-from utils import get_git_commit_hash
+from utils import get_git_commit_hash, get_github_repo_url
 
 class RepoToSwagger:
     def __init__(self, api_key: str, repo_path: str):
@@ -684,7 +684,8 @@ class RepoToSwagger:
                 "version": "1.0.0",
                 "description": "This Swagger file was generated using OpenAI GPT.",
                 "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
-                "commit_reference": get_git_commit_hash(self.repo_path)
+                "commit_reference": get_git_commit_hash(self.repo_path),
+                "github_repo_url": get_github_repo_url(self.repo_path)
             },
             "servers": [
                 {

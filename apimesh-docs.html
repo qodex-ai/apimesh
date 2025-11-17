@@ -61,11 +61,22 @@
         color: #767b85;
       }
 
-      .header-meta-value {
-        color: #212732;
-        font-family: "Courier New", monospace;
-        font-size: 0.875rem;
-      }
+        .header-meta-value {
+          color: #212732;
+          font-family: "Courier New", monospace;
+          font-size: 0.875rem;
+        }
+
+        .header-meta-value a {
+          color: #3b82f6;
+          text-decoration: none;
+          transition: color 0.2s;
+        }
+
+        .header-meta-value a:hover {
+          color: #2563eb;
+          text-decoration: underline;
+        }
 
       .summary-cards {
         display: grid;
@@ -688,6 +699,13 @@
           (swaggerData.info && swaggerData.info.commit) ||
           (swaggerData.info && swaggerData.info.commitReference);
 
+        // Try multiple possible locations for GitHub repo URL
+        let githubRepoUrl =
+          swaggerData.github_repo_url ||
+          swaggerData.githubRepoUrl ||
+          (swaggerData.info && swaggerData.info.github_repo_url) ||
+          (swaggerData.info && swaggerData.info.githubRepoUrl);
+
         // Display timestamp if available
         if (timestamp) {
           const formattedTimestamp = formatTimestamp(timestamp);
@@ -698,7 +716,16 @@
 
         // Display commit reference if available
         if (commitRef) {
-          document.getElementById("commitValue").textContent = commitRef;
+          const commitValueEl = document.getElementById("commitValue");
+          
+          // If GitHub repo URL is available, make it a clickable link
+          if (githubRepoUrl && commitRef) {
+            const commitUrl = `${githubRepoUrl}/commits/${commitRef}`;
+            commitValueEl.innerHTML = `<a href="${escapeHtml(commitUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(commitRef.substring(0, 7))}</a>`;
+          } else {
+            commitValueEl.textContent = commitRef;
+          }
+          
           document.getElementById("commitMeta").style.display = "flex";
         }
       }

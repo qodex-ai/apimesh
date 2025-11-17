@@ -15,7 +15,7 @@ from golang_pipeline.definition_swagger_generator import (
 from golang_pipeline.find_api_definition_files import find_api_definition_files
 from golang_pipeline.generate_file_information import process_file
 from golang_pipeline.identify_api_functions import find_api_endpoints
-from utils import get_git_commit_hash
+from utils import get_git_commit_hash, get_github_repo_url
 
 config = Configurations()
 
@@ -412,6 +412,7 @@ def run_swagger_generation(directory_path: str, host: str, repo_name: str) -> Di
                 "description": "This Swagger file was generated using OpenAI GPT.",
                 "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
                 "commit_reference": get_git_commit_hash(directory_path),
+                "github_repo_url": get_github_repo_url(directory_path),
             },
             "servers": [{"url": host}],
             "paths": {},

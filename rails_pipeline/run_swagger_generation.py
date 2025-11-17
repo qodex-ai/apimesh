@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from config import Configurations
-from utils import get_git_commit_hash
+from utils import get_git_commit_hash, get_github_repo_url
 from rails_pipeline.definition_swagger_generator import (
     get_function_definition_swagger,
 )
@@ -104,6 +104,7 @@ def run_swagger_generation(directory_path: str, host: str, repo_name: str) -> Di
                 "description": "This Swagger file was generated using OpenAI GPT.",
                 "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
                 "commit_reference": get_git_commit_hash(directory_path),
+                "github_repo_url": get_github_repo_url(directory_path),
             },
             "servers": [{"url": host}],
             "paths": {},

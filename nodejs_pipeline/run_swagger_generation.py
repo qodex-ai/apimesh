@@ -7,7 +7,7 @@ from nodejs_pipeline.find_api_definition_files import find_api_definition_files
 from nodejs_pipeline.identify_api_functions import find_api_endpoints_js
 from config import Configurations
 from nodejs_pipeline.definition_swagger_generator import get_function_definition_swagger
-from utils import get_git_commit_hash
+from utils import get_git_commit_hash, get_github_repo_url
 
 config = Configurations()
 
@@ -47,7 +47,8 @@ def run_swagger_generation(directory_path, host, repo_name):
                 "version": "1.0.0",
                 "description": "This Swagger file was generated using OpenAI GPT.",
                 "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
-                "commit_reference": get_git_commit_hash(directory_path)
+                "commit_reference": get_git_commit_hash(directory_path),
+                "github_repo_url": get_github_repo_url(directory_path)
             },
             "servers": [
                 {
