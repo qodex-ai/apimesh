@@ -3,11 +3,13 @@ import os
 import re
 import shutil
 import time
+import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from config import Configurations
+from utils import get_git_commit_hash
 from rails_pipeline.definition_swagger_generator import (
     get_function_definition_swagger,
 )
@@ -100,6 +102,8 @@ def run_swagger_generation(directory_path: str, host: str, repo_name: str) -> Di
                 "title": repo_name,
                 "version": "1.0.0",
                 "description": "This Swagger file was generated using OpenAI GPT.",
+                "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
+                "commit_reference": get_git_commit_hash(directory_path),
             },
             "servers": [{"url": host}],
             "paths": {},

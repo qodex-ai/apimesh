@@ -93,7 +93,7 @@ class RunSwagger:
             authentication_information = self.faiss_index.get_authentication_related_information(faiss_vector)
             print("Completed Fetching authentication related information")
             endpoint_related_information = self.endpoints_extractor.get_endpoint_related_information(faiss_vector, all_endpoints)
-            swagger = self.swagger_generator.create_swagger_json(self.user_config['repo_name'],endpoint_related_information, authentication_information, framework, self.user_config['api_host'])
+            swagger = self.swagger_generator.create_swagger_json(self.user_config['repo_name'],endpoint_related_information, authentication_information, framework, self.user_config['api_host'], self.user_config['repo_path'])
         except Exception as ex:
             traceback.print_exc()
             print("Oops! looks like we encountered an issue. Please try after some time.")

@@ -5,6 +5,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import time
 import os
+import datetime
+from utils import get_git_commit_hash
 
 config = Configurations()
 
@@ -13,13 +15,15 @@ class SwaggerGeneration:
         self.openai_client = OpenAiClient()
 
 
-    def create_swagger_json(self, repo_name, endpoints, authentication_information, framework, api_host):
+    def create_swagger_json(self, repo_name, endpoints, authentication_information, framework, api_host, repo_path=None):
         swagger = {
             "openapi": "3.0.0",
             "info": {
                 "title": repo_name,
                 "version": "1.0.0",
-                "description": "This Swagger file was generated using OpenAI GPT."
+                "description": "This Swagger file was generated using OpenAI GPT.",
+                "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
+                "commit_reference": get_git_commit_hash(repo_path)
             },
             "servers": [
                 {
