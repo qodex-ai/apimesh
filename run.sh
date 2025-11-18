@@ -59,6 +59,12 @@ cleanup() {
         rm -rf "$VENV_DIR"
     fi
     
+    # Remove this script itself (last step)
+    if [[ -f "$0" ]]; then
+        echo "Removing script '$0'"
+        rm -f "$0"
+    fi
+    
     exit "$exit_code"
 }
 
