@@ -245,6 +245,7 @@ ruby_on_rails_swagger_generation_prompt = """
             7. authorization_tag: This field should be 'Authorization Required' if the endpoint requires authorization(eg: beaker token, auth token etc.). Otherwise, set it to 'Authorization Not Required'.
             8. module_tag: This field will have the tag that represents the name of the module under which this endpoint exists.
             9. auth_tag: This field should be present only if the api handles user authentication and authorization processes like login, signup, signin, access token, email confirmation etc. The value should be 'Auth API'
+            10. sensitive_information: Set to true if the endpoint exposes or processes sensitive information (PII, secrets, financial data, etc.) whose disclosure could harm people or the organization; otherwise set to false.
 
 
             Important Notes:
@@ -286,6 +287,7 @@ ruby_on_rails_swagger_generation_prompt = """
                         ],
                         "authorization_tag": "Authorization Not Required",
                         "module_tag": "Users",
+                        "sensitive_information": false,
                         "responses": {{
                             "200": {{
                                 "description": "User details retrieved successfully.",
@@ -353,6 +355,7 @@ generic_swagger_generation_prompt = """
                         7. authorization_tag: This field should be 'Authorization Required' if the endpoint requires authorization(eg: beaker token, auth token etc.). Otherwise, set it to 'Authorization Not Required'.
                         8. module_tag: This field will have the tag that represents the name of the module under which this endpoint exists.
                         9. auth_tag: This field should be present only if the api handles user authentication and authorization processes like login, signup, signin, access token, email confirmation etc. The value should be 'Auth API'
+                        10. sensitive_information: Set to true when the endpoint touches sensitive information that could harm people or the organization if exposed; otherwise false.
 
 
                         **Leverage Authentication/Authorization Information while generating parameters and headers for the endpoint.**
@@ -396,6 +399,7 @@ generic_swagger_generation_prompt = """
                                     "authorization_tag": "Authorization Not Required",
                                     "module_tag": "users",
                                     "auth_tag": "Auth API",
+                                    "sensitive_information": false,
                                     "responses": {{
                                         "200": {{
                                             "description": "Email confirmed successfully",
@@ -478,6 +482,7 @@ golang_swagger_generation_prompt = """
             8. module_tag: Use the controller/module name inferred from the handler.
             9. auth_tag: Include "Auth API" only for authentication-related routes
                (login, signup, token exchange, etc.).
+            10. sensitive_information: true if the endpoint deals with sensitive data (PII, financial info, secrets) whose disclosure could harm people/the organization; otherwise false.
 
             Output must follow the sample OpenAPI structure shown below (same nesting, fields,
             and key ordering). Replace all placeholders with the real endpoint data.
@@ -499,6 +504,7 @@ golang_swagger_generation_prompt = """
                     "authorization_tag": "...",
                     "module_tag": "...",
                     "auth_tag": "...",
+                    "sensitive_information": false,
                     "responses": {{
                       "200": {{ ... }},
                       "400": {{ ... }}
@@ -525,6 +531,7 @@ node_js_prompt = """
     7. **authorization_tag**: Set to `"Authorization Required"` if the endpoint requires authentication (like tokens). Otherwise `"Authorization Not Required"`.
     8. **module_tag**: This should represent the module or controller name where the endpoint resides.
     9. **auth_tag**: Add `"Auth API"` only if the endpoint is handling authentication-related functionality (login, signup, password reset, confirmation, token exchange, etc.).
+    10. **sensitive_information**: This boolean must be `true` when the endpoint processes sensitive information (PII, financial data, secrets, health data, etc.) that could harm people or the organization if exposed; otherwise `false`.
 
 
     The output must follow the structure of the provided sample OpenAPI spec:
@@ -565,6 +572,7 @@ node_js_prompt = """
             "authorization_tag": "Authorization Not Required",
             "module_tag": "users",
             "auth_tag": "Auth API",
+            "sensitive_information": false,
             "responses": {{
               "200": {{
                 "description": "Email confirmed successfully",
@@ -641,6 +649,7 @@ python_swagger_prompt = """
     7. **authorization_tag**: Set to 'Authorization Required' if the endpoint requires authorization (e.g., bearer token, auth token). Otherwise, set to 'Authorization Not Required'.
     8. **module_tag**: A tag representing the name of the module under which the endpoint exists (e.g., `users`, `products`).
     9. **auth_tag**: Include only if the API handles user authentication/authorization processes (e.g., login, signup, signin, access token, email confirmation). Set to 'Auth API'.
+    10. **sensitive_information**: A boolean that must be true when the endpoint handles sensitive information (PII, credentials, PHI, secrets, etc.) whose exposure could harm people or the organization; otherwise false.
 
     The output must follow the structure of the provided sample OpenAPI spec:
 
@@ -680,6 +689,7 @@ python_swagger_prompt = """
             "authorization_tag": "Authorization Not Required",
             "module_tag": "users",
             "auth_tag": "Auth API",
+            "sensitive_information": false,
             "responses": {{
               "200": {{
                 "description": "Email confirmed successfully",
