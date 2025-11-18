@@ -3,9 +3,6 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-APIMESH_DIR="$SCRIPT_DIR/apimesh"
-VENV_DIR="$APIMESH_DIR/qodexai-virtual-env"
-CLONE_DIR="$APIMESH_DIR/apimesh"
 REPO_URL="${REPO_URL:-https://github.com/qodex-ai/apimesh.git}"
 BRANCH_NAME="${BRANCH_NAME:-main}"
 REPO_DIR=""
@@ -14,9 +11,32 @@ PROJECT_API_KEY="null"
 OPENAI_API_KEY="null"
 AI_CHAT_ID="null"
 REPO_PATH="$SCRIPT_DIR"
+APIMESH_DIR=""
+VENV_DIR=""
+CLONE_DIR=""
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "Missing dependency: $1" >&2; exit 2; }; }
 need bash; need git; need curl; need python3; need pip3
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --project-api-key) PROJECT_API_KEY="${2:-null}"; shift 2 ;;
+    --openai-api-key)  OPENAI_API_KEY="${2:-null}";  shift 2 ;;
+    --ai-chat-id)      AI_CHAT_ID="${2:-null}";      shift 2 ;;
+    --repo-path)       REPO_PATH="${2:-$REPO_PATH}"; shift 2 ;;
+    *) echo "Ignoring unknown arg: $1"; shift ;;
+  esac
+done
+
+if [[ ! -d "$REPO_PATH" ]]; then
+  echo "Provided --repo-path '$REPO_PATH' is not a directory" >&2
+  exit 3
+fi
+
+REPO_PATH="$(cd "$REPO_PATH" && pwd)"
+APIMESH_DIR="$REPO_PATH/apimesh"
+VENV_DIR="$APIMESH_DIR/qodexai-virtual-env"
+CLONE_DIR="$APIMESH_DIR/apimesh"
 
 cleanup() {
   local exit_code=$?
@@ -27,9 +47,9 @@ cleanup() {
     deactivate >/dev/null 2>&1 || true
   fi
 
-  if [[ -n "$REPO_DIR" && -d "$REPO_DIR" ]]; then
-    echo "Removing cloned repository at '$REPO_DIR'"
-    rm -rf "$REPO_DIR"
+  if [[ -d "$CLONE_DIR" ]]; then
+    echo "Removing cloned repository at '$CLONE_DIR'"
+    rm -rf "$CLONE_DIR"
   fi
 
   if [[ -d "$VENV_DIR" ]]; then
@@ -87,21 +107,11 @@ fi
 
 REPO_DIR="$(cd "$CLONE_DIR" && pwd)"
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --project-api-key) PROJECT_API_KEY="${2:-null}"; shift 2 ;;
-    --openai-api-key)  OPENAI_API_KEY="${2:-null}";  shift 2 ;;
-    --ai-chat-id)      AI_CHAT_ID="${2:-null}";      shift 2 ;;
-    --repo-path)       REPO_PATH="${2:-$REPO_PATH}"; shift 2 ;;
-    *) echo "Ignoring unknown arg: $1"; shift ;;
-  esac
-done
-
-export PYTHONPATH="$SCRIPT_DIR:$REPO_DIR:${PYTHONPATH:-}"
+export PYTHONPATH="$REPO_PATH:$REPO_DIR:${PYTHONPATH:-}"
 export APIMESH_CONFIG_PATH="$REPO_DIR/config.yml"
 export APIMESH_USER_CONFIG_PATH="$APIMESH_DIR/config.json"
 export APIMESH_USER_REPO_PATH="$REPO_PATH"
-export APIMESH_OUTPUT_FILEPATH="$REPO_DIR/apimesh/swagger.json"
+export APIMESH_OUTPUT_FILEPATH="$APIMESH_DIR/swagger.json"
 
 
 cd "$REPO_DIR"
