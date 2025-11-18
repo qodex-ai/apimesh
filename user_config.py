@@ -67,19 +67,22 @@ class UserConfigurations:
             resolved_openai_api_key = stored_openai_api_key
         user_config["openai_api_key"] = resolved_openai_api_key
         self.save_user_config(user_config)
+        print(f"  ✓ API Key: {resolved_openai_api_key}")
 
         self._print_section_header("Model Selection")
         default_openai_model = user_config.get("openai_model", "gpt-4.1-2025-04-14")
         openai_model = default_openai_model
         user_config["openai_model"] = openai_model
         self.save_user_config(user_config)
+        print(f"  ✓ AI Model: {openai_model}")
 
         self._print_section_header("API Host Configuration")
         default_api_host = user_config.get("api_host", "https://api.example.com")
         api_host = default_api_host
         user_config["api_host"] = api_host
         self.save_user_config(user_config)
+        print(f"  ✓ API Host: {api_host}")
         # Check if the user entered something
         if not api_host.strip():
-            print("No api host provided. Exiting...")
+            print("  ✗ No api host provided. Exiting...")
             exit(1)
