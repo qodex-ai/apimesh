@@ -3,15 +3,17 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-VENV_DIR="qodexai-virtual-env"
+APIMESH_DIR="$SCRIPT_DIR/apimesh"
+VENV_DIR="$APIMESH_DIR/qodexai-virtual-env"
+CLONE_DIR="$APIMESH_DIR/apimesh"
 REPO_URL="${REPO_URL:-https://github.com/qodex-ai/apimesh.git}"
-REPO_NAME="apimesh"
 BRANCH_NAME="${BRANCH_NAME:-main}"
 REPO_DIR=""
 
 PROJECT_API_KEY="null"
 OPENAI_API_KEY="null"
 AI_CHAT_ID="null"
+REPO_PATH="$SCRIPT_DIR"
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "Missing dependency: $1" >&2; exit 2; }; }
 need bash; need git; need curl; need python3; need pip3
@@ -40,10 +42,15 @@ cleanup() {
 
 trap cleanup EXIT
 
-if [[ ! -d "$VENV_DIR" ]]; then
-  echo "Creating Python venv at $VENV_DIR"
-  python3 -m venv "$VENV_DIR"
+mkdir -p "$APIMESH_DIR"
+
+if [[ -d "$VENV_DIR" ]]; then
+  echo "Virtual environment already exists at '$VENV_DIR'. Removing it."
+  rm -rf "$VENV_DIR"
 fi
+
+echo "Creating Python venv at $VENV_DIR"
+python3 -m venv "$VENV_DIR"
 source "$VENV_DIR/bin/activate"
 
 pip3 install --upgrade pip
@@ -59,33 +66,41 @@ pip3 install \
   "tree-sitter==0.25.1" \
   "tree-sitter-python==0.23.6" \
   "tree-sitter-javascript==0.23.1" \
+  "tree-sitter-ruby==0.23.1" \
+  "tree-sitter-go==0.25.0" \
   "esprima==4.0.1"
 
 # --- repo setup (clone/update specific branch) ---
-if [[ -d "$REPO_NAME/.git" ]]; then
+if [[ -d "$CLONE_DIR/.git" ]]; then
   echo "Repo exists, switching to branch '$BRANCH_NAME' and pulling latest..."
-  git -C "$REPO_NAME" fetch --prune origin
-  git -C "$REPO_NAME" checkout -B "$BRANCH_NAME" "origin/$BRANCH_NAME"
-  git -C "$REPO_NAME" pull --ff-only origin "$BRANCH_NAME"
+  git -C "$CLONE_DIR" fetch --prune origin
+  git -C "$CLONE_DIR" checkout -B "$BRANCH_NAME" "origin/$BRANCH_NAME"
+  git -C "$CLONE_DIR" pull --ff-only origin "$BRANCH_NAME"
 else
   echo "Cloning repo branch '$BRANCH_NAME'..."
-  git clone --branch "$BRANCH_NAME" --single-branch "$REPO_URL" "$REPO_NAME"
+  if [[ -d "$CLONE_DIR" ]]; then
+    rm -rf "$CLONE_DIR"
+  fi
+  git clone --branch "$BRANCH_NAME" --single-branch "$REPO_URL" "$CLONE_DIR"
 fi
 # --- end repo setup ---
 
-REPO_DIR="$(cd "$REPO_NAME" && pwd)"
+REPO_DIR="$(cd "$CLONE_DIR" && pwd)"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --project-api-key) PROJECT_API_KEY="${2:-null}"; shift 2 ;;
     --openai-api-key)  OPENAI_API_KEY="${2:-null}";  shift 2 ;;
     --ai-chat-id)      AI_CHAT_ID="${2:-null}";      shift 2 ;;
-    --repo-path)       REPO_PATH="${2:-null}";       shift 2 ;;
+    --repo-path)       REPO_PATH="${2:-$REPO_PATH}"; shift 2 ;;
     *) echo "Ignoring unknown arg: $1"; shift ;;
   esac
 done
 
+export PYTHONPATH="$SCRIPT_DIR:$REPO_DIR:${PYTHONPATH:-}"
 export APIMESH_CONFIG_PATH="${APIMESH_CONFIG_PATH:-$REPO_DIR/config.yml}"
+export APIMESH_USER_CONFIG_PATH="${APIMESH_USER_CONFIG_PATH:-$APIMESH_DIR/config.json}"
+export APIMESH_DEFAULT_REPO_PATH="${APIMESH_DEFAULT_REPO_PATH:-$REPO_PATH}"
 
 cd "$REPO_DIR"
 python3 -m swagger_generation_cli "$REPO_PATH" "$OPENAI_API_KEY" "$PROJECT_API_KEY" "$AI_CHAT_ID" true
