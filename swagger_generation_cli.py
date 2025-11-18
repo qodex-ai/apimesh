@@ -63,7 +63,6 @@ class RunSwagger:
                 self.user_config['framework'] = framework
                 self.user_configurations.save_user_config(self.user_config)
         except Exception as ex:
-            traceback.print_exc()
             print("We do not support this framework currently. Please contact QodexAI support.")
             exit()
         print(f"completed framework identification - {framework}")

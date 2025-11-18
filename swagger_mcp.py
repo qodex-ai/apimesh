@@ -1,7 +1,6 @@
 from mcp.server.fastmcp import FastMCP
 from typing import Optional
-from pathlib import Path
-import os, subprocess, shutil, sys, json
+import os, subprocess, shutil, sys
 
 APP_NAME = "SwaggerGenerator MCP"
 DEFAULT_WORK_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -19,48 +18,6 @@ def _need(cmd: str):
 
 def _ensure_dir(p: str):
     os.makedirs(p, exist_ok=True)
-
-def _collect_artifacts(base_dir: str, repo_path: str) -> dict:
-    """
-    Gather the generated swagger.json path and a link to the local apimesh docs file.
-    """
-    artifacts = {}
-
-    config_path = Path(base_dir) / "apimesh" / "config.json"
-    config_data = {}
-    swagger_path = os.path.join(repo_path, "apimesh", "swagger.json")
-    if config_path.exists():
-        try:
-            with config_path.open("r", encoding="utf-8") as config_file:
-                config_data = json.load(config_file)
-            swagger_candidate = config_data.get("output_filepath")
-            if swagger_candidate:
-                swagger_path = swagger_candidate
-        except (OSError, json.JSONDecodeError) as exc:
-            print(f"[mcp] warning: unable to read swagger path from {config_path}: {exc}", file=sys.stderr)
-            config_data = {}
-
-    swagger_path = os.path.expanduser(swagger_path)
-    if swagger_path:
-        if not os.path.isabs(swagger_path):
-            repo_from_config = config_data.get("repo_path") or repo_path
-            swagger_path = os.path.join(repo_from_config, swagger_path)
-        swagger_path = os.path.abspath(swagger_path)
-        artifacts["swagger_path"] = swagger_path
-        try:
-            artifacts["swagger_file_link"] = Path(swagger_path).resolve(strict=False).as_uri()
-        except ValueError:
-            pass
-
-    docs_path = Path(base_dir) / "apimesh-docs.html"
-    resolved_docs_path = docs_path.resolve(strict=False)
-    artifacts["apimesh_docs_path"] = str(resolved_docs_path)
-    try:
-        artifacts["apimesh_docs_link"] = resolved_docs_path.as_uri()
-    except ValueError:
-        pass
-
-    return artifacts
 
 @mcp.tool()
 def run_swagger_generation(
@@ -139,7 +96,6 @@ def run_swagger_generation(
         "stdout": proc.stdout[-200_000:],
         "stderr": proc.stderr[-200_000:],
     }
-    result.update(_collect_artifacts(base_dir, repo_path))
     return result
 
 if __name__ == "__main__":
