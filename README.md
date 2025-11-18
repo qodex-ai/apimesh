@@ -76,11 +76,13 @@ A **precise, AI-augmented pipeline** ensures reliable, up-to-date docs:
 
 ### Option 1: docker (Fastest)
 
+Navigate to your repository
 ```bash
-# Navigate to your repository
 cd /path/to/your/repo
+```
 
-# Run interactively - will prompt for any missing inputs
+Run interactively - will prompt for any missing inputs
+```bash
 docker run -it --rm -v $(pwd):/workspace qodexai/apimesh:latest
 ```
 
@@ -109,16 +111,16 @@ Replace /path/to/swagger_mcp/swagger_mcp.py with the actual file path.
 
 ### Option 3: Curl
 
+Navigate to your repository
 ```bash
-# Navigate to your repository
 cd /path/to/your/repo
+```
 
-# Inside your repo root
-mkdir -p apimesh \
-  && cd apimesh \
-  && curl -sSL https://raw.githubusercontent.com/qodex-ai/apimesh/refs/heads/main/run.sh -o run.sh \
-  && chmod +x run.sh \
-  && ./run.sh
+Inside your repo root
+```bash
+mkdir -p apimesh && \
+  curl -sSL https://raw.githubusercontent.com/qodex-ai/apimesh/refs/heads/main/run.sh -o apimesh/run.sh && \
+  chmod +x apimesh/run.sh && apimesh/run.sh
 ```
 
 > Each run leaves `swagger.json`, `apimesh-docs.html`, `run.sh`, and `config.json` side-by-side inside the `apimesh/` workspace folder.
