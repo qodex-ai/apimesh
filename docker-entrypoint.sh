@@ -92,6 +92,19 @@ fi
 cd /app
 export PYTHONPATH=/app:$PYTHONPATH
 
+# Set config paths if not already set
+if [ -z "${APIMESH_CONFIG_PATH:-}" ]; then
+  export APIMESH_CONFIG_PATH="/app/config.yml"
+fi
+
+if [ -z "${APIMESH_USER_CONFIG_PATH:-}" ]; then
+  export APIMESH_USER_CONFIG_PATH="/workspace/apimesh/config.json"
+fi
+
+if [ -z "${APIMESH_DEFAULT_REPO_PATH:-}" ]; then
+  export APIMESH_DEFAULT_REPO_PATH="/workspace"
+fi
+
 # If repo path doesn't exist and wasn't explicitly provided, check if /workspace exists
 if [ ! -d "$REPO_PATH" ] && [ "$REPO_PATH" == "/workspace" ] && [ -z "${REPO_PATH_SET:-}" ]; then
   if [ -d "/workspace" ]; then

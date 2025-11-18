@@ -157,4 +157,3 @@ routing_patterns_map:
     - '\b\w+\.(Get|Post|Put|Delete|Patch|Options|Head)\([''"]'
 
 gpt_4o_model_name: "gpt-4.1-2025-04-14"
-user_config_file_dir: "apimesh"

@@ -22,15 +22,23 @@ class OpenAiClient:
 
     @staticmethod
     def load_openai_api_key():
-        config_dir = config.user_config_file_dir
-        config_file = os.path.join(config_dir, "config.json")
-        with open(config_file , "r") as file:
+        config_file = os.environ.get("APIMESH_USER_CONFIG_PATH")
+        if config_file is None:
+            raise ValueError(
+                "APIMESH_USER_CONFIG_PATH environment variable is not set. "
+                "Please set it to the path of your config.json file."
+            )
+        with open(config_file, "r") as file:
             user_config_data = json.load(file)
         return user_config_data['openai_api_key']
 
     def load_openai_model(self):
-        config_dir = config.user_config_file_dir
-        config_file = os.path.join(config_dir, "config.json")
+        config_file = os.environ.get("APIMESH_USER_CONFIG_PATH")
+        if config_file is None:
+            raise ValueError(
+                "APIMESH_USER_CONFIG_PATH environment variable is not set. "
+                "Please set it to the path of your config.json file."
+            )
         with open(config_file, "r") as file:
             user_config_data = json.load(file)
         return user_config_data['openai_model']

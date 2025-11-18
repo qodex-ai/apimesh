@@ -13,13 +13,10 @@ def parse_file(filename):
     tree = parser.parse(code.encode('utf-8'))
     return tree, code
 
-def get_module_origin(module_name, base_directory=None):
+def get_module_origin(module_name, base_directory):
     """
     Resolve JS import/require origin similar to Node.js module resolution.
     """
-    if not base_directory:
-        base_directory = os.getcwd()
-
     # Relative import
     if module_name.startswith("."):
         path = os.path.normpath(os.path.join(base_directory, module_name))

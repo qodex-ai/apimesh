@@ -6,8 +6,17 @@ for the Swagger Generator CLI.
 import os, json
 from config import Configurations
 configurations = Configurations()
-config_dir = configurations.user_config_file_dir
-config_file = os.path.join(config_dir, "config.json")
+
+# Get JSON config file path from environment variable
+config_file = os.environ.get("APIMESH_USER_CONFIG_PATH")
+if config_file is None:
+    raise ValueError(
+        "APIMESH_USER_CONFIG_PATH environment variable is not set. "
+        "Please set it to the path of your config.json file."
+    )
+
+# Ensure the directory exists
+config_dir = os.path.dirname(config_file)
 os.makedirs(config_dir, exist_ok=True)
 
 class UserConfigurations:
@@ -47,7 +56,12 @@ class UserConfigurations:
     def add_user_configs(self, project_api_key, openai_api_key):
         user_config = self.load_user_config()
         self._print_section_header("Repository Path Configuration")
-        current_repo_path = "/".join(os.getcwd().split("/")[:-1])
+        current_repo_path = os.environ.get("APIMESH_DEFAULT_REPO_PATH")
+        if current_repo_path is None:
+            raise ValueError(
+                "APIMESH_DEFAULT_REPO_PATH environment variable is not set. "
+                "Please set it to the default repository path."
+            )
         stored_repo_path = user_config.get("repo_path")
         default_repo_path = stored_repo_path or current_repo_path
         repo_path = default_repo_path
