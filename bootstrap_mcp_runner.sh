@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 VENV_DIR="qodexai-virtual-env"
 REPO_URL="${REPO_URL:-https://github.com/qodex-ai/apimesh.git}"
 REPO_NAME="apimesh"
 BRANCH_NAME="${BRANCH_NAME:-main}"
+REPO_DIR=""
 
 PROJECT_API_KEY="null"
 OPENAI_API_KEY="null"
@@ -12,6 +15,30 @@ AI_CHAT_ID="null"
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "Missing dependency: $1" >&2; exit 2; }; }
 need bash; need git; need curl; need python3; need pip3
+
+cleanup() {
+  local exit_code=$?
+  trap - EXIT
+  cd "$SCRIPT_DIR"
+
+  if [[ -n "${VIRTUAL_ENV:-}" ]]; then
+    deactivate >/dev/null 2>&1 || true
+  fi
+
+  if [[ -n "$REPO_DIR" && -d "$REPO_DIR" ]]; then
+    echo "Removing cloned repository at '$REPO_DIR'"
+    rm -rf "$REPO_DIR"
+  fi
+
+  if [[ -d "$VENV_DIR" ]]; then
+    echo "Removing virtual environment at '$VENV_DIR'"
+    rm -rf "$VENV_DIR"
+  fi
+
+  exit "$exit_code"
+}
+
+trap cleanup EXIT
 
 if [[ ! -d "$VENV_DIR" ]]; then
   echo "Creating Python venv at $VENV_DIR"
@@ -46,6 +73,8 @@ else
 fi
 # --- end repo setup ---
 
+REPO_DIR="$(cd "$REPO_NAME" && pwd)"
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --project-api-key) PROJECT_API_KEY="${2:-null}"; shift 2 ;;
@@ -56,7 +85,9 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-cd "$REPO_NAME"
+export APIMESH_CONFIG_PATH="${APIMESH_CONFIG_PATH:-$REPO_DIR/config.yml}"
+
+cd "$REPO_DIR"
 python3 -m swagger_generation_cli "$REPO_PATH" "$OPENAI_API_KEY" "$PROJECT_API_KEY" "$AI_CHAT_ID" true
 
 exit 0

@@ -91,7 +91,7 @@ docker run -it --rm -v $(pwd):/workspace qodexai/apimesh:latest
 Download the MCP server file
 
 ```bash
-wget https://github.com/qodex-ai/apimesh/blob/main/swagger_mcp.py -O swagger_mcp.py
+wget https://raw.githubusercontent.com/qodex-ai/apimesh/main/swagger_mcp.py -O swagger_mcp.py
 ```
 
 Add this to your MCP settings
