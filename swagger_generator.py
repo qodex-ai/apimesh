@@ -6,7 +6,7 @@ import json
 import time
 import os
 import datetime
-from utils import get_git_commit_hash, get_github_repo_url
+from utils import get_git_commit_hash, get_github_repo_url, get_repo_path, get_repo_name, format_repo_name
 
 config = Configurations()
 
@@ -15,7 +15,9 @@ class SwaggerGeneration:
         self.openai_client = OpenAiClient()
 
 
-    def create_swagger_json(self, repo_name, endpoints, authentication_information, framework, api_host, repo_path=None):
+    def create_swagger_json(self, endpoints, authentication_information, framework, api_host):
+        repo_path = get_repo_path()
+        repo_name = get_repo_name()
         swagger = {
             "openapi": "3.0.0",
             "info": {
@@ -23,8 +25,8 @@ class SwaggerGeneration:
                 "version": "1.0.0",
                 "description": "This Swagger file was generated using OpenAI GPT.",
                 "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
-                "commit_reference": get_git_commit_hash(repo_path),
-                "github_repo_url": get_github_repo_url(repo_path)
+                "commit_reference": get_git_commit_hash(),
+                "github_repo_url": get_github_repo_url()
             },
             "servers": [
                 {
@@ -143,6 +145,11 @@ class SwaggerGeneration:
                 with open(html_template_path, 'r', encoding='utf-8') as f:
                     html_content = f.read()
                 
+                # Replace <repo_name> placeholder with formatted repo name from utils
+                repo_name = get_repo_name()
+                formatted_repo_name = format_repo_name(repo_name)
+                html_content = html_content.replace('<repo_name>', formatted_repo_name)
+                
                 # Embed the swagger data as a JavaScript variable
                 if swagger_data:
                     # Escape the JSON for embedding in JavaScript
@@ -169,9 +176,25 @@ class SwaggerGeneration:
                     display_path = html_output_path[len('/workspace/'):]
                     if not display_path.startswith('./'):
                         display_path = './' + display_path
-                print(f"HTML viewer saved to {display_path}.")
+                
+                # Print formatted success message
+                print("\n==========================================")
+                print("Swagger HTML Viewer Generated Successfully")
+                print("==========================================\n")
+                print("The HTML viewer has been generated at:")
+                print(f"  Relative path:  {display_path} (in your mounted volume)\n")
+                print("To view it:")
+                print("  1. The file is in your mounted volume directory")
+                print("  2. Open it directly in your browser from your host machine:")
+                print("     Navigate to your repository directory and open:")
+                print(f"     {display_path}\n")
+                print("==========================================")
+                
+                return display_path
             else:
                 print(f"Warning: HTML template not found at {html_template_path}")
+                return None
         except Exception as ex:
             print(f"Warning: Could not generate HTML viewer: {ex}")
+            return None
 

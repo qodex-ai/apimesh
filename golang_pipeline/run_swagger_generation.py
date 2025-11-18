@@ -15,7 +15,7 @@ from golang_pipeline.definition_swagger_generator import (
 from golang_pipeline.find_api_definition_files import find_api_definition_files
 from golang_pipeline.generate_file_information import process_file
 from golang_pipeline.identify_api_functions import find_api_endpoints
-from utils import get_git_commit_hash, get_github_repo_url
+from utils import get_git_commit_hash, get_github_repo_url, get_repo_path, get_repo_name
 
 config = Configurations()
 
@@ -375,7 +375,9 @@ def provide_context_codeblock(directory_path: str, method_info: Dict):
     return context_code_blocks, method_definition_code_block
 
 
-def run_swagger_generation(directory_path: str, host: str, repo_name: str) -> Dict:
+def run_swagger_generation(host: str) -> Dict:
+    directory_path = get_repo_path()
+    repo_name = get_repo_name()
     global _METADATA_DIR
     metadata_dir = tempfile.mkdtemp(prefix="qodex_go_file_info_")
     _METADATA_DIR = metadata_dir
@@ -411,8 +413,8 @@ def run_swagger_generation(directory_path: str, host: str, repo_name: str) -> Di
                 "version": "1.0.0",
                 "description": "This Swagger file was generated using OpenAI GPT.",
                 "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
-                "commit_reference": get_git_commit_hash(directory_path),
-                "github_repo_url": get_github_repo_url(directory_path),
+                "commit_reference": get_git_commit_hash(),
+                "github_repo_url": get_github_repo_url(),
             },
             "servers": [{"url": host}],
             "paths": {},

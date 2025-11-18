@@ -27,7 +27,8 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 # Set environment variables for config file paths
 ENV APIMESH_CONFIG_PATH=/app/config.yml
 ENV APIMESH_USER_CONFIG_PATH=/workspace/apimesh/config.json
-ENV APIMESH_DEFAULT_REPO_PATH=/workspace
+ENV APIMESH_USER_REPO_PATH=/workspace
+ENV APIMESH_OUTPUT_FILEPATH=/workspace/apimesh/swagger.json
 
 # Set the entrypoint
 ENTRYPOINT ["docker-entrypoint.sh"]
