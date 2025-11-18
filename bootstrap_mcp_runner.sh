@@ -98,11 +98,13 @@ while [[ $# -gt 0 ]]; do
 done
 
 export PYTHONPATH="$SCRIPT_DIR:$REPO_DIR:${PYTHONPATH:-}"
-export APIMESH_CONFIG_PATH="${APIMESH_CONFIG_PATH:-$REPO_DIR/config.yml}"
-export APIMESH_USER_CONFIG_PATH="${APIMESH_USER_CONFIG_PATH:-$APIMESH_DIR/config.json}"
-export APIMESH_DEFAULT_REPO_PATH="${APIMESH_DEFAULT_REPO_PATH:-$REPO_PATH}"
+export APIMESH_CONFIG_PATH="$REPO_DIR/config.yml"
+export APIMESH_USER_CONFIG_PATH="$APIMESH_DIR/config.json"
+export APIMESH_USER_REPO_PATH="$REPO_PATH"
+export APIMESH_OUTPUT_FILEPATH="$REPO_DIR/apimesh/swagger.json"
+
 
 cd "$REPO_DIR"
-python3 -m swagger_generation_cli "$REPO_PATH" "$OPENAI_API_KEY" "$PROJECT_API_KEY" "$AI_CHAT_ID" true
+python3 -m swagger_generation_cli "$OPENAI_API_KEY" "$PROJECT_API_KEY" "$AI_CHAT_ID" true
 
 exit 0
