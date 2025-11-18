@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from config import Configurations
-from utils import get_git_commit_hash, get_github_repo_url
+from utils import get_git_commit_hash, get_github_repo_url, get_repo_path, get_repo_name
 from rails_pipeline.definition_swagger_generator import (
     get_function_definition_swagger,
 )
@@ -54,7 +54,9 @@ def _sanitize_json_filename(file_path: str) -> str:
     return f"{normalized}.json"
 
 
-def run_swagger_generation(directory_path: str, host: str, repo_name: str) -> Dict:
+def run_swagger_generation(host: str) -> Dict:
+    directory_path = get_repo_path()
+    repo_name = get_repo_name()
     new_dir_name = "qodex_file_information"
     new_dir_path = os.path.join(directory_path, new_dir_name)
     os.makedirs(new_dir_path, exist_ok=True)
@@ -103,8 +105,8 @@ def run_swagger_generation(directory_path: str, host: str, repo_name: str) -> Di
                 "version": "1.0.0",
                 "description": "This Swagger file was generated using OpenAI GPT.",
                 "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
-                "commit_reference": get_git_commit_hash(directory_path),
-                "github_repo_url": get_github_repo_url(directory_path),
+                "commit_reference": get_git_commit_hash(),
+                "github_repo_url": get_github_repo_url(),
             },
             "servers": [{"url": host}],
             "paths": {},

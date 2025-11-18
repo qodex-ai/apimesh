@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Swagger API Viewer</title>
+    <title><repo_name> API Documentation</title>
     <style>
       * {
         margin: 0;
@@ -63,7 +63,6 @@
 
         .header-meta-value {
           color: #212732;
-          font-family: "Courier New", monospace;
           font-size: 0.875rem;
         }
 
@@ -158,10 +157,11 @@
         align-items: flex-end;
         gap: 12px;
         flex-wrap: wrap;
+        width: 100%;
       }
 
       .search-box {
-        flex: 1;
+        flex: 1 1 300px;
         min-width: 250px;
         padding: 10px 16px;
         border: 1px solid #d1d5db;
@@ -184,7 +184,7 @@
         flex-wrap: wrap;
         gap: 12px;
         align-items: flex-end;
-        flex: 2;
+        flex: 2 1 400px;
         min-width: 0;
       }
 
@@ -193,7 +193,7 @@
         flex-direction: column;
         gap: 6px;
         min-width: 120px;
-        flex: 0 1 auto;
+        flex: 1 1 0;
       }
 
       .filter-label {
@@ -456,6 +456,7 @@
         .controls {
           flex-direction: column;
           align-items: stretch;
+          width: 100%;
         }
 
         .search-box {
@@ -487,7 +488,7 @@
   <body>
     <div class="container">
       <div class="header">
-        <h1>API Documentation</h1>
+        <h1><repo_name> API Documentation</h1>
         <div class="header-meta">
           <div
             class="header-meta-item"

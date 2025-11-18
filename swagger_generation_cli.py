@@ -1,4 +1,5 @@
 import traceback
+import os
 
 from user_config import UserConfigurations
 from swagger_generator import SwaggerGeneration
@@ -10,13 +11,14 @@ from nodejs_pipeline.run_swagger_generation import run_swagger_generation as nod
 from python_pipeline.run_swagger_generation import run_swagger_generation as python_swagger_generator
 from rails_pipeline.run_swagger_generation import run_swagger_generation as ruby_on_rails_swagger_generator
 from golang_pipeline.run_swagger_generation import run_swagger_generation as golang_swagger_generator
+from utils import get_output_filepath
 import requests, json
 import sys
 
 class RunSwagger:
-    def __init__(self, project_api_key, openai_api_key, repo_path, ai_chat_id, is_mcp):
+    def __init__(self, project_api_key, openai_api_key, ai_chat_id, is_mcp):
         self.ai_chat_id = ai_chat_id
-        self.user_configurations = UserConfigurations(project_api_key, openai_api_key, repo_path, ai_chat_id, is_mcp)
+        self.user_configurations = UserConfigurations(project_api_key, openai_api_key, ai_chat_id, is_mcp)
         self.user_config = self.user_configurations.load_user_config()
         self.framework_identifier = FrameworkIdentifier()
         self.file_scanner = FileScanner()
@@ -29,20 +31,13 @@ class RunSwagger:
         swagger = None
         try:
             if framework == "django" or framework == "flask" or framework == "fastapi":
-                swagger = python_swagger_generator(self.user_config['repo_path'], self.user_config['api_host'],
-                                                   self.user_config['repo_name'])
+                swagger = python_swagger_generator(self.user_config['api_host'])
             elif framework == "express":
-                swagger = nodejs_swagger_generator(self.user_config['repo_path'], self.user_config['api_host'],
-                                                   self.user_config['repo_name'])
+                swagger = nodejs_swagger_generator(self.user_config['api_host'])
             elif framework == "ruby_on_rails":
-                swagger = ruby_on_rails_swagger_generator(self.user_config['repo_path'], self.user_config['api_host'],
-                                                          self.user_config['repo_name'])
+                swagger = ruby_on_rails_swagger_generator(self.user_config['api_host'])
             elif framework == "golang":
-                swagger = golang_swagger_generator(
-                    self.user_config['repo_path'],
-                    self.user_config['api_host'],
-                    self.user_config['repo_name'],
-                )
+                swagger = golang_swagger_generator(self.user_config['api_host'])
         except Exception as ex:
             traceback.print_exc()
             print("Fallback to old procedure")
@@ -57,7 +52,7 @@ class RunSwagger:
     def run(self, ai_chat_id=None):
         resolved_ai_chat_id = self._resolve_ai_chat_id(ai_chat_id if ai_chat_id is not None else self.ai_chat_id)
         try:
-            file_paths = self.file_scanner.get_all_file_paths(self.user_config['repo_path'])
+            file_paths = self.file_scanner.get_all_file_paths()
             print("\n***************************************************")
             if self.user_config.get('framework', None):
                 print(f"Using Existing Framework - {self.user_config['framework']}")
@@ -76,7 +71,8 @@ class RunSwagger:
         try:
             swagger = self.run_python_nodejs_ruby(framework)
             if swagger:
-                self.swagger_generator.save_swagger_json(swagger, self.user_config['output_filepath'])
+                output_filepath = get_output_filepath()
+                self.swagger_generator.save_swagger_json(swagger, output_filepath)
                 #self.upload_swagger_to_qodex(resolved_ai_chat_id)
                 exit()
             api_files = self.file_scanner.find_api_files(file_paths, framework)
@@ -93,16 +89,16 @@ class RunSwagger:
             authentication_information = self.faiss_index.get_authentication_related_information(faiss_vector)
             print("Completed Fetching authentication related information")
             endpoint_related_information = self.endpoints_extractor.get_endpoint_related_information(faiss_vector, all_endpoints)
-            swagger = self.swagger_generator.create_swagger_json(self.user_config['repo_name'],endpoint_related_information, authentication_information, framework, self.user_config['api_host'], self.user_config['repo_path'])
+            swagger = self.swagger_generator.create_swagger_json(endpoint_related_information, authentication_information, framework, self.user_config['api_host'])
         except Exception as ex:
             traceback.print_exc()
             print("Oops! looks like we encountered an issue. Please try after some time.")
             exit()
         try:
-            self.swagger_generator.save_swagger_json(swagger, self.user_config['output_filepath'])
+            output_filepath = get_output_filepath()
+            self.swagger_generator.save_swagger_json(swagger, output_filepath)
         except Exception as ex:
-            print("Swagger was not able to be uploaded to server. Please check your project api key and try again.")
-        print("Swagger Generated Successfully")
+            print("Swagger was not able to be saved. Please check your project api key and try again.")
         #self.upload_swagger_to_qodex(resolved_ai_chat_id)
         return
 
@@ -112,7 +108,8 @@ class RunSwagger:
         if qodex_api_key:
             print("Uploading swagger to Qodex.AI")
             url = "https://api.app.qodex.ai/api/v1/collection_imports/create_with_json"
-            with open(self.user_config['output_filepath'], "r") as file:
+            output_filepath = get_output_filepath()
+            with open(output_filepath, "r") as file:
                 swagger_doc = json.load(file)
             payload = {
                 "api_key": qodex_api_key,
@@ -134,10 +131,9 @@ class RunSwagger:
         return
 
 
-repo_path = sys.argv[1]
-openai_api_key = sys.argv[2]
-project_api_key = sys.argv[3]
-ai_chat_id = sys.argv[4] if len(sys.argv) > 4 else ""
-is_mcp = sys.argv[5] if len(sys.argv) > 5 else False
+openai_api_key = sys.argv[1] if len(sys.argv) > 1 else ""
+project_api_key = sys.argv[2] if len(sys.argv) > 2 else ""
+ai_chat_id = sys.argv[3] if len(sys.argv) > 3 else ""
+is_mcp = sys.argv[4] if len(sys.argv) > 4 else False
 
-RunSwagger(project_api_key, openai_api_key, repo_path, ai_chat_id, is_mcp).run(ai_chat_id)
+RunSwagger(project_api_key, openai_api_key, ai_chat_id, is_mcp).run(ai_chat_id)

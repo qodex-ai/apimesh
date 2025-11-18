@@ -7,7 +7,7 @@ from python_pipeline.find_api_definition_files import find_api_definition_files
 from python_pipeline.identify_api_functions import set_parents, find_api_endpoints
 from config import Configurations
 from python_pipeline.definition_swagger_generator import get_function_definition_swagger
-from utils import get_git_commit_hash, get_github_repo_url
+from utils import get_git_commit_hash, get_github_repo_url, get_repo_path, get_repo_name
 
 config = Configurations()
 
@@ -19,7 +19,9 @@ def should_process_directory(dir_path: str) -> bool:
     path_parts = dir_path.split(os.sep)
     return not any(part in config.ignored_dirs for part in path_parts)
 
-def run_swagger_generation(directory_path, host, repo_name):
+def run_swagger_generation(host):
+    directory_path = get_repo_path()
+    repo_name = get_repo_name()
     new_dir_name = "qodex_file_information"
     new_dir_path = os.path.join(directory_path, new_dir_name)
     os.makedirs(new_dir_path, exist_ok=True)
@@ -50,8 +52,8 @@ def run_swagger_generation(directory_path, host, repo_name):
                 "version": "1.0.0",
                 "description": "This Swagger file was generated using OpenAI GPT.",
                 "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
-                "commit_reference": get_git_commit_hash(directory_path),
-                "github_repo_url": get_github_repo_url(directory_path)
+                "commit_reference": get_git_commit_hash(),
+                "github_repo_url": get_github_repo_url()
             },
             "servers": [
                 {

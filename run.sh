@@ -132,9 +132,10 @@ export PYTHONPATH="$CURRENT_DIR:$CLONE_DIR:$PYTHONPATH"
 # Set config paths
 export APIMESH_CONFIG_PATH="$CLONE_DIR/config.yml"
 export APIMESH_USER_CONFIG_PATH="$CURRENT_DIR/apimesh/config.json"
-export APIMESH_DEFAULT_REPO_PATH="$CURRENT_DIR"
+export APIMESH_USER_REPO_PATH="$CURRENT_DIR"
+export APIMESH_OUTPUT_FILEPATH="$CURRENT_DIR/apimesh/swagger.json"
 
-python3 -m apimesh.apimesh.swagger_generation_cli "$CURRENT_DIR" "$OPENAI_API_KEY" "$PROJECT_API_KEY" "$AI_CHAT_ID"
+python3 -m apimesh.apimesh.swagger_generation_cli "$OPENAI_API_KEY" "$PROJECT_API_KEY" "$AI_CHAT_ID"
 
 CLI_EXIT_CODE=$?
 

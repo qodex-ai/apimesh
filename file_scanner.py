@@ -1,6 +1,7 @@
 import os
 from typing import List
 from config import Configurations
+from utils import get_repo_path
 import re
 
 config = Configurations()
@@ -9,10 +10,11 @@ class FileScanner:
     def __init__(self):
         pass
 
-    def get_all_file_paths(self, repo_path) -> List[str|bytes]:
+    def get_all_file_paths(self) -> List[str|bytes]:
         """
         Get all file paths in the repository, ignoring specified directories
         """
+        repo_path = get_repo_path()
         file_paths = []
         supported_extensions = ('.py', '.js', '.ts', '.java', '.rb', '.go')
 
