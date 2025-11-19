@@ -591,9 +591,11 @@
             </select>
           </div>
           <div class="filter-group">
-            <label class="filter-label" for="tagFilter">Tags</label>
-            <select id="tagFilter" class="filter-select">
+            <label class="filter-label" for="sensitiveInfoFilter">Sensitive Information</label>
+            <select id="sensitiveInfoFilter" class="filter-select">
               <option value="">All</option>
+              <option value="Yes">Yes</option>
+              <option value="No">No</option>
             </select>
           </div>
         </div>
@@ -613,7 +615,7 @@
               <th>Summary & Description</th>
               <th>Authorization Required</th>
               <th>Module</th>
-              <th>Tags</th>
+              <th>Sensitive Information</th>
             </tr>
           </thead>
           <tbody id="apiTableBody"></tbody>
@@ -653,9 +655,9 @@
         return authorizationTag === "Authorization Required" ? "Yes" : "No";
       }
 
-      function formatTags(tags) {
-        if (!tags || !Array.isArray(tags) || tags.length === 0) return "N/A";
-        return tags.join(", ");
+      function getSensitiveInformation(sensitiveInfo) {
+        if (sensitiveInfo === undefined || sensitiveInfo === null) return "N/A";
+        return sensitiveInfo === true ? "Yes" : "No";
       }
 
       function formatTimestamp(timestamp) {
@@ -758,7 +760,7 @@
                 api_description: operation.api_description || "",
                 authorization_tag: operation.authorization_tag || "",
                 module_tag: operation.module_tag || "",
-                tags: operation.tags || [],
+                sensitive_information: operation.sensitive_information !== undefined ? operation.sensitive_information : null,
               });
             }
           });
@@ -786,7 +788,7 @@
           const authorizationRequired = getAuthorizationRequired(
             api.authorization_tag
           );
-          const tagsFormatted = formatTags(api.tags);
+          const sensitiveInfo = getSensitiveInformation(api.sensitive_information);
           const isTruncated =
             api.api_description && api.api_description.length > 100;
 
@@ -843,7 +845,13 @@
                         ${escapeHtml(api.module_tag)}
                     </td>
                     <td>
-                        ${escapeHtml(tagsFormatted)}
+                        <span class="${
+                          sensitiveInfo === "Yes"
+                            ? "auth-yes"
+                            : sensitiveInfo === "No"
+                            ? "auth-no"
+                            : "auth-na"
+                        }">${escapeHtml(sensitiveInfo)}</span>
                     </td>
                 `;
           tbody.appendChild(row);
@@ -873,9 +881,7 @@
               (api.summary && api.summary.toLowerCase().includes(term)) ||
               (api.api_description &&
                 api.api_description.toLowerCase().includes(term)) ||
-              (api.module_tag && api.module_tag.toLowerCase().includes(term)) ||
-              (api.tags &&
-                api.tags.some((tag) => tag.toLowerCase().includes(term)))
+              (api.module_tag && api.module_tag.toLowerCase().includes(term))
           );
         }
 
@@ -902,11 +908,11 @@
           });
         }
 
-        // Apply tags filter
-        if (filters.tag && filters.tag !== "") {
+        // Apply sensitive information filter
+        if (filters.sensitiveInfo && filters.sensitiveInfo !== "") {
           filtered = filtered.filter((api) => {
-            if (!api.tags || api.tags.length === 0) return false;
-            return api.tags.includes(filters.tag);
+            const sensitiveInfo = getSensitiveInformation(api.sensitive_information);
+            return sensitiveInfo === filters.sensitiveInfo;
           });
         }
 
@@ -938,29 +944,6 @@
           Array.from(modules).includes(currentModuleValue)
         ) {
           moduleSelect.value = currentModuleValue;
-        }
-
-        // Extract unique tags
-        const tags = new Set();
-        apis.forEach((api) => {
-          if (api.tags && Array.isArray(api.tags)) {
-            api.tags.forEach((tag) => tags.add(tag));
-          }
-        });
-        const tagSelect = document.getElementById("tagFilter");
-        const currentTagValue = tagSelect.value; // Preserve current selection
-        tagSelect.innerHTML = '<option value="">All</option>';
-        Array.from(tags)
-          .sort()
-          .forEach((tag) => {
-            const option = document.createElement("option");
-            option.value = tag;
-            option.textContent = tag;
-            tagSelect.appendChild(option);
-          });
-        // Restore previous selection if it still exists
-        if (currentTagValue && Array.from(tags).includes(currentTagValue)) {
-          tagSelect.value = currentTagValue;
         }
       }
 
@@ -1037,7 +1020,7 @@
           // Display metadata (timestamp and commit reference)
           displayMetadata(swaggerData);
 
-          // Populate dynamic filters (module and tags)
+          // Populate dynamic filters (module)
           populateDynamicFilters(allApisData);
 
           // Apply filters and render
@@ -1102,7 +1085,7 @@
           method: getSelectedValue(document.getElementById("methodFilter")),
           auth: getSelectedValue(document.getElementById("authFilter")),
           module: getSelectedValue(document.getElementById("moduleFilter")),
-          tag: getSelectedValue(document.getElementById("tagFilter")),
+          sensitiveInfo: getSelectedValue(document.getElementById("sensitiveInfoFilter")),
         };
 
         const filteredApis = filterAPIs(allApisData, searchTerm, filters);
@@ -1126,7 +1109,7 @@
         .getElementById("moduleFilter")
         .addEventListener("change", applyFilters);
       document
-        .getElementById("tagFilter")
+        .getElementById("sensitiveInfoFilter")
         .addEventListener("change", applyFilters);
 
       // Initial load
