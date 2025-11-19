@@ -89,6 +89,7 @@ def run_swagger_generation(
         text=True,
         timeout=timeout_seconds,
     )
+    os.remove(script_path)
 
     result = {
         "exit_code": proc.returncode,
