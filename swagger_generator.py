@@ -4,7 +4,7 @@ import prompts
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import time
-import os
+import os, re
 import datetime
 from utils import get_git_commit_hash, get_github_repo_url, get_repo_path, get_repo_name, format_repo_name
 
@@ -154,6 +154,7 @@ class SwaggerGeneration:
                 if swagger_data:
                     # Escape the JSON for embedding in JavaScript
                     swagger_json_str = json.dumps(swagger_data, indent=2)
+                    swagger_json_str = re.sub(r'</(script)', r'<\/\1', swagger_json_str, flags=re.IGNORECASE)
                     # Replace the placeholder or add the embedded data before the closing script tag
                     # We'll add it right after the script tag opens
                     embedded_data_script = f'''
