@@ -585,17 +585,17 @@
             </select>
           </div>
           <div class="filter-group">
-            <label class="filter-label" for="moduleFilter">Module</label>
-            <select id="moduleFilter" class="filter-select">
-              <option value="">All</option>
-            </select>
-          </div>
-          <div class="filter-group">
             <label class="filter-label" for="sensitiveInfoFilter">Sensitive Information</label>
             <select id="sensitiveInfoFilter" class="filter-select">
               <option value="">All</option>
               <option value="Yes">Yes</option>
               <option value="No">No</option>
+            </select>
+          </div>
+          <div class="filter-group">
+            <label class="filter-label" for="moduleFilter">Module</label>
+            <select id="moduleFilter" class="filter-select">
+              <option value="">All</option>
             </select>
           </div>
         </div>
@@ -614,8 +614,8 @@
               <th>Api Path</th>
               <th>Summary & Description</th>
               <th>Authorization Required</th>
-              <th>Module</th>
               <th>Sensitive Information</th>
+              <th>Module</th>
             </tr>
           </thead>
           <tbody id="apiTableBody"></tbody>
@@ -842,9 +842,6 @@
                         }">${escapeHtml(authorizationRequired)}</span>
                     </td>
                     <td>
-                        ${escapeHtml(api.module_tag)}
-                    </td>
-                    <td>
                         <span class="${
                           sensitiveInfo === "Yes"
                             ? "auth-yes"
@@ -852,6 +849,9 @@
                             ? "auth-no"
                             : "auth-na"
                         }">${escapeHtml(sensitiveInfo)}</span>
+                    </td>
+                    <td>
+                        ${escapeHtml(api.module_tag)}
                     </td>
                 `;
           tbody.appendChild(row);
