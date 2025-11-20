@@ -9,9 +9,17 @@ API_DECORATOR_NAMES = {
     'api', 'endpoint', 'router', 'controller', 'middleware', 'rest'
 }
 
+HTTP_METHODS = ['get', 'post', 'put', 'delete', 'patch', 'options', 'head']
+ROUTE_OBJECT_PREFIXES = ['app', 'router', 'route', 'api', 'controller', 'server']
+ROUTE_OBJECT_SUFFIXES = ['Router', 'Routes', 'Api', 'Controller', 'App', 'Server']
+
+route_prefix_pattern = r'(?:' + '|'.join(ROUTE_OBJECT_PREFIXES) + r')'
+route_suffix_pattern = r'(?:[A-Za-z_$][\w$]*?(?:' + '|'.join(ROUTE_OBJECT_SUFFIXES) + r'))'
+route_object_pattern = r'(?:' + route_prefix_pattern + r'|' + route_suffix_pattern + r')'
+
 # Regex patterns to detect API routes or decorators
 ROUTE_METHOD_PATTERN = re.compile(
-    r'\b(app|router|route)\s*\.\s*(' + '|'.join(API_DECORATOR_NAMES) + r')\s*\(',
+    r'\b' + route_object_pattern + r'\s*\.\s*(?:' + '|'.join(HTTP_METHODS) + r')\s*\(',
     re.IGNORECASE
 )
 
