@@ -19,7 +19,7 @@
 
 ---
 
-## ✨ Key Features
+### ✨ Key Features
 
 | Feature | Benefit |
 |-------|--------|
@@ -32,7 +32,7 @@
 
 ---
 
-## 🧠 How It Works
+### 🧠 How It Works
 
 A **precise, AI-augmented pipeline** ensures reliable, up-to-date docs:
 
@@ -46,7 +46,7 @@ A **precise, AI-augmented pipeline** ensures reliable, up-to-date docs:
 
 ---
 
-## 🌐 Supported Languages & Frameworks
+### 🌐 Supported Languages & Frameworks
 
 | Language | Frameworks | Detection Method |
 |--------|------------|------------------|
@@ -59,7 +59,7 @@ A **precise, AI-augmented pipeline** ensures reliable, up-to-date docs:
 
 ---
 
-## 📂 Output Files
+### 📂 Output Files
 
 | File | Location | Purpose |
 |------|----------|--------|
@@ -72,9 +72,9 @@ A **precise, AI-augmented pipeline** ensures reliable, up-to-date docs:
 
 ---
 
-## 🚀 Quick Start (30 Seconds)
+## Quick Start (30 Seconds)
 
-### Option 1: docker (Fastest)
+### Option 1: docker (Recommended)
 
 Navigate to your repository
 ```bash
