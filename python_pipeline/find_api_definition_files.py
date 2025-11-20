@@ -36,7 +36,7 @@ def file_contains_api_defs(file_path):
     except Exception:
         return False
     for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             for decorator in node.decorator_list:
                 if has_api_decorator(decorator):
                     return True
