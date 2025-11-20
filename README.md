@@ -1,5 +1,14 @@
 # ApiMesh: Code to OpenAPI Docs, Instantly
 
+[![Python Version](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![CI](https://github.com/qodex-ai/apimesh/actions/workflows/docker-build.yml/badge.svg?branch=main)](https://github.com/qodex-ai/apimesh/actions/workflows/docker-build.yml)
+[![Tutorial](https://img.shields.io/badge/%F0%9F%93%96%20tutorial-get%20started-brightgreen.svg)](#quick-start-30-seconds)
+[![Documentation](https://img.shields.io/badge/%F0%9F%93%9A%20docs-apimesh--docs-blue.svg)](apimesh/apimesh-docs.html)
+[![Examples](https://img.shields.io/badge/%F0%9F%9A%80%20examples-ready--to--run-orange.svg)](#quick-start-30-seconds)
+[![Discord](https://img.shields.io/badge/Discord-Join%20Community-5865f2?logo=discord&logoColor=white)](https://discord.gg/qodex)
+[![Twitter](https://img.shields.io/badge/Twitter-Follow%20Updates-1da1f2?logo=x&logoColor=white)](https://x.com/qodex_ai)
+
 **Open-Source OpenAPI Generator** – Automatically scan your codebase, generate **accurate OpenAPI 3.0 specs**, and render a **beautiful interactive HTML API UI** for instant exploration.
 
 **From code to live API docs in seconds** — no manual writing, no drift, no hassle.
