@@ -1,4 +1,4 @@
-# ApiMesh 🚀
+# ApiMesh: Code to OpenAPI Docs, Instantly
 
 **Open-Source OpenAPI Generator** – Automatically scan your codebase, generate **accurate OpenAPI 3.0 specs**, and render a **beautiful interactive HTML API UI** for instant exploration.
 
