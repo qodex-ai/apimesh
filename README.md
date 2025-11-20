@@ -1,5 +1,13 @@
 # ApiMesh: Code to OpenAPI Docs, Instantly
 
+[![Python Version](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Docker Build](https://img.shields.io/badge/docker%20build-passing-22c55e?logo=docker&logoColor=white)](https://github.com/qodex-ai/apimesh/actions/workflows/docker-build.yml)
+[![Tutorial](https://img.shields.io/badge/%F0%9F%93%96%20tutorial-get%20started-brightgreen.svg)](#quick-start-30-seconds)
+[![Examples](https://img.shields.io/badge/%F0%9F%9A%80%20examples-ready--to--run-orange.svg)](#quick-start-30-seconds)
+[![Discord](https://img.shields.io/badge/Discord-Join%20Community-5865f2?logo=discord&logoColor=white)](https://discord.gg/MHDayrP7)
+[![Twitter](https://img.shields.io/badge/Twitter-Follow%20Updates-1da1f2?logo=x&logoColor=white)](https://x.com/qodex_ai)
+
 **Open-Source OpenAPI Generator** – Automatically scan your codebase, generate **accurate OpenAPI 3.0 specs**, and render a **beautiful interactive HTML API UI** for instant exploration.
 
 **From code to live API docs in seconds** — no manual writing, no drift, no hassle.
@@ -15,6 +23,7 @@
 - Generates a **valid `swagger.json` (OpenAPI 3.0)**.
 - **Renders `apimesh-docs.html`** — a **fully interactive API UI** powered by Swagger UI.
 
+![img.png](img.png)
 > **Open the HTML file in any browser. No server. No setup. Just click and explore.**
 
 ---
