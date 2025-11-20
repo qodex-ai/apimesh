@@ -62,7 +62,8 @@ A **precise, AI-augmented pipeline** ensures reliable, up-to-date docs:
 | **Python** | Django, Flask, FastAPI, DRF | Route files + decorators |
 | **Node.js / TS** | Express, NestJS | `app.get`, `Router`, decorators |
 | **Ruby on Rails** | Rails | `routes.rb` + controllers |
-| **Go, Java, etc.** | Any REST | LLM fallback + patterns |
+| **Go** | Gin, Echo, Fiber, Chi, Gorilla Mux, net/http | Tree-sitter router analysis |
+| **Java, etc.** | Any REST | LLM fallback + patterns |
 
 > Add custom patterns in `config.yml` — PRs welcome!
 
