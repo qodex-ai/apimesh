@@ -65,7 +65,6 @@ def find_api_endpoints_js(file_path: Path):
         source = file_path.read_text(encoding='utf-8')
         tree = _parse_with_optional_catch_fallback(source, loc=True)
     except Exception as e:
-        print(f"Error parsing {file_path}: {e}")
         return _extract_endpoints_with_regex(source, file_path)
 
     endpoints = []
