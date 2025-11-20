@@ -22,8 +22,8 @@
 - Discovers all REST API endpoints, parameters, auth, and schemas.
 - Generates a **valid `swagger.json` (OpenAPI 3.0)**.
 - **Renders `apimesh-docs.html`** — a **fully interactive API UI** powered by Swagger UI.
-![img.png](img.png)
 
+![img.png](img.png)
 > **Open the HTML file in any browser. No server. No setup. Just click and explore.**
 
 ---
