@@ -91,6 +91,11 @@ Navigate to your repository
 cd /path/to/your/repo
 ```
 
+Pull docker latest image
+```bash
+docker pull qodexai/apimesh:latest
+```
+
 Run interactively - will prompt for any missing inputs
 ```bash
 docker run -it --rm -v $(pwd):/workspace qodexai/apimesh:latest
