@@ -8,7 +8,7 @@ TAG="${TAG:-latest}"
 FULL_IMAGE_NAME="${DOCKER_USERNAME}/${IMAGE_NAME}:${TAG}"
 
 echo "Building Docker image: ${FULL_IMAGE_NAME}"
-docker build -t "${FULL_IMAGE_NAME}" .
+docker build --pull always -t "${FULL_IMAGE_NAME}" .
 
 echo ""
 echo "Build complete! Image: ${FULL_IMAGE_NAME}"
