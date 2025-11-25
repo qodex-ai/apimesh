@@ -258,6 +258,45 @@
         z-index: 10;
       }
 
+      th.sortable {
+        cursor: pointer;
+        user-select: none;
+        transition: background-color 0.2s;
+        position: relative;
+        padding-right: 28px;
+      }
+
+      th.sortable:hover {
+        background-color: #f3f4f6;
+      }
+
+      th.sortable .sort-indicator {
+        position: absolute;
+        right: 8px;
+        top: 50%;
+        transform: translateY(-50%);
+        font-size: 0.7rem;
+        color: #9ca3af;
+        opacity: 0.5;
+      }
+
+      th.sortable.sort-asc .sort-indicator::after {
+        content: "▲";
+        opacity: 1;
+        color: #3b82f6;
+      }
+
+      th.sortable.sort-desc .sort-indicator::after {
+        content: "▼";
+        opacity: 1;
+        color: #3b82f6;
+      }
+
+      th.sortable:not(.sort-asc):not(.sort-desc) .sort-indicator::after {
+        content: "⇅";
+        opacity: 0.3;
+      }
+
       tbody tr {
         border-bottom: 1px solid #dedfe1;
         transition: background-color 0.15s ease;
@@ -610,12 +649,12 @@
         <table id="apiTable" style="display: none">
           <thead>
             <tr>
-              <th>Method</th>
-              <th>Api Path</th>
-              <th>Summary & Description</th>
-              <th>Authorization Required</th>
-              <th>Sensitive Information</th>
-              <th>Module</th>
+              <th class="sortable" data-sort="method">Method<span class="sort-indicator"></span></th>
+              <th class="sortable" data-sort="path">Api Path<span class="sort-indicator"></span></th>
+              <th class="sortable" data-sort="summary">Summary & Description<span class="sort-indicator"></span></th>
+              <th class="sortable" data-sort="auth">Authorization Required<span class="sort-indicator"></span></th>
+              <th class="sortable" data-sort="sensitive">Sensitive Information<span class="sort-indicator"></span></th>
+              <th class="sortable" data-sort="module">Module<span class="sort-indicator"></span></th>
             </tr>
           </thead>
           <tbody id="apiTableBody"></tbody>
@@ -1023,7 +1062,7 @@
           // Populate dynamic filters (module)
           populateDynamicFilters(allApisData);
 
-          // Apply filters and render
+          // Apply filters and render (this will also update sort indicators)
           applyFilters();
 
           loadingEl.style.display = "none";
@@ -1076,6 +1115,123 @@
 
       // Store APIs globally for filtering
       let allApisData = [];
+      
+      // Sort state - default to module_tag
+      let sortColumn = "module";
+      let sortDirection = "asc"; // "asc" or "desc"
+
+      function sortAPIs(apis, column, direction) {
+        if (!column) {
+          // Default sort: module_tag -> path -> method
+          return sortAPIs(apis, "module", "asc");
+        }
+
+        const sorted = [...apis].sort((a, b) => {
+          let aPrimary, bPrimary;
+
+          // Get primary sort value based on selected column
+          switch (column) {
+            case "method":
+              aPrimary = (a.method || "").toLowerCase();
+              bPrimary = (b.method || "").toLowerCase();
+              break;
+            case "path":
+              aPrimary = (a.path || "").toLowerCase();
+              bPrimary = (b.path || "").toLowerCase();
+              break;
+            case "summary":
+              aPrimary = ((a.summary || "") + " " + (a.api_description || "")).toLowerCase();
+              bPrimary = ((b.summary || "") + " " + (b.api_description || "")).toLowerCase();
+              break;
+            case "auth":
+              aPrimary = getAuthorizationRequired(a.authorization_tag).toLowerCase();
+              bPrimary = getAuthorizationRequired(b.authorization_tag).toLowerCase();
+              break;
+            case "sensitive":
+              aPrimary = getSensitiveInformation(a.sensitive_information).toLowerCase();
+              bPrimary = getSensitiveInformation(b.sensitive_information).toLowerCase();
+              break;
+            case "module":
+              aPrimary = (a.module_tag || "").toLowerCase();
+              bPrimary = (b.module_tag || "").toLowerCase();
+              break;
+            default:
+              return 0;
+          }
+
+          // Primary comparison
+          if (aPrimary < bPrimary) {
+            return direction === "asc" ? -1 : 1;
+          }
+          if (aPrimary > bPrimary) {
+            return direction === "asc" ? 1 : -1;
+          }
+
+          // If primary values are equal, apply multi-level tiebreakers:
+          // 1. module_tag (primary tiebreaker)
+          // 2. api path (secondary tiebreaker)
+          // 3. method (tertiary tiebreaker)
+          
+          // Only apply tiebreakers if the primary column is not one of them
+          if (column !== "module") {
+            const aModule = (a.module_tag || "").toLowerCase();
+            const bModule = (b.module_tag || "").toLowerCase();
+            if (aModule < bModule) return -1;
+            if (aModule > bModule) return 1;
+          }
+
+          if (column !== "path") {
+            const aPath = (a.path || "").toLowerCase();
+            const bPath = (b.path || "").toLowerCase();
+            if (aPath < bPath) return -1;
+            if (aPath > bPath) return 1;
+          }
+
+          if (column !== "method") {
+            const aMethod = (a.method || "").toLowerCase();
+            const bMethod = (b.method || "").toLowerCase();
+            if (aMethod < bMethod) return -1;
+            if (aMethod > bMethod) return 1;
+          }
+
+          return 0;
+        });
+
+        return sorted;
+      }
+
+      function updateSortIndicators() {
+        // Remove all sort classes
+        document.querySelectorAll("th.sortable").forEach((th) => {
+          th.classList.remove("sort-asc", "sort-desc");
+        });
+
+        // Add sort class to current column
+        if (sortColumn) {
+          const header = document.querySelector(`th[data-sort="${sortColumn}"]`);
+          if (header) {
+            header.classList.add(sortDirection === "asc" ? "sort-asc" : "sort-desc");
+          }
+        }
+      }
+
+      function handleHeaderClick(event) {
+        const header = event.currentTarget;
+        const column = header.getAttribute("data-sort");
+
+        if (!column) return;
+
+        // Toggle direction if clicking the same column, otherwise set to asc
+        if (sortColumn === column) {
+          sortDirection = sortDirection === "asc" ? "desc" : "asc";
+        } else {
+          sortColumn = column;
+          sortDirection = "asc";
+        }
+
+        updateSortIndicators();
+        applyFilters();
+      }
 
       function applyFilters() {
         if (allApisData.length === 0) return;
@@ -1088,9 +1244,14 @@
           sensitiveInfo: getSelectedValue(document.getElementById("sensitiveInfoFilter")),
         };
 
-        const filteredApis = filterAPIs(allApisData, searchTerm, filters);
+        let filteredApis = filterAPIs(allApisData, searchTerm, filters);
+        
+        // Apply sorting
+        filteredApis = sortAPIs(filteredApis, sortColumn, sortDirection);
+        
         renderTable(filteredApis);
         updateStats(allApisData, filteredApis);
+        updateSortIndicators();
       }
 
       // Search functionality
@@ -1111,6 +1272,11 @@
       document
         .getElementById("sensitiveInfoFilter")
         .addEventListener("change", applyFilters);
+
+      // Sort functionality - add click listeners to sortable headers
+      document.querySelectorAll("th.sortable").forEach((header) => {
+        header.addEventListener("click", handleHeaderClick);
+      });
 
       // Initial load
       loadSwagger();
