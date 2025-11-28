@@ -91,7 +91,9 @@ pip3 install \
   "tree-sitter-javascript==0.23.1" \
   "tree-sitter-ruby==0.23.1" \
   "tree-sitter-go==0.25.0" \
-  "esprima==4.0.1"
+  "tree-sitter-typescript==0.23.2" \
+  "esprima==4.0.1" \
+  "requests"
 
 # --- repo setup (clone/update specific branch) ---
 if [[ -d "$CLONE_DIR/.git" ]]; then

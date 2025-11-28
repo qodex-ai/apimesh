@@ -96,20 +96,26 @@ echo ""
 
 echo "Installing Python dependencies..."
 pip3 install --quiet --upgrade pip
-pip3 install langchain==0.3.16
-pip3 install langchain-community==0.3.16
-pip3 install langchain-openai==0.3.5
-pip3 install openai==1.76.0
-pip3 install tiktoken==0.8.0
-pip3 install faiss-cpu==1.9.0.post1
-pip3 install langchain-text-splitters==0.3.4
-pip3 install pyyaml==6.0.2
-pip3 install tree-sitter==0.25.1
-pip3 install tree-sitter-python==0.23.6
-pip3 install tree-sitter-javascript==0.23.1
-pip3 install tree-sitter-ruby==0.23.1
-pip3 install tree-sitter-go==0.25.0
-pip3 install esprima==4.0.1
+pip3 install \
+  "langchain==0.3.16" \
+  "langchain-community==0.3.16" \
+  "langchain-core==0.3.63" \
+  "langchain-openai==0.3.5" \
+  "langsmith==0.1.139" \
+  "openai==1.76.0" \
+  "tiktoken==0.8.0" \
+  "faiss-cpu==1.9.0.post1" \
+  "langchain-text-splitters==0.3.4" \
+  "pyyaml==6.0.2" \
+  "numpy<2" \
+  "tree-sitter==0.25.1" \
+  "tree-sitter-python==0.23.6" \
+  "tree-sitter-javascript==0.23.1" \
+  "tree-sitter-ruby==0.23.1" \
+  "tree-sitter-go==0.25.0" \
+  "tree-sitter-typescript==0.23.2" \
+  "esprima==4.0.1" \
+  "requests"
 echo "Dependencies installed"
 echo ""
 
