@@ -63,7 +63,12 @@ class RunSwagger:
                 self.user_config['framework'] = framework
                 self.user_configurations.save_user_config(self.user_config)
         except Exception as ex:
-            print("We do not support this framework currently. Please contact QodexAI support.")
+            msg = str(ex)
+            lowered = msg.lower()
+            if "insufficient_quota" in lowered or "quota" in lowered:
+                print("OpenAI quota exceeded. Please check your plan/billing and retry after adding credits.")
+            else:
+                print("We do not support this framework currently. Please contact QodexAI support.")
             exit()
         print(f"completed framework identification - {framework}")
         print("\n***************************************************")

@@ -70,7 +70,7 @@ class UserConfigurations:
         print(f"  ✓ API Key: {resolved_openai_api_key}")
 
         self._print_section_header("Model Selection")
-        default_openai_model = user_config.get("openai_model", "gpt-4.1")
+        default_openai_model = user_config.get("openai_model", "gpt-5.1-codex")
         openai_model = default_openai_model
         user_config["openai_model"] = openai_model
         self.save_user_config(user_config)

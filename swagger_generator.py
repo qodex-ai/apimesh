@@ -99,6 +99,7 @@ class SwaggerGeneration:
             swagger (dict): The Swagger JSON dictionary.
             filename (str): The output file name.
         """
+        swagger = SwaggerGeneration._sanitize_swagger(swagger)
         # Create directory if it doesn't exist
         directory = os.path.dirname(filename)
         if directory:
@@ -199,3 +200,36 @@ class SwaggerGeneration:
             print(f"Warning: Could not generate HTML viewer: {ex}")
             return None
 
+    @staticmethod
+    def _sanitize_swagger(swagger: dict) -> dict:
+        """
+        Apply lightweight, framework-agnostic cleanup:
+        - normalize Express-style segments (:param -> {param})
+        - merge duplicate paths created by differing param syntax
+        - drop wildcard /* or * paths that often come from generic middleware
+        """
+        paths = swagger.get("paths", {})
+        if not isinstance(paths, dict):
+            return swagger
+
+        def normalize(path: str) -> str:
+            return re.sub(r":([A-Za-z_][\w-]*)", r"{\1}", path)
+
+        # Drop wildcard paths
+        for wildcard in ("/*", "*"):
+            paths.pop(wildcard, None)
+
+        # Re-key normalized paths
+        for original in list(paths.keys()):
+            normalized = normalize(original)
+            if normalized == original:
+                continue
+            methods = paths.pop(original)
+            if normalized not in paths:
+                paths[normalized] = methods
+            else:
+                # merge methods, favor normalized version
+                paths[normalized].update(methods)
+
+        swagger["paths"] = paths
+        return swagger
