@@ -77,8 +77,11 @@ pip3 install --upgrade pip
 pip3 install \
   "langchain==0.3.16" \
   "langchain-community==0.3.16" \
+  "langchain-core==0.3.63" \
   "langchain-openai==0.3.5" \
+  "langsmith==0.1.139" \
   "openai==1.76.0" \
+  "numpy<2" \
   "tiktoken==0.8.0" \
   "faiss-cpu==1.9.0.post1" \
   "langchain-text-splitters==0.3.4" \

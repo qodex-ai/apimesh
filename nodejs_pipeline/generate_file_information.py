@@ -1,17 +1,40 @@
+from pathlib import Path
 from tree_sitter import Language, Parser, QueryCursor
 import tree_sitter_javascript
+import tree_sitter_typescript
 import os
 import json
+from nodejs_pipeline.constants import (
+    TYPESCRIPT_FILE_EXTENSIONS,
+    TSX_FILE_EXTENSIONS,
+)
 
 # Load JavaScript grammar
 JS_LANGUAGE = Language(tree_sitter_javascript.language())
-parser = Parser(JS_LANGUAGE)
+TS_LANGUAGE = Language(tree_sitter_typescript.language_typescript())
+TSX_LANGUAGE = Language(tree_sitter_typescript.language_tsx())
+
+
+def _get_language_for_file(filename: str) -> Language:
+    suffix = Path(filename).suffix.lower()
+    if suffix in TSX_FILE_EXTENSIONS and TSX_LANGUAGE:
+        return TSX_LANGUAGE
+    if suffix in TYPESCRIPT_FILE_EXTENSIONS and TS_LANGUAGE:
+        return TS_LANGUAGE
+    return JS_LANGUAGE
 
 def parse_file(filename):
     with open(filename, 'r', encoding='utf-8') as f:
         code = f.read()
+    language = _get_language_for_file(filename)
+    parser = Parser(language)
     tree = parser.parse(code.encode('utf-8'))
-    return tree, code
+    return tree, code, language
+
+
+def _parse_with_language(code: str, language: Language):
+    parser = Parser(language)
+    return parser.parse(code.encode('utf-8'))
 
 def get_module_origin(module_name, base_directory):
     """
@@ -20,7 +43,24 @@ def get_module_origin(module_name, base_directory):
     # Relative import
     if module_name.startswith("."):
         path = os.path.normpath(os.path.join(base_directory, module_name))
-        for ext in (".js", ".mjs", ".cjs", "/index.js"):
+        search_exts = [
+            ".ts",
+            ".tsx",
+            ".cts",
+            ".mts",
+            ".js",
+            ".mjs",
+            ".cjs",
+            ".d.ts",
+            "/index.ts",
+            "/index.tsx",
+            "/index.cts",
+            "/index.mts",
+            "/index.js",
+            "/index.mjs",
+            "/index.cjs",
+        ]
+        for ext in search_exts:
             candidate = path + ext
             if os.path.exists(candidate):
                 return os.path.abspath(candidate)
@@ -33,9 +73,9 @@ def get_module_origin(module_name, base_directory):
 
     return "<node_builtin_or_external>"
 
-def find_import_usages(tree, imported_names):
+def find_import_usages(tree, imported_names, language):
     """Find where imported identifiers are used."""
-    query = JS_LANGUAGE.query("""
+    query = language.query("""
         (identifier) @ident
     """)
     cursor = QueryCursor(query)
@@ -50,11 +90,11 @@ def find_import_usages(tree, imported_names):
                 usages[name].append(line)
     return usages
 
-def get_elements(tree, code, base_directory):
+def get_elements(tree, code, base_directory, language):
     """
     Extract classes, functions, variables, function calls, imports.
     """
-    query = JS_LANGUAGE.query("""
+    query = language.query("""
         (class_declaration
             name: (identifier) @class-name) @class
 
@@ -169,7 +209,7 @@ def get_elements(tree, code, base_directory):
 
     # Find import usages
     if imported_names:
-        usages = find_import_usages(tree, imported_names)
+        usages = find_import_usages(tree, imported_names, language)
         for imp in elements['imports']:
             name = imp['imported_name']
             if name and name in usages:
@@ -180,8 +220,19 @@ def get_elements(tree, code, base_directory):
 def process_file(filename, base_directory=None):
     if not base_directory:
         base_directory = os.path.dirname(filename)
-    tree, code = parse_file(filename)
-    elements = get_elements(tree, code, base_directory)
+
+    tree, code, language = parse_file(filename)
+    try:
+        elements = get_elements(tree, code, base_directory, language)
+    except Exception as ex:
+        suffix = Path(filename).suffix.lower()
+        if suffix in TYPESCRIPT_FILE_EXTENSIONS or suffix in TSX_FILE_EXTENSIONS:
+            # Fallback: try parsing with JS grammar to salvage metadata for TS/TSX files that break the TS query
+            fallback_tree = _parse_with_language(code, JS_LANGUAGE)
+            elements = get_elements(fallback_tree, code, base_directory, JS_LANGUAGE)
+        else:
+            raise
+
     return {
         'filename': filename,
         'elements': elements
