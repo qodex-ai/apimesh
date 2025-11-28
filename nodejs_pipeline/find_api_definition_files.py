@@ -1,6 +1,7 @@
 import re
 from pathlib import Path
 from config import Configurations
+from nodejs_pipeline.constants import SUPPORTED_NODE_FILE_EXTENSIONS
 
 config = Configurations()
 
@@ -32,7 +33,7 @@ def find_node_files(directory):
     directory = Path(directory)
     node_files = []
     for file in directory.rglob('*'):
-        if file.suffix in ('.js'):
+        if file.suffix and file.suffix.lower() in SUPPORTED_NODE_FILE_EXTENSIONS:
             if not any(part in config.ignored_dirs for part in file.parts):
                 node_files.append(file)
     return node_files
