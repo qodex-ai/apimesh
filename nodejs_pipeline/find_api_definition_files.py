@@ -6,8 +6,8 @@ from nodejs_pipeline.constants import SUPPORTED_NODE_FILE_EXTENSIONS
 config = Configurations()
 
 API_DECORATOR_NAMES = {
-    'route', 'get', 'post', 'put', 'delete', 'patch',
-    'api', 'endpoint', 'router', 'controller', 'middleware', 'rest'
+    'route', 'get', 'post', 'put', 'delete', 'patch', 'options', 'head', 'all',
+    'api', 'endpoint', 'router', 'controller', 'module', 'middleware', 'rest'
 }
 
 HTTP_METHODS = ['get', 'post', 'put', 'delete', 'patch', 'options', 'head']

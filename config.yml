@@ -155,4 +155,12 @@ routing_patterns_map:
     - 'fiber\.New\('
     - '\b\w+\.(Get|Post|Put|Delete|Patch|Options|Head)\([''"]'
 
+  nestjs:
+    - '@Controller\\([''"]'
+    - '@(Get|Post|Put|Delete|Patch|Options|Head)\\('
+    - 'NestFactory\\.create\\('
+    - 'app\\.select\\('
+    - 'app\\.useGlobalPipes\\('
+    - '@Module\\('
+
 gpt_4o_model_name: "gpt-5.1-codex"
