@@ -32,7 +32,7 @@ class RunSwagger:
         try:
             if framework == "django" or framework == "flask" or framework == "fastapi":
                 swagger = python_swagger_generator(self.user_config['api_host'])
-            elif framework == "express":
+            elif framework == "express" or framework == "nestjs":
                 swagger = nodejs_swagger_generator(self.user_config['api_host'])
             elif framework == "ruby_on_rails":
                 swagger = ruby_on_rails_swagger_generator(self.user_config['api_host'])
