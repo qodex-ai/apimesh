@@ -24,7 +24,7 @@ class UserConfigurations:
     def __init__(self, project_api_key, openai_api_key, ai_chat_id, is_mcp):
         self.is_mcp = is_mcp
         self.ai_chat_id = ai_chat_id
-        self.add_user_configs(project_api_key, openai_api_key)
+        self.add_user_configs(openai_api_key)
 
     @staticmethod
     def load_user_config():
@@ -53,7 +53,7 @@ class UserConfigurations:
         line = "=" * max(len(title) + 10, 50)
         print(f"\n{line}\n{title}\n{line}")
 
-    def add_user_configs(self, project_api_key, openai_api_key):
+    def add_user_configs(self, openai_api_key):
         user_config = self.load_user_config()
         self._print_section_header("OpenAI Credentials")
         stored_openai_api_key = user_config.get("openai_api_key", "")
