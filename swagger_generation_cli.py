@@ -1,5 +1,10 @@
-import traceback
+import json
 import os
+import sys
+import time
+import traceback
+
+import requests
 
 from user_config import UserConfigurations
 from swagger_generator import SwaggerGeneration
@@ -12,8 +17,8 @@ from python_pipeline.run_swagger_generation import run_swagger_generation as pyt
 from rails_pipeline.run_swagger_generation import run_swagger_generation as ruby_on_rails_swagger_generator
 from golang_pipeline.run_swagger_generation import run_swagger_generation as golang_swagger_generator
 from utils import get_output_filepath
-import requests, json
-import sys
+from telemetry_posthog import PostHogTelemetry
+
 
 class RunSwagger:
     def __init__(self, project_api_key, openai_api_key, ai_chat_id, is_mcp):
@@ -25,6 +30,7 @@ class RunSwagger:
         self.endpoints_extractor = EndpointsExtractor()
         self.faiss_index = GenerateFaissIndex()
         self.swagger_generator = SwaggerGeneration()
+        self.telemetry = PostHogTelemetry.from_env()
 
 
     def run_python_nodejs_ruby(self, framework):
@@ -51,59 +57,91 @@ class RunSwagger:
 
     def run(self, ai_chat_id=None):
         resolved_ai_chat_id = self._resolve_ai_chat_id(ai_chat_id if ai_chat_id is not None else self.ai_chat_id)
+        telemetry = self.telemetry
+        run_id = telemetry.new_run_id()
+        t0 = time.time()
+
+        telemetry.capture("apimesh_run_started", {
+            "run_id": run_id,
+        })
+
+        file_paths = []
+        swagger = None
+        all_endpoints = []
+        framework = ""
+
         try:
-            file_paths = self.file_scanner.get_all_file_paths()
+            with telemetry.stage(run_id, "scan_repo"):
+                file_paths = self.file_scanner.get_all_file_paths()
+
             print("\n***************************************************")
-            if self.user_config.get('framework', None):
-                print(f"Using Existing Framework - {self.user_config['framework']}")
-                framework =  self.user_config.get('framework', "")
-            else:
-                print("Started framework identification")
-                framework = self.framework_identifier.get_framework(file_paths)['framework']
-                self.user_config['framework'] = framework
-                self.user_configurations.save_user_config(self.user_config)
-        except Exception as ex:
-            msg = str(ex)
-            lowered = msg.lower()
-            if "insufficient_quota" in lowered or "quota" in lowered:
-                print("OpenAI quota exceeded. Please check your plan/billing and retry after adding credits.")
-            else:
-                print("We do not support this framework currently. Please contact QodexAI support.")
-            exit()
-        print(f"completed framework identification - {framework}")
-        print("\n***************************************************")
-        print("Started finding files related to API information")
-        try:
-            swagger = self.run_python_nodejs_ruby(framework)
-            if swagger:
+            with telemetry.stage(run_id, "detect_framework"):
+                try:
+                    if self.user_config.get('framework', None):
+                        print(f"Using Existing Framework - {self.user_config['framework']}")
+                        framework = self.user_config.get('framework', "")
+                    else:
+                        print("Started framework identification")
+                        framework = self.framework_identifier.get_framework(file_paths)['framework']
+                        self.user_config['framework'] = framework
+                        self.user_configurations.save_user_config(self.user_config)
+                except Exception as ex:
+                    msg = str(ex)
+                    lowered = msg.lower()
+                    if "insufficient_quota" in lowered or "quota" in lowered:
+                        print("OpenAI quota exceeded. Please check your plan/billing and retry after adding credits.")
+                    else:
+                        print("We do not support this framework currently. Please contact QodexAI support.")
+                    raise
+
+            print(f"completed framework identification - {framework}")
+            print("\n***************************************************")
+            print("Started finding files related to API information")
+
+            try:
+                with telemetry.stage(run_id, "extract_endpoints"):
+                    swagger = self.run_python_nodejs_ruby(framework)
+                    if swagger:
+                        print("Completed finding files related to API information")
+                    else:
+                        api_files = self.file_scanner.find_api_files(file_paths, framework)
+                        print("Completed finding files related to API information")
+                        for filePath in api_files:
+                            endpoints = self.endpoints_extractor.extract_endpoints_with_gpt(filePath, framework)
+                            all_endpoints.extend(endpoints)
+
+                with telemetry.stage(run_id, "generate_swagger", {"fast_path": bool(swagger)}):
+                    if not swagger:
+                        print("\n***************************************************")
+                        print("Started creating faiss index for all files")
+                        faiss_vector = self.faiss_index.create_faiss_index(file_paths, framework)
+                        print("Completed creating faiss index for all files")
+                        print("Fetching authentication related information")
+                        authentication_information = self.faiss_index.get_authentication_related_information(faiss_vector)
+                        print("Completed Fetching authentication related information")
+                        endpoint_related_information = self.endpoints_extractor.get_endpoint_related_information(faiss_vector, all_endpoints)
+                        swagger = self.swagger_generator.create_swagger_json(endpoint_related_information, authentication_information, framework, self.user_config['api_host'])
+            except Exception:
+                print("Oops! looks like we encountered an issue. Please try after some time.")
+                raise
+
+            with telemetry.stage(run_id, "render_html"):
                 output_filepath = get_output_filepath()
                 self.swagger_generator.save_swagger_json(swagger, output_filepath)
-                #self.upload_swagger_to_qodex(resolved_ai_chat_id)
-                exit()
-            api_files = self.file_scanner.find_api_files(file_paths, framework)
-            print("Completed finding files related to API information")
-            all_endpoints = []
-            for filePath in api_files:
-                endpoints = self.endpoints_extractor.extract_endpoints_with_gpt(filePath, framework)
-                all_endpoints.extend(endpoints)
-            print("\n***************************************************")
-            print("Started creating faiss index for all files")
-            faiss_vector = self.faiss_index.create_faiss_index(file_paths, framework)
-            print("Completed creating faiss index for all files")
-            print("Fetching authentication related information")
-            authentication_information = self.faiss_index.get_authentication_related_information(faiss_vector)
-            print("Completed Fetching authentication related information")
-            endpoint_related_information = self.endpoints_extractor.get_endpoint_related_information(faiss_vector, all_endpoints)
-            swagger = self.swagger_generator.create_swagger_json(endpoint_related_information, authentication_information, framework, self.user_config['api_host'])
-        except Exception as ex:
-            traceback.print_exc()
-            print("Oops! looks like we encountered an issue. Please try after some time.")
-            exit()
-        try:
-            output_filepath = get_output_filepath()
-            self.swagger_generator.save_swagger_json(swagger, output_filepath)
-        except Exception as ex:
-            print("Swagger was not able to be saved. Please check your project api key and try again.")
+
+            telemetry.capture("apimesh_run_completed", {
+                "run_id": run_id,
+                "duration_ms": int((time.time() - t0) * 1000),
+                "success": True,
+            })
+        except Exception as e:
+            telemetry.capture("apimesh_run_failed", {
+                "run_id": run_id,
+                "duration_ms": int((time.time() - t0) * 1000),
+                "success": False,
+                "error_type": type(e).__name__,
+            })
+            raise
         #self.upload_swagger_to_qodex(resolved_ai_chat_id)
         return
 
