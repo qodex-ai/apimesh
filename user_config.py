@@ -57,7 +57,7 @@ class UserConfigurations:
         user_config = self.load_user_config()
         self._print_section_header("OpenAI Credentials")
         stored_openai_api_key = user_config.get("openai_api_key", "")
-        sanitized_openai_api_key = self._sanitize_cli_value(openai_api_key)
+        sanitized_openai_api_key = self._sanitize_cli_value(openai_api_key) or os.getenv("OPENAI_API_KEY")
         if sanitized_openai_api_key:
             resolved_openai_api_key = sanitized_openai_api_key
         elif not stored_openai_api_key and not self.is_mcp:
