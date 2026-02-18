@@ -106,6 +106,23 @@ def get_output_filepath() -> str:
     default_path = os.path.join(repo_path, "apimesh", "swagger.json")
     return os.path.abspath(default_path)
 
+def get_api_index_filepath() -> str:
+    """
+    Get the output filepath for api_index.json.
+    If APIMESH_OUTPUT_FILEPATH is set, place api_index.json in the same directory.
+    Otherwise, default to {repo_path}/apimesh/api_index.json
+
+    Returns:
+        Output filepath as a string.
+    """
+    output_filepath = os.environ.get("APIMESH_OUTPUT_FILEPATH")
+    if output_filepath:
+        output_dir = os.path.dirname(os.path.abspath(output_filepath))
+        return os.path.join(output_dir, "api_index.json")
+    repo_path = get_repo_path()
+    default_path = os.path.join(repo_path, "apimesh", "api_index.json")
+    return os.path.abspath(default_path)
+
 def get_github_repo_url() -> str:
     """
     Get the GitHub repository URL from git remote.
