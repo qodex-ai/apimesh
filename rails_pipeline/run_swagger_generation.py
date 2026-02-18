@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from config import Configurations
-from utils import get_git_commit_hash, get_github_repo_url, get_repo_path, get_repo_name, get_api_index_filepath
+from utils import get_git_commit_hash, get_github_repo_url, get_repo_path, get_repo_name, get_output_filepath
 from rails_pipeline.definition_swagger_generator import (
     get_function_definition_swagger,
 )
@@ -45,10 +45,10 @@ def should_process_directory(dir_path: str) -> bool:
     return not any(part in config.ignored_dirs for part in path_parts)
 
 
-def _api_index_output_path(directory_path: str) -> str:
-    output_path = get_api_index_filepath()
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    return output_path
+def _api_index_output_path() -> str:
+    output_dir = os.path.dirname(get_output_filepath())
+    os.makedirs(output_dir, exist_ok=True)
+    return os.path.join(output_dir, "api_index.json")
 
 
 def _load_file_metadata(directory_path: str, file_path: str):
@@ -185,12 +185,15 @@ def _build_api_index(directory_path: str, endpoints: list) -> dict:
     return api_index
 
 
-def _write_api_index(directory_path: str, api_index: dict) -> None:
-    output_path = _api_index_output_path(directory_path)
+def _write_api_index(api_index: dict) -> None:
+    output_path = _api_index_output_path()
+    print(f"Saving api_index.json to {output_path}")
     try:
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(api_index, f, indent=2)
+        print("api_index.json saved successfully")
     except Exception:
+        print("Failed to save api_index.json")
         return
 
 
@@ -270,7 +273,7 @@ def run_swagger_generation(host: str) -> Dict:
                     endpoint_jobs.append(endpoint)
 
         api_index = _build_api_index(directory_path, endpoint_jobs)
-        _write_api_index(directory_path, api_index)
+        _write_api_index(api_index)
 
         if not endpoint_jobs:
             return swagger

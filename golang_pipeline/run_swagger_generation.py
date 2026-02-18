@@ -15,7 +15,7 @@ from golang_pipeline.definition_swagger_generator import (
 from golang_pipeline.find_api_definition_files import find_api_definition_files
 from golang_pipeline.generate_file_information import process_file
 from golang_pipeline.identify_api_functions import find_api_endpoints
-from utils import get_git_commit_hash, get_github_repo_url, get_repo_path, get_repo_name, get_api_index_filepath
+from utils import get_git_commit_hash, get_github_repo_url, get_repo_path, get_repo_name, get_output_filepath
 
 config = Configurations()
 
@@ -35,10 +35,10 @@ def should_process_directory(dir_path: str) -> bool:
     return not any(part in config.ignored_dirs for part in path_parts)
 
 
-def _api_index_output_path(directory_path: str) -> str:
-    output_path = get_api_index_filepath()
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    return output_path
+def _api_index_output_path() -> str:
+    output_dir = os.path.dirname(get_output_filepath())
+    os.makedirs(output_dir, exist_ok=True)
+    return os.path.join(output_dir, "api_index.json")
 
 
 def _load_file_metadata(file_path: str):
@@ -188,12 +188,15 @@ def _build_api_index(endpoints: list) -> dict:
     return api_index
 
 
-def _write_api_index(directory_path: str, api_index: dict) -> None:
-    output_path = _api_index_output_path(directory_path)
+def _write_api_index(api_index: dict) -> None:
+    output_path = _api_index_output_path()
+    print(f"Saving api_index.json to {output_path}")
     try:
         with open(output_path, "w", encoding="utf-8") as handle:
             json.dump(api_index, handle, indent=2)
+        print("api_index.json saved successfully")
     except Exception:
+        print("Failed to save api_index.json")
         return
 
 
@@ -590,7 +593,7 @@ def run_swagger_generation(host: str) -> Dict:
             endpoint_jobs.append(hydrated)
 
         api_index = _build_api_index(endpoint_jobs)
-        _write_api_index(directory_path, api_index)
+        _write_api_index(api_index)
 
         if not endpoint_jobs:
             return swagger
