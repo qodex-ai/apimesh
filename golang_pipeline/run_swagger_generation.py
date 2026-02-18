@@ -15,7 +15,7 @@ from golang_pipeline.definition_swagger_generator import (
 from golang_pipeline.find_api_definition_files import find_api_definition_files
 from golang_pipeline.generate_file_information import process_file
 from golang_pipeline.identify_api_functions import find_api_endpoints
-from utils import get_git_commit_hash, get_github_repo_url, get_repo_path, get_repo_name, get_output_filepath
+from utils import get_git_commit_hash, get_github_repo_url, get_repo_path, get_repo_name, get_api_index_filepath
 
 config = Configurations()
 
@@ -36,9 +36,9 @@ def should_process_directory(dir_path: str) -> bool:
 
 
 def _api_index_output_path(directory_path: str) -> str:
-    output_dir = os.path.dirname(get_output_filepath())
-    os.makedirs(output_dir, exist_ok=True)
-    return os.path.join(output_dir, "api_index.json")
+    output_path = get_api_index_filepath()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    return output_path
 
 
 def _load_file_metadata(file_path: str):

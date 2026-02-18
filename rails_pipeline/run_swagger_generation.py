@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from config import Configurations
-from utils import get_git_commit_hash, get_github_repo_url, get_repo_path, get_repo_name, get_output_filepath
+from utils import get_git_commit_hash, get_github_repo_url, get_repo_path, get_repo_name, get_api_index_filepath
 from rails_pipeline.definition_swagger_generator import (
     get_function_definition_swagger,
 )
@@ -46,9 +46,9 @@ def should_process_directory(dir_path: str) -> bool:
 
 
 def _api_index_output_path(directory_path: str) -> str:
-    output_dir = os.path.dirname(get_output_filepath())
-    os.makedirs(output_dir, exist_ok=True)
-    return os.path.join(output_dir, "api_index.json")
+    output_path = get_api_index_filepath()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    return output_path
 
 
 def _load_file_metadata(directory_path: str, file_path: str):
