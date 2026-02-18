@@ -13,7 +13,7 @@ from nodejs_pipeline.constants import (
     SUPPORTED_NODE_FILE_EXTENSIONS,
     METADATA_DIR_NAME,
 )
-from utils import get_git_commit_hash, get_github_repo_url, get_repo_path, get_repo_name
+from utils import get_git_commit_hash, get_github_repo_url, get_repo_path, get_repo_name, get_output_filepath
 
 config = Configurations()
 
@@ -34,6 +34,155 @@ def should_process_directory(dir_path: str) -> bool:
     """
     path_parts = dir_path.split(os.sep)
     return not any(part in config.ignored_dirs for part in path_parts)
+
+
+def _api_index_output_path(directory_path: str) -> str:
+    output_dir = os.path.dirname(get_output_filepath())
+    os.makedirs(output_dir, exist_ok=True)
+    return os.path.join(output_dir, "api_index.json")
+
+
+def _load_file_metadata(directory_path: str, file_path: str):
+    json_dir = _metadata_dir_path(directory_path)
+    json_file = _metadata_file_name(file_path)
+    json_path = os.path.join(json_dir, json_file)
+    if not os.path.exists(json_path):
+        return None
+    try:
+        with open(json_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _endpoint_key(route, method):
+    method_value = (method or "UNKNOWN").upper()
+    route_value = route or ""
+    return f"{method_value} {route_value}".strip()
+
+
+def _normalize_in_file_dependencies(deps, route, file_path):
+    imports = []
+    for dep in deps:
+        start_line = dep.get("function_start_line") or dep.get("start_line")
+        end_line = dep.get("function_end_line") or dep.get("end_line")
+        name = dep.get("name")
+        if not name or not isinstance(start_line, int) or not isinstance(end_line, int):
+            continue
+        imports.append(
+            {
+                "type": "function",
+                "name": name,
+                "start_line": start_line,
+                "end_line": end_line,
+                "route": route,
+                "file_path": file_path,
+            }
+        )
+    return imports
+
+
+def _resolve_imported_definitions(import_item, directory_path: str, route):
+    origin = import_item.get("origin")
+    imported_name = import_item.get("imported_name")
+    if not origin or not imported_name or origin == "<node_builtin_or_external>":
+        return []
+    metadata = _load_file_metadata(directory_path, origin)
+    if not metadata:
+        return []
+    elements = metadata.get("elements", {})
+    candidates = []
+    name_candidates = [imported_name]
+    if "." in imported_name:
+        name_candidates.append(imported_name.split(".")[-1])
+    for key in ("classes", "functions", "variables"):
+        for item in elements.get(key, []):
+            if item.get("name") not in name_candidates:
+                continue
+            start_line = item.get("start_line")
+            end_line = item.get("end_line")
+            if not isinstance(start_line, int) or not isinstance(end_line, int):
+                continue
+            candidates.append(
+                {
+                    "type": item.get("type") or key[:-1],
+                    "name": item.get("name"),
+                    "start_line": start_line,
+                    "end_line": end_line,
+                    "route": route,
+                    "file_path": origin,
+                }
+            )
+            break
+        if candidates:
+            break
+    return candidates
+
+
+def _dedupe_imports(imports):
+    seen = set()
+    unique = []
+    for item in imports:
+        key = (
+            item.get("file_path"),
+            item.get("name"),
+            item.get("start_line"),
+            item.get("end_line"),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(item)
+    return unique
+
+
+def _merge_file_entry(files, entry):
+    for existing in files:
+        if existing.get("file_path") == entry.get("file_path"):
+            merged = existing.get("imports", []) + entry.get("imports", [])
+            existing["imports"] = _dedupe_imports(merged)
+            return
+    files.append(entry)
+
+
+def _build_api_index(directory_path: str, endpoints: list) -> dict:
+    api_index = {}
+    for endpoint in endpoints:
+        route = endpoint.get("route")
+        method = endpoint.get("method") or endpoint.get("http_method")
+        key = _endpoint_key(route, method)
+        file_path = endpoint.get("file_path")
+        if not file_path:
+            continue
+        abs_file_path = os.path.abspath(file_path)
+        imports = []
+        start_line = endpoint.get("start_line")
+        end_line = endpoint.get("end_line")
+        if isinstance(start_line, int) and isinstance(end_line, int):
+            metadata = _load_file_metadata(directory_path, abs_file_path)
+            if metadata:
+                in_file, imported = get_dependencies(
+                    metadata, start_line, end_line, abs_file_path
+                )
+                imports.extend(_normalize_in_file_dependencies(in_file, route, abs_file_path))
+                for item in imported:
+                    imports.extend(_resolve_imported_definitions(item, directory_path, route))
+        entry = {
+            "file_path": abs_file_path,
+            "imports": _dedupe_imports(imports),
+        }
+        api_index.setdefault(key, {"files": []})
+        _merge_file_entry(api_index[key]["files"], entry)
+    return api_index
+
+
+def _write_api_index(directory_path: str, api_index: dict) -> None:
+    output_path = _api_index_output_path(directory_path)
+    try:
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(api_index, f, indent=2)
+    except Exception:
+        return
 
 def _normalize_route(route: str):
     if not route:
@@ -123,6 +272,8 @@ def run_swagger_generation(host):
         for job in endpoint_jobs:
             if 'route' in job:
                 job['route'] = _normalize_route(job['route'])
+        api_index = _build_api_index(directory_path, endpoint_jobs)
+        _write_api_index(directory_path, api_index)
         if not endpoint_jobs:
             return swagger
 
