@@ -7,6 +7,10 @@ API_DECORATOR_NAMES = {
     'api', 'endpoint', 'router', 'viewset', 'view'
 }
 
+HTTP_METHOD_DECORATOR_NAMES = {
+    'get', 'post', 'put', 'delete', 'patch', 'options', 'head'
+}
+
 def has_api_decorator(decorator_node):
     if isinstance(decorator_node, ast.Call) and hasattr(decorator_node.func, 'attr'):
         if decorator_node.func.attr.lower() in API_DECORATOR_NAMES:
@@ -18,6 +22,25 @@ def has_api_decorator(decorator_node):
         if decorator_node.id.lower() in API_DECORATOR_NAMES:
             return True
     return False
+
+
+def extract_http_method(decorator_node):
+    name = None
+    if isinstance(decorator_node, ast.Call):
+        if hasattr(decorator_node.func, 'attr'):
+            name = decorator_node.func.attr
+        elif isinstance(decorator_node.func, ast.Name):
+            name = decorator_node.func.id
+    elif isinstance(decorator_node, ast.Attribute):
+        name = decorator_node.attr
+    elif isinstance(decorator_node, ast.Name):
+        name = decorator_node.id
+    if not name:
+        return None
+    lower = name.lower()
+    if lower in HTTP_METHOD_DECORATOR_NAMES:
+        return lower.upper()
+    return None
 
 
 def extract_route_from_decorator(decorator_node):
@@ -46,12 +69,14 @@ def find_api_endpoints(file_path):
             for dec in node.decorator_list:
                 if has_api_decorator(dec):
                     route = extract_route_from_decorator(dec)
+                    http_method = extract_http_method(dec)
                     endpoints.append({
                         "type": "function",
                         "name": node.name,
                         "start_line": node.lineno,
                         "end_line": getattr(node, 'end_lineno', None),
                         "route": route,
+                        "method": http_method,
                         "file_path": str(file_path)
                     })
         if isinstance(node, ast.ClassDef):
@@ -68,6 +93,7 @@ def find_api_endpoints(file_path):
                     "start_line": node.lineno,
                     "end_line": getattr(node, 'end_lineno', None),
                     "route": class_route,
+                    "method": None,
                     "file_path": str(file_path),
                     "methods": []
                 }
@@ -84,12 +110,18 @@ def find_api_endpoints(file_path):
                                 if method_route:
                                     break
                     if method_has_decorator or class_has_decorator:
+                        http_method = None
+                        for dec in body_item.decorator_list:
+                            http_method = extract_http_method(dec)
+                            if http_method:
+                                break
                         method_entry = {
                             "type": "method",
                             "name": body_item.name,
                             "start_line": body_item.lineno,
                             "end_line": getattr(body_item, 'end_lineno', None),
                             "route": method_route if method_route else class_route,
+                            "method": http_method,
                             "file_path": str(file_path)
                         }
                         if node.name in class_endpoints:

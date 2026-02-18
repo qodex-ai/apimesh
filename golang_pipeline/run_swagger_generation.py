@@ -15,7 +15,7 @@ from golang_pipeline.definition_swagger_generator import (
 from golang_pipeline.find_api_definition_files import find_api_definition_files
 from golang_pipeline.generate_file_information import process_file
 from golang_pipeline.identify_api_functions import find_api_endpoints
-from utils import get_git_commit_hash, get_github_repo_url, get_repo_path, get_repo_name
+from utils import get_git_commit_hash, get_github_repo_url, get_repo_path, get_repo_name, get_output_filepath
 
 config = Configurations()
 
@@ -33,6 +33,168 @@ _HEADER_PATTERN = re.compile(
 def should_process_directory(dir_path: str) -> bool:
     path_parts = dir_path.split(os.sep)
     return not any(part in config.ignored_dirs for part in path_parts)
+
+
+def _api_index_output_path(directory_path: str) -> str:
+    output_dir = os.path.dirname(get_output_filepath())
+    os.makedirs(output_dir, exist_ok=True)
+    return os.path.join(output_dir, "api_index.json")
+
+
+def _load_file_metadata(file_path: str):
+    metadata_dir = _METADATA_DIR
+    if not metadata_dir:
+        return None
+    json_file = os.path.join(metadata_dir, _sanitize_json_filename(file_path))
+    if not os.path.exists(json_file):
+        return None
+    try:
+        with open(json_file, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except Exception:
+        return None
+
+
+def _endpoint_key(route, method):
+    method_value = (method or "UNKNOWN").upper()
+    route_value = route or ""
+    return f"{method_value} {route_value}".strip()
+
+
+def _normalize_in_file_dependencies(deps, route, file_path):
+    imports = []
+    for dep in deps:
+        start_line = dep.get("function_start_line") or dep.get("start_line")
+        end_line = dep.get("function_end_line") or dep.get("end_line")
+        name = dep.get("name")
+        if not name or not isinstance(start_line, int) or not isinstance(end_line, int):
+            continue
+        imports.append(
+            {
+                "type": "function",
+                "name": name,
+                "start_line": start_line,
+                "end_line": end_line,
+                "route": route,
+                "file_path": file_path,
+            }
+        )
+    return imports
+
+
+def _resolve_imported_definitions(import_item, route):
+    origin = import_item.get("origin")
+    imported_name = import_item.get("imported_name")
+    if not origin or not imported_name:
+        return []
+    candidates = []
+    origin_paths = []
+    if os.path.isdir(origin):
+        for name in os.listdir(origin):
+            if name.endswith(".go"):
+                origin_paths.append(os.path.join(origin, name))
+    else:
+        origin_paths.append(origin)
+
+    name_candidates = [imported_name]
+    if "." in imported_name:
+        name_candidates.append(imported_name.split(".")[-1])
+
+    for origin_path in origin_paths:
+        metadata = _load_file_metadata(origin_path)
+        if not metadata:
+            continue
+        elements = metadata.get("elements", {})
+        for key in ("functions", "types"):
+            for item in elements.get(key, []):
+                if item.get("name") not in name_candidates:
+                    continue
+                start_line = item.get("start_line")
+                end_line = item.get("end_line")
+                if not isinstance(start_line, int) or not isinstance(end_line, int):
+                    continue
+                candidates.append(
+                    {
+                        "type": item.get("type") or key[:-1],
+                        "name": item.get("name"),
+                        "start_line": start_line,
+                        "end_line": end_line,
+                        "route": route,
+                        "file_path": origin_path,
+                    }
+                )
+                break
+            if candidates:
+                break
+        if candidates:
+            break
+    return candidates
+
+
+def _dedupe_imports(imports):
+    seen = set()
+    unique = []
+    for item in imports:
+        key = (
+            item.get("file_path"),
+            item.get("name"),
+            item.get("start_line"),
+            item.get("end_line"),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(item)
+    return unique
+
+
+def _merge_file_entry(files, entry):
+    for existing in files:
+        if existing.get("file_path") == entry.get("file_path"):
+            merged = existing.get("imports", []) + entry.get("imports", [])
+            existing["imports"] = _dedupe_imports(merged)
+            return
+    files.append(entry)
+
+
+def _build_api_index(endpoints: list) -> dict:
+    api_index = {}
+    for endpoint in endpoints:
+        route = endpoint.get("route")
+        method = endpoint.get("http_method") or endpoint.get("method")
+        key = _endpoint_key(route, method)
+        file_path = endpoint.get("file_path")
+        if not file_path:
+            continue
+        abs_file_path = os.path.abspath(file_path)
+        imports = []
+        start_line = endpoint.get("start_line")
+        end_line = endpoint.get("end_line")
+        if isinstance(start_line, int) and isinstance(end_line, int):
+            metadata = _load_file_metadata(abs_file_path)
+            if metadata:
+                in_file, imported = get_dependencies(
+                    metadata, start_line, end_line, abs_file_path
+                )
+                imports.extend(_normalize_in_file_dependencies(in_file, route, abs_file_path))
+                for item in imported:
+                    imports.extend(_resolve_imported_definitions(item, route))
+        entry = {
+            "file_path": abs_file_path,
+            "imports": _dedupe_imports(imports),
+        }
+        api_index.setdefault(key, {"files": []})
+        _merge_file_entry(api_index[key]["files"], entry)
+    return api_index
+
+
+def _write_api_index(directory_path: str, api_index: dict) -> None:
+    output_path = _api_index_output_path(directory_path)
+    try:
+        with open(output_path, "w", encoding="utf-8") as handle:
+            json.dump(api_index, handle, indent=2)
+    except Exception:
+        return
 
 
 def _sanitize_json_filename(file_path: str) -> str:
@@ -426,6 +588,9 @@ def run_swagger_generation(host: str) -> Dict:
             if not hydrated:
                 continue
             endpoint_jobs.append(hydrated)
+
+        api_index = _build_api_index(endpoint_jobs)
+        _write_api_index(directory_path, api_index)
 
         if not endpoint_jobs:
             return swagger
