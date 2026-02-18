@@ -187,13 +187,10 @@ def _build_api_index(directory_path: str, endpoints: list) -> dict:
 
 def _write_api_index(api_index: dict) -> None:
     output_path = _api_index_output_path()
-    print(f"Saving api_index.json to {output_path}")
     try:
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(api_index, f, indent=2)
-        print("api_index.json saved successfully")
     except Exception:
-        print("Failed to save api_index.json")
         return
 
 
