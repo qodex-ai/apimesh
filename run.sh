@@ -126,8 +126,7 @@ if [[ -d "$CLONE_DIR" ]]; then
     rm -rf "$CLONE_DIR"
 fi
 
-git clone --branch api_index_creation "$REPO_URL" "$CLONE_DIR"
-echo "Repository cloned to '$CLONE_DIR'"
+git clone "$REPO_URL" "$CLONE_DIR"echo "Repository cloned to '$CLONE_DIR'"
 echo ""
 
 # Step 5: Run the swagger generation CLI
