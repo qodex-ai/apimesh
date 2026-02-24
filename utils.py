@@ -2,6 +2,7 @@ import tiktoken
 import subprocess
 import os
 import re
+from typing import Optional, Set
 
 def num_tokens_from_string(string: str, encoding_name: str = "cl100k_base") -> int:
     encoding = tiktoken.get_encoding(encoding_name)
@@ -203,3 +204,48 @@ def get_git_commit_hash() -> str:
         return ""
     except Exception:
         return ""
+
+
+def get_changed_files_since(
+    base_commit: str,
+    repo_path: Optional[str] = None,
+    include_uncommitted: bool = True,
+) -> Optional[Set[str]]:
+    """
+    Get absolute file paths changed since base_commit up to HEAD.
+    Optionally include staged and working tree changes.
+    Returns None if git diff fails.
+    """
+    if not base_commit:
+        return None
+    repo_path = repo_path or get_repo_path()
+    changed: Set[str] = set()
+
+    def _collect(args) -> bool:
+        try:
+            result = subprocess.run(
+                args,
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+        except Exception:
+            return False
+        if result.returncode != 0:
+            return False
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            changed.add(os.path.abspath(os.path.join(repo_path, line)))
+        return True
+
+    ok = _collect(["git", "diff", "--name-only", f"{base_commit}...HEAD"])
+    if include_uncommitted:
+        ok = _collect(["git", "diff", "--name-only"]) and ok
+        ok = _collect(["git", "diff", "--name-only", "--cached"]) and ok
+    if not ok and not changed:
+        return None
+    return changed
