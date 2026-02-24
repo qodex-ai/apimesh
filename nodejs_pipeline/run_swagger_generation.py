@@ -13,7 +13,14 @@ from nodejs_pipeline.constants import (
     SUPPORTED_NODE_FILE_EXTENSIONS,
     METADATA_DIR_NAME,
 )
-from utils import get_git_commit_hash, get_github_repo_url, get_repo_path, get_repo_name, get_output_filepath
+from utils import (
+    get_git_commit_hash,
+    get_github_repo_url,
+    get_repo_path,
+    get_repo_name,
+    get_output_filepath,
+    get_changed_files_since,
+)
 
 config = Configurations()
 
@@ -184,6 +191,138 @@ def _write_api_index(api_index: dict) -> None:
     except Exception:
         return
 
+
+def _load_existing_swagger():
+    swagger_path = get_output_filepath()
+    if not os.path.exists(swagger_path):
+        return None
+    try:
+        with open(swagger_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _load_existing_api_index():
+    api_index_path = _api_index_output_path()
+    if not os.path.exists(api_index_path):
+        return None
+    try:
+        with open(api_index_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _group_endpoints(endpoints: list) -> dict:
+    grouped = {}
+    for endpoint in endpoints:
+        key = _endpoint_key(endpoint.get("route"), endpoint.get("method") or endpoint.get("http_method"))
+        grouped.setdefault(key, []).append(endpoint)
+    return grouped
+
+
+def _endpoint_has_changed(existing_entry, endpoints_for_key, changed_files: set) -> bool:
+    if existing_entry:
+        for file_entry in existing_entry.get("files", []):
+            file_path = file_entry.get("file_path")
+            if file_path and os.path.abspath(file_path) in changed_files:
+                return True
+            for imp in file_entry.get("imports", []):
+                imp_path = imp.get("file_path")
+                if imp_path and os.path.abspath(imp_path) in changed_files:
+                    return True
+    for endpoint in endpoints_for_key or []:
+        file_path = endpoint.get("file_path")
+        if file_path and os.path.abspath(file_path) in changed_files:
+            return True
+    return False
+
+
+def _split_endpoint_key(key: str):
+    if not key:
+        return "UNKNOWN", ""
+    parts = key.split(" ", 1)
+    if len(parts) == 1:
+        return parts[0], ""
+    return parts[0], parts[1]
+
+
+def _remove_endpoint_from_swagger(swagger: dict, key: str) -> None:
+    method, route = _split_endpoint_key(key)
+    if not route:
+        return
+    paths = swagger.get("paths", {})
+    if route not in paths:
+        return
+    if method == "UNKNOWN":
+        paths.pop(route, None)
+        return
+    method_lower = method.lower()
+    if method_lower in paths.get(route, {}):
+        del paths[route][method_lower]
+        if not paths[route]:
+            del paths[route]
+
+
+def _update_swagger_for_endpoints(swagger: dict, directory_path: str, endpoints: list) -> None:
+    for method_info in endpoints:
+        route = method_info.get("route")
+        if not route:
+            continue
+        context_code_blocks, method_definition_code_block = provide_context_codeblock(
+            directory_path, method_info
+        )
+        swagger_for_def = get_function_definition_swagger(
+            method_definition_code_block, context_code_blocks, route
+        )
+        _merge_paths(swagger, swagger_for_def)
+
+
+def _maybe_incremental_update(directory_path: str, endpoint_jobs: list):
+    existing_swagger = _load_existing_swagger()
+    existing_index = _load_existing_api_index()
+    if not existing_swagger or not isinstance(existing_index, dict):
+        return None
+    base_commit = existing_swagger.get("info", {}).get("commit_reference")
+    if not base_commit:
+        return None
+    changed_files = get_changed_files_since(base_commit, directory_path, include_uncommitted=True)
+    if changed_files is None:
+        return None
+    if not changed_files:
+        return existing_swagger
+    endpoint_map = _group_endpoints(endpoint_jobs)
+    existing_keys = set(existing_index.keys())
+    new_keys = set(endpoint_map.keys())
+    removed_keys = existing_keys - new_keys
+    added_keys = new_keys - existing_keys
+    changed_keys = set()
+    for key in existing_keys & new_keys:
+        if _endpoint_has_changed(existing_index.get(key), endpoint_map.get(key), changed_files):
+            changed_keys.add(key)
+
+    keys_to_update = added_keys | changed_keys
+    updated_index = dict(existing_index)
+
+    for key in removed_keys:
+        updated_index.pop(key, None)
+        _remove_endpoint_from_swagger(existing_swagger, key)
+
+    for key in keys_to_update:
+        entry_map = _build_api_index(directory_path, endpoint_map.get(key, []))
+        if entry_map:
+            for entry_key, entry_value in entry_map.items():
+                updated_index[entry_key] = entry_value
+
+    for key in keys_to_update:
+        _update_swagger_for_endpoints(existing_swagger, directory_path, endpoint_map.get(key, []))
+
+    _post_process_swagger(existing_swagger)
+    existing_swagger.setdefault("info", {})["commit_reference"] = get_git_commit_hash()
+    _write_api_index(updated_index)
+    return existing_swagger
+
 def _normalize_route(route: str):
     if not route:
         return route
@@ -272,6 +411,9 @@ def run_swagger_generation(host):
         for job in endpoint_jobs:
             if 'route' in job:
                 job['route'] = _normalize_route(job['route'])
+        incremental_swagger = _maybe_incremental_update(directory_path, endpoint_jobs)
+        if incremental_swagger is not None:
+            return incremental_swagger
         api_index = _build_api_index(directory_path, endpoint_jobs)
         _write_api_index(api_index)
         if not endpoint_jobs:
