@@ -126,8 +126,8 @@ if [[ -d "$CLONE_DIR" ]]; then
     rm -rf "$CLONE_DIR"
 fi
 
-git clone "$REPO_URL" "$CLONE_DIR"echo "Repository cloned to '$CLONE_DIR'"
-echo ""
+git clone "$REPO_URL" "$CLONE_DIR"
+echo "Repository cloned to '$CLONE_DIR'"
 
 # Step 5: Run the swagger generation CLI
 echo "Running swagger generation CLI..."
