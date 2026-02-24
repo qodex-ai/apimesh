@@ -2,6 +2,7 @@ import tiktoken
 import subprocess
 import os
 import re
+from typing import Optional, Set
 
 def num_tokens_from_string(string: str, encoding_name: str = "cl100k_base") -> int:
     encoding = tiktoken.get_encoding(encoding_name)
@@ -106,6 +107,23 @@ def get_output_filepath() -> str:
     default_path = os.path.join(repo_path, "apimesh", "swagger.json")
     return os.path.abspath(default_path)
 
+def get_api_index_filepath() -> str:
+    """
+    Get the output filepath for api_index.json.
+    If APIMESH_OUTPUT_FILEPATH is set, place api_index.json in the same directory.
+    Otherwise, default to {repo_path}/apimesh/api_index.json
+
+    Returns:
+        Output filepath as a string.
+    """
+    output_filepath = os.environ.get("APIMESH_OUTPUT_FILEPATH")
+    if output_filepath:
+        output_dir = os.path.dirname(os.path.abspath(output_filepath))
+        return os.path.join(output_dir, "api_index.json")
+    repo_path = get_repo_path()
+    default_path = os.path.join(repo_path, "apimesh", "api_index.json")
+    return os.path.abspath(default_path)
+
 def get_github_repo_url() -> str:
     """
     Get the GitHub repository URL from git remote.
@@ -186,3 +204,48 @@ def get_git_commit_hash() -> str:
         return ""
     except Exception:
         return ""
+
+
+def get_changed_files_since(
+    base_commit: str,
+    repo_path: Optional[str] = None,
+    include_uncommitted: bool = True,
+) -> Optional[Set[str]]:
+    """
+    Get absolute file paths changed since base_commit up to HEAD.
+    Optionally include staged and working tree changes.
+    Returns None if git diff fails.
+    """
+    if not base_commit:
+        return None
+    repo_path = repo_path or get_repo_path()
+    changed: Set[str] = set()
+
+    def _collect(args) -> bool:
+        try:
+            result = subprocess.run(
+                args,
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+        except Exception:
+            return False
+        if result.returncode != 0:
+            return False
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            changed.add(os.path.abspath(os.path.join(repo_path, line)))
+        return True
+
+    ok = _collect(["git", "diff", "--name-only", f"{base_commit}...HEAD"])
+    if include_uncommitted:
+        ok = _collect(["git", "diff", "--name-only"]) and ok
+        ok = _collect(["git", "diff", "--name-only", "--cached"]) and ok
+    if not ok and not changed:
+        return None
+    return changed
