@@ -128,6 +128,7 @@ fi
 
 git clone "$REPO_URL" "$CLONE_DIR"
 echo "Repository cloned to '$CLONE_DIR'"
+echo ""
 
 # Step 5: Run the swagger generation CLI
 echo "Running swagger generation CLI..."
