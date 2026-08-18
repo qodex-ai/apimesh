@@ -12,41 +12,93 @@ HTTP_METHOD_DECORATOR_NAMES = {
     'get', 'post', 'put', 'delete', 'patch', 'options', 'head'
 }
 
+# Django and DRF class views, matched on the base class name.
+API_BASE_CLASS_SUFFIXES = ('viewset', 'apiview', 'view')
+
 # Constructors that create a route group, and the calls that mount one.
 ROUTER_FACTORY_KINDS = {'Blueprint': 'blueprint', 'APIRouter': 'router'}
 REGISTER_CALL_KINDS = {'register_blueprint': 'blueprint', 'include_router': 'router'}
 PREFIX_KEYWORDS = ('url_prefix', 'prefix')
 
+
+def _decorator_name(decorator_node):
+    """The name a decorator is written with, call or not."""
+    func = decorator_node.func if isinstance(decorator_node, ast.Call) else decorator_node
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    if isinstance(func, ast.Name):
+        return func.id
+    return None
+
+
 def has_api_decorator(decorator_node):
-    if isinstance(decorator_node, ast.Call) and hasattr(decorator_node.func, 'attr'):
-        if decorator_node.func.attr.lower() in API_DECORATOR_NAMES:
-            return True
-    if isinstance(decorator_node, ast.Attribute):
-        if decorator_node.attr.lower() in API_DECORATOR_NAMES:
-            return True
-    if isinstance(decorator_node, ast.Name):
-        if decorator_node.id.lower() in API_DECORATOR_NAMES:
+    """@app.route, @router.get and @api_view([...]) all name an API here.
+
+    The bare-name call form is what DRF uses, and missing it left every
+    ``@api_view`` handler out of the extraction.
+    """
+    name = _decorator_name(decorator_node)
+    if not name:
+        return False
+    lower = name.lower()
+    return lower in API_DECORATOR_NAMES or lower.endswith('_view')
+
+
+def _base_class_name(base):
+    if isinstance(base, ast.Attribute):
+        return base.attr
+    if isinstance(base, ast.Name):
+        return base.id
+    return None
+
+
+def has_api_base_class(class_node):
+    """A DRF or Django class view, recognised by what it inherits from.
+
+    The file selector and the extractor have to agree on this, otherwise a
+    views.py is scanned and then reports nothing.
+    """
+    for base in class_node.bases:
+        name = _base_class_name(base)
+        if name and name.lower().endswith(API_BASE_CLASS_SUFFIXES):
             return True
     return False
 
 
-def extract_http_method(decorator_node):
-    name = None
-    if isinstance(decorator_node, ast.Call):
-        if hasattr(decorator_node.func, 'attr'):
-            name = decorator_node.func.attr
-        elif isinstance(decorator_node.func, ast.Name):
-            name = decorator_node.func.id
-    elif isinstance(decorator_node, ast.Attribute):
-        name = decorator_node.attr
-    elif isinstance(decorator_node, ast.Name):
-        name = decorator_node.id
+def _http_verbs(node):
+    """The HTTP verbs a list/tuple of string literals names."""
+    if not isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        return []
+    verbs = []
+    for element in node.elts:
+        value = _string_literal(element)
+        if value and value.lower() in HTTP_METHOD_DECORATOR_NAMES and value.upper() not in verbs:
+            verbs.append(value.upper())
+    return verbs
+
+
+def extract_http_methods(decorator_node):
+    """Every HTTP verb one decorator declares.
+
+    ``@app.route('/x', methods=['GET', 'POST'])`` is two endpoints, and Flask
+    defaults a bare ``@app.route`` to GET. An empty list means the decorator
+    names no verb at all, and the endpoint carries no method.
+    """
+    name = _decorator_name(decorator_node)
     if not name:
-        return None
+        return []
+    if isinstance(decorator_node, ast.Call):
+        for keyword in decorator_node.keywords:
+            if keyword.arg == 'methods':
+                verbs = _http_verbs(keyword.value)
+                if verbs:
+                    return verbs
     lower = name.lower()
     if lower in HTTP_METHOD_DECORATOR_NAMES:
-        return lower.upper()
-    return None
+        return [lower.upper()]
+    if lower == 'route':
+        return ['GET']
+    return []
 
 
 def extract_route_from_decorator(decorator_node):
@@ -275,82 +327,94 @@ def _route_with_prefix(decorator_node, prefix_index):
     return join_route(prefix_index.get(owner), route)
 
 
-def find_api_endpoints(file_path, external_prefixes=None):
-    try:
-        source = file_path.read_text(encoding='utf-8')
-        tree = ast.parse(source, filename=str(file_path))
-    except Exception:
+def _endpoint(kind, node, file_path, route, method):
+    return {
+        "type": kind,
+        "name": node.name,
+        "start_line": node.lineno,
+        "end_line": getattr(node, 'end_lineno', None),
+        "route": route,
+        "method": method,
+        "file_path": str(file_path),
+    }
+
+
+def _decorated_endpoints(kind, node, file_path, prefix_index, fallback_route=None):
+    """One entry per verb the decorators declare, one entry when they name none."""
+    entries = []
+    for dec in node.decorator_list:
+        if not has_api_decorator(dec):
+            continue
+        route = _route_with_prefix(dec, prefix_index) or fallback_route
+        methods = extract_http_methods(dec)
+        if not methods:
+            entries.append(_endpoint(kind, node, file_path, route, None))
+            continue
+        for method in methods:
+            entries.append(_endpoint(kind, node, file_path, route, method))
+    return entries
+
+
+def _class_endpoints(node, file_path, prefix_index):
+    """A class view and the methods of it that actually serve HTTP.
+
+    Every method of a decorated class used to be documented as an endpoint,
+    ``__init__`` and helpers included.
+    """
+    class_route = None
+    decorated = False
+    for dec in node.decorator_list:
+        if not has_api_decorator(dec):
+            continue
+        decorated = True
+        if class_route is None:
+            class_route = _route_with_prefix(dec, prefix_index)
+    if not decorated and not has_api_base_class(node):
         return []
+    class_entry = _endpoint("class", node, file_path, class_route, None)
+    class_entry["methods"] = []
+    for body_item in node.body:
+        if not isinstance(body_item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        entries = _decorated_endpoints(
+            "method", body_item, file_path, prefix_index, class_route
+        )
+        if not entries and body_item.name.lower() in HTTP_METHOD_DECORATOR_NAMES:
+            entries = [
+                _endpoint("method", body_item, file_path, class_route, body_item.name.upper())
+            ]
+        class_entry["methods"].extend(entries)
+    return [class_entry]
+
+
+def find_api_endpoints(file_path, external_prefixes=None, tree=None):
+    """The endpoints one file declares.
+
+    Accepts a path or a string, and an already parsed tree so a file is read
+    once per run. The tree is parented here: walking an unparented one emitted
+    every class method twice, once as a method and once as a free function.
+    """
+    path = Path(file_path)
+    if tree is None:
+        try:
+            source = path.read_text(encoding='utf-8', errors='replace')
+            tree = ast.parse(source, filename=str(path))
+        except Exception:
+            return []
+    set_parents(tree)
     prefix_index = build_prefix_index(
         collect_prefix_definitions(tree),
         collect_prefix_registrations(tree),
         external_prefixes,
     )
     endpoints = []
-    class_endpoints = {}
     for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and not isinstance(getattr(node, 'parent', None),
-                                                                                        ast.ClassDef):
-            for dec in node.decorator_list:
-                if has_api_decorator(dec):
-                    route = _route_with_prefix(dec, prefix_index)
-                    http_method = extract_http_method(dec)
-                    endpoints.append({
-                        "type": "function",
-                        "name": node.name,
-                        "start_line": node.lineno,
-                        "end_line": getattr(node, 'end_lineno', None),
-                        "route": route,
-                        "method": http_method,
-                        "file_path": str(file_path)
-                    })
-        if isinstance(node, ast.ClassDef):
-            class_has_decorator = any(has_api_decorator(dec) for dec in node.decorator_list)
-            class_route = None
-            for dec in node.decorator_list:
-                if has_api_decorator(dec):
-                    class_route = _route_with_prefix(dec, prefix_index)
-                    break
-            if class_has_decorator:
-                class_endpoint = {
-                    "type": "class",
-                    "name": node.name,
-                    "start_line": node.lineno,
-                    "end_line": getattr(node, 'end_lineno', None),
-                    "route": class_route,
-                    "method": None,
-                    "file_path": str(file_path),
-                    "methods": []
-                }
-                class_endpoints[node.name] = class_endpoint
-                endpoints.append(class_endpoint)
-            for body_item in node.body:
-                if isinstance(body_item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    method_route = None
-                    method_has_decorator = any(has_api_decorator(dec) for dec in body_item.decorator_list)
-                    if method_has_decorator:
-                        for dec in body_item.decorator_list:
-                            if has_api_decorator(dec):
-                                method_route = _route_with_prefix(dec, prefix_index)
-                                if method_route:
-                                    break
-                    if method_has_decorator or class_has_decorator:
-                        http_method = None
-                        for dec in body_item.decorator_list:
-                            http_method = extract_http_method(dec)
-                            if http_method:
-                                break
-                        method_entry = {
-                            "type": "method",
-                            "name": body_item.name,
-                            "start_line": body_item.lineno,
-                            "end_line": getattr(body_item, 'end_lineno', None),
-                            "route": method_route if method_route else class_route,
-                            "method": http_method,
-                            "file_path": str(file_path)
-                        }
-                        if node.name in class_endpoints:
-                            class_endpoints[node.name]["methods"].append(method_entry)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if isinstance(getattr(node, 'parent', None), ast.ClassDef):
+                continue
+            endpoints.extend(_decorated_endpoints("function", node, path, prefix_index))
+        elif isinstance(node, ast.ClassDef):
+            endpoints.extend(_class_endpoints(node, path, prefix_index))
     return endpoints
 
 
@@ -366,10 +430,9 @@ if __name__ == "__main__":
     all_endpoints = []
     for py_file in py_files:
         try:
-            source = py_file.read_text(encoding="utf-8")
+            source = py_file.read_text(encoding="utf-8", errors="replace")
             tree = ast.parse(source)
-            set_parents(tree)
-            eps = find_api_endpoints(py_file)
+            eps = find_api_endpoints(py_file, tree=tree)
             if eps:
                 all_endpoints.extend(eps)
         except Exception:
