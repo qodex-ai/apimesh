@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import json
 import os
 import re
@@ -31,6 +32,7 @@ from rails_pipeline.find_api_definition_files import (
 )
 from rails_pipeline.identify_api_functions import (
     find_api_endpoints,
+    is_route_file,
 )
 
 config = Configurations()
@@ -44,6 +46,8 @@ _FUNCTION_INDEX_CACHE: Dict[str, List[Dict[str, object]]] = {}
 
 _PARAM_PATTERN = re.compile(r"params\[(?::|['\"])([A-Za-z0-9_]+)['\"]?\]")
 _PARAM_HINT_FUNCTIONS = {"apply_filters"}
+# Route verbs read as method names in a controller file, never as helper calls.
+_NON_HELPER_NAMES = {"get", "post", "put", "delete", "patch"}
 _ROUTE_PARAM_PATTERN = re.compile(r":([A-Za-z_][A-Za-z0-9_]*)")
 
 # Keys of an OpenAPI path item that hold an operation body.
@@ -296,8 +300,13 @@ def _build_api_index(directory_path: str, endpoints: list) -> dict:
             "file_path": abs_file_path,
             "imports": _dedupe_imports(imports),
         }
-        api_index.setdefault(key, {"files": []})
-        _merge_file_entry(api_index[key]["files"], entry)
+        index_entry = api_index.setdefault(key, {"files": []})
+        # The hash of the prompt this endpoint was generated from, so the next
+        # run can tell an untouched endpoint from one whose context moved.
+        context_hash = endpoint.get("context_hash")
+        if context_hash:
+            index_entry["context_hash"] = context_hash
+        _merge_file_entry(index_entry["files"], entry)
     return api_index
 
 
@@ -608,6 +617,26 @@ def _endpoint_label(method_info: Dict) -> str:
     return _endpoint_key(method_info.get("route"), method_info.get("http_method"))
 
 
+def _context_hash(context_blocks: List, method_definition: List) -> str:
+    """
+    Fingerprint of the prompt text one endpoint carries: its capped handler body
+    followed by its deduped context blocks, in the order the prompt sends them.
+    The endpoint label, the verb and the rest of the batch are deliberately left
+    out, so the value can be recomputed for a single endpoint before the batches
+    are packed and a mirrored PUT lands on exactly its PATCH's hash.
+    """
+    body, _ = _truncate_to_tokens(_block_text(method_definition), MAX_HANDLER_TOKENS)
+    seen = set()
+    blocks: List[str] = []
+    for block in context_blocks:
+        text = _block_text(block)
+        if not text.strip() or text in seen:
+            continue
+        seen.add(text)
+        blocks.append(text)
+    return hashlib.sha256("\n\n".join([body] + blocks).encode("utf-8")).hexdigest()
+
+
 def _collect_batch_context(directory_path: str, batch: List[Tuple[Dict, List[Dict]]]):
     """
     Read the context of every endpoint in the batch. An endpoint whose context
@@ -629,6 +658,7 @@ def _collect_batch_context(directory_path: str, batch: List[Tuple[Dict, List[Dic
             failures.append((entry, exc))
             continue
         label = _endpoint_label(method_info)
+        method_info["context_hash"] = _context_hash(context_blocks, method_definition)
         usable_entries.append(entry)
         endpoint_lines.append(label)
         handler_sections.append((f"{label}:", _block_text(method_definition)))
@@ -655,12 +685,12 @@ def _generate_endpoint_fragment(directory_path: str, method_info: Dict) -> Dict:
     context_blocks, method_definition = provide_context_codeblock(
         directory_path, method_info
     )
+    # Hashed before the verb and mirror hints go in, so the value matches the
+    # one the batch path stores for the same endpoint.
+    method_info["context_hash"] = _context_hash(context_blocks, method_definition)
     http_method = method_info.get("http_method")
     if http_method:
         context_blocks = [[f"HTTP_METHOD: {http_method}\n"]] + context_blocks
-    mirrored_from = method_info.get("mirrored_from")
-    if mirrored_from:
-        context_blocks = [[f"MIRRORED_FROM: {mirrored_from}\n"]] + context_blocks
     kept_blocks, sections = _apply_context_budget(
         [("", _block_text(method_definition))],
         context_blocks,
@@ -767,6 +797,10 @@ def _merge_batch_result(
         if mirror_fragment is None:
             continue
         _merge_paths(swagger, mirror_fragment)
+        # A mirror is never sent to the model, so it carries the hash of the
+        # PATCH it was copied from: that is the context both keys were answered
+        # from, and the value the next run recomputes for either of them.
+        mirror["context_hash"] = method_info.get("context_hash")
         merged.append(mirror)
     return merged
 
@@ -822,6 +856,56 @@ def _apply_host(swagger, host):
     return swagger
 
 
+def _context_is_unchanged(directory_path: str, existing_entry, jobs: List[Dict]) -> bool:
+    """
+    True when the prompt this endpoint would be regenerated from is the one its
+    stored hash was taken over, so the spec already holds the answer. An entry
+    without a stored hash always regenerates, and so does one whose context
+    cannot be read.
+    """
+    stored_hash = existing_entry.get("context_hash") if isinstance(existing_entry, dict) else None
+    if not stored_hash:
+        return False
+    for method_info in jobs:
+        try:
+            context_blocks, method_definition = provide_context_codeblock(
+                directory_path, method_info
+            )
+        except Exception:
+            return False
+        if _context_hash(context_blocks, method_definition) != stored_hash:
+            return False
+    return True
+
+
+def _rebuild_unchanged_index_entries(
+    directory_path: str,
+    keys: List[str],
+    endpoint_map: Dict,
+    existing_index: Dict,
+    updated_index: Dict,
+) -> None:
+    """Rebuild the index entries of the endpoints that skipped on their hash.
+
+    Their spec operation is right, but the files the old entry stores can be
+    stale: an action that moved into a file with identical text leaves the prompt
+    text, and so the hash, untouched while the action moved with it. Keeping the
+    old entry would point the next run's dependency hop at the file the action
+    left. A mirrored PUT is its own key here, so it is rebuilt exactly like the
+    PATCH it rides on. The entry is taken from the current extraction, and
+    carries over the hash that matched, since nothing was regenerated.
+    """
+    for key in keys:
+        rebuilt = _build_api_index(directory_path, endpoint_map.get(key, [])).get(key)
+        if not rebuilt:
+            continue
+        existing_entry = existing_index.get(key)
+        stored = existing_entry.get("context_hash") if isinstance(existing_entry, dict) else None
+        if stored:
+            rebuilt["context_hash"] = stored
+        updated_index[key] = rebuilt
+
+
 def _maybe_incremental_update(
     directory_path: str, endpoint_jobs: list, host: Optional[str] = None
 ):
@@ -852,18 +936,43 @@ def _maybe_incremental_update(
             changed_keys.add(key)
 
     keys_to_update = added_keys | changed_keys
+    # Past the halfway mark the incremental pass is doing the whole run's work
+    # while carrying a spec and an index it has to patch around, so the caller
+    # regenerates from scratch instead.
+    if new_keys and len(keys_to_update) * 2 > len(new_keys):
+        print(
+            f"apimesh: {len(keys_to_update)} of {len(new_keys)} endpoints affected, "
+            "running a full regeneration"
+        )
+        return None
     updated_index = dict(existing_index)
 
     for key in removed_keys:
         updated_index.pop(key, None)
         _remove_endpoint_from_swagger(existing_swagger, key)
 
-    # Every dirty endpoint goes through the batch path in one pass: generating
-    # them key by key put the endpoints of one changed controller in a call each
-    # and left a dirty PATCH and PUT unable to share the one generated body.
+    # A file changing does not mean the prompt for every endpoint in it changed:
+    # an endpoint whose context still hashes to the stored value keeps the spec
+    # operation and the index entry it already has.
+    # Every dirty endpoint left goes through the batch path in one pass:
+    # generating them key by key put the endpoints of one changed controller in
+    # a call each and left a dirty PATCH and PUT unable to share the one
+    # generated body.
     jobs_to_update = []
+    unchanged_keys = []
     for key in keys_to_update:
-        jobs_to_update.extend(endpoint_map.get(key, []))
+        jobs = endpoint_map.get(key, [])
+        if jobs and _context_is_unchanged(directory_path, existing_index.get(key), jobs):
+            unchanged_keys.append(key)
+            continue
+        jobs_to_update.extend(jobs)
+    if unchanged_keys:
+        print(
+            f"apimesh: skipped {len(unchanged_keys)} unchanged endpoints (context hash match)"
+        )
+    _rebuild_unchanged_index_entries(
+        directory_path, unchanged_keys, endpoint_map, existing_index, updated_index
+    )
     succeeded, failed = _update_swagger_for_endpoints(
         existing_swagger, directory_path, jobs_to_update
     )
@@ -899,7 +1008,29 @@ def _sanitize_json_filename(file_path: str) -> str:
     return f"{normalized}.json"
 
 
+MAX_DROPPED_ROUTES_LISTED = 20
+
+
+def _report_dropped_routes(dropped_routes: List[str]) -> None:
+    """
+    One line for every route whose action no controller (or ancestor) defines.
+    They are dropped rather than documented from a neighbouring method's body,
+    so the spec never carries an invented endpoint.
+    """
+    if not dropped_routes:
+        return
+    listed = ", ".join(dropped_routes[:MAX_DROPPED_ROUTES_LISTED])
+    remaining = len(dropped_routes) - MAX_DROPPED_ROUTES_LISTED
+    if remaining > 0:
+        listed = f"{listed}, +{remaining} more"
+    print(
+        f"apimesh: dropped {len(dropped_routes)} routed actions "
+        f"with no controller method: {listed}"
+    )
+
+
 def run_swagger_generation(host: str) -> Optional[Dict]:
+    _reset_caches()
     directory_path = get_repo_path()
     repo_name = get_repo_name()
     new_dir_name = "qodex_file_information"
@@ -926,22 +1057,35 @@ def run_swagger_generation(host: str) -> Optional[Dict]:
                     with open(json_file_path, "w", encoding="utf-8") as f:
                         json.dump(file_info, f, indent=4)
 
+        # Built here, once, while the run is still single threaded: the workers
+        # below read it and a lazy build under five of them races.
+        class_index = _ensure_class_index(directory_path)
+
         api_definition_files = find_api_definition_files(directory_path)
         all_endpoints_dict: Dict[str, List[Dict]] = {}
         route_map: Dict[str, List[Dict]] = {}
         controller_files: List[Path] = []
+        dropped_routes: List[str] = []
 
         for file in api_definition_files:
             ruby_file = Path(file)
-            if ruby_file.as_posix().endswith("config/routes.rb"):
+            if is_route_file(ruby_file):
                 find_api_endpoints(ruby_file, directory_path, route_map)
             else:
                 controller_files.append(ruby_file)
 
         for controller_file in controller_files:
-            endpoints = find_api_endpoints(controller_file, directory_path, route_map)
+            endpoints = find_api_endpoints(
+                controller_file,
+                directory_path,
+                route_map,
+                class_index,
+                dropped_routes,
+            )
             if endpoints:
                 all_endpoints_dict[str(controller_file)] = endpoints
+
+        _report_dropped_routes(dropped_routes)
 
         swagger = {
             "openapi": "3.0.0",
@@ -1050,6 +1194,24 @@ def _merge_paths(target: Dict, source: Dict) -> None:
         target["paths"].setdefault(path_key, {})
         for method, payload in methods.items():
             target["paths"][path_key][method] = payload
+
+
+def _reset_caches() -> None:
+    """Drop everything held between runs.
+
+    The index is keyed by repo path alone, so a second run over the same path
+    kept the first run's classes, line ranges and file bodies and documented
+    endpoints from source that is no longer there.
+    """
+    global _CLASS_INDEX_CACHE
+    global _CLASS_INDEX_CACHE_ROOT
+    global _CLASS_CODE_BLOCK_CACHE
+    global _FUNCTION_INDEX_CACHE
+    _CLASS_INDEX_CACHE = {}
+    _CLASS_INDEX_CACHE_ROOT = None
+    _CLASS_CODE_BLOCK_CACHE = {}
+    _FUNCTION_INDEX_CACHE = {}
+    _FILE_CONTENT_CACHE.clear()
 
 
 def _ensure_class_index(directory_path: str) -> Dict[str, Dict[str, object]]:
@@ -1194,12 +1356,26 @@ def _read_file_lines(file_path: str) -> Optional[List[str]]:
     if cached is not None:
         return cached
     try:
-        with open(file_path, "r", encoding="utf-8") as f:
+        # errors='replace': the parser reads bytes, so a controller that is not
+        # utf-8 has metadata and endpoints. Raising here dropped every one of
+        # them instead of documenting them with a replacement character.
+        with open(file_path, "r", encoding="utf-8", errors="replace") as f:
             lines = f.readlines()
     except OSError:
         return None
     _FILE_CONTENT_CACHE[file_path] = lines
     return lines
+
+
+def _ancestor_method_names(directory_path: str, parent_names: List[str]) -> List[str]:
+    class_index = _ensure_class_index(directory_path)
+    names: List[str] = []
+    for parent_name in parent_names:
+        entry = class_index.get(parent_name)
+        methods = entry.get("methods") if entry else None
+        if isinstance(methods, dict):
+            names.extend(methods.keys())
+    return names
 
 
 def _collect_parent_class_blocks(
@@ -1340,8 +1516,74 @@ def _collect_special_function_blocks(
     return blocks
 
 
+def _bare_identifier_names(method_lines: List[str], candidate_names) -> List[str]:
+    """
+    Which of candidate_names the action calls as a bare identifier. Ruby parses
+    a no-arg helper call (`set_widget`, `authenticate_user!`) as an identifier,
+    not as a call, so the call based pass never sees it and the helper's body
+    never reaches the prompt.
+    """
+    text = "".join(method_lines or [])
+    if not text.strip():
+        return []
+    found: List[str] = []
+    for name in candidate_names:
+        if not name or name in _NON_HELPER_NAMES:
+            continue
+        # Not a symbol argument, not a method on another object, not an ivar.
+        if re.search(rf"(?<![\w.:@]){re.escape(name)}(?!\w)", text):
+            found.append(name)
+    return found
+
+
+def _bare_identifier_dependencies(
+    data: Dict,
+    method_lines: List[str],
+    start_line: int,
+    end_line: int,
+    file_path: str,
+    collected: List[Dict],
+) -> List[Dict]:
+    """The same-file helpers an action calls bare, as in-file dependencies."""
+    definitions: Dict[str, Dict] = {}
+    for item in data["elements"]["functions"]:
+        name = item.get("name")
+        func_start = item.get("start_line")
+        func_end = item.get("end_line")
+        if not name or not isinstance(func_start, int) or not isinstance(func_end, int):
+            continue
+        # The action itself is already the prompt's method definition.
+        if func_start >= start_line and func_end <= end_line:
+            continue
+        definitions.setdefault(name, item)
+
+    already = {dependency.get("name") for dependency in collected}
+    resolved: List[Dict] = []
+    for name in _bare_identifier_names(method_lines, definitions):
+        if name in already:
+            continue
+        already.add(name)
+        definition = definitions[name]
+        resolved.append(
+            {
+                "type": "function_call",
+                "name": name,
+                "start_line": start_line,
+                "end_line": end_line,
+                "function_start_line": definition["start_line"],
+                "function_end_line": definition["end_line"],
+                "file_path": file_path,
+            }
+        )
+    return resolved
+
+
 def get_dependencies(
-    data: Dict, start_line: int, end_line: int, file_path: str
+    data: Dict,
+    start_line: int,
+    end_line: int,
+    file_path: str,
+    method_lines: Optional[List[str]] = None,
 ) -> Tuple[List[Dict], List[Dict]]:
     existing_function_names = [
         item["name"]
@@ -1357,6 +1599,17 @@ def get_dependencies(
         ):
             item["file_path"] = file_path
             in_file_dependency_functions.append(item)
+
+    in_file_dependency_functions.extend(
+        _bare_identifier_dependencies(
+            data,
+            method_lines,
+            start_line,
+            end_line,
+            file_path,
+            in_file_dependency_functions,
+        )
+    )
 
     imported_functions: List[Dict] = []
     for item in data.get("imports", []):
@@ -1380,7 +1633,7 @@ def get_code_blocks(
 ) -> List[List[str]]:
     code_blocks: List[List[str]] = []
     try:
-        with open(file_name, "r", encoding="utf-8") as f:
+        with open(file_name, "r", encoding="utf-8", errors="replace") as f:
             lines = f.readlines()
     except OSError:
         lines = []
@@ -1409,7 +1662,7 @@ def get_code_blocks(
 
         origin_file_name = origin
         try:
-            with open(origin_file_name, "r", encoding="utf-8") as f:
+            with open(origin_file_name, "r", encoding="utf-8", errors="replace") as f:
                 origin_lines = f.readlines()
         except OSError:
             origin_lines = []
@@ -1451,7 +1704,7 @@ def get_code_blocks(
 def provide_context_codeblock(directory_path: str, method_info: Dict):
     file_name = method_info["file_path"]
     try:
-        with open(file_name, "r", encoding="utf-8") as f:
+        with open(file_name, "r", encoding="utf-8", errors="replace") as f:
             lines = f.readlines()
     except OSError:
         lines = []
@@ -1474,6 +1727,7 @@ def provide_context_codeblock(directory_path: str, method_info: Dict):
         method_info["start_line"],
         method_info["end_line"],
         method_info["file_path"],
+        method_definition_code_block,
     )
     context_code_blocks = get_code_blocks(
         in_file_dependency_functions, imported_functions, file_name, directory_path
@@ -1495,6 +1749,14 @@ def provide_context_codeblock(directory_path: str, method_info: Dict):
             call_name = call.get("name")
             if call_name:
                 function_calls_in_method.append(call_name)
+    # A helper an ancestor defines is called bare too, so the identifiers of the
+    # action are matched against the ancestor chain as well.
+    function_calls_in_method.extend(
+        _bare_identifier_names(
+            method_definition_code_block,
+            _ancestor_method_names(directory_path, parent_names),
+        )
+    )
     special_function_blocks = _collect_special_function_blocks(
         directory_path, function_calls_in_method
     )
