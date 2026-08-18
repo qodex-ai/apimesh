@@ -34,7 +34,10 @@ def find_node_files(directory):
     node_files = []
     for file in directory.rglob('*'):
         if file.suffix and file.suffix.lower() in SUPPORTED_NODE_FILE_EXTENSIONS:
-            if not any(part in config.ignored_dirs for part in file.parts):
+            # Only components below the scanned root count, otherwise a repo living
+            # under /var or /build is ignored entirely.
+            relative_parts = file.relative_to(directory).parts
+            if not any(part in config.ignored_dirs for part in relative_parts):
                 node_files.append(file)
     return node_files
 

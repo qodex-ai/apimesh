@@ -4,11 +4,20 @@ import datetime
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from nodejs_pipeline.generate_file_information import process_file
-from nodejs_pipeline.find_api_definition_files import find_api_definition_files
-from nodejs_pipeline.identify_api_functions import find_api_endpoints_js
+from nodejs_pipeline.generate_file_information import process_file, get_module_origin
+from nodejs_pipeline.find_api_definition_files import find_api_definition_files, find_node_files
+from nodejs_pipeline.identify_api_functions import (
+    find_api_endpoints_js,
+    find_inline_require_mounts,
+    find_module_imports,
+    find_mount_prefixes,
+    join_mount_prefix,
+)
 from config import Configurations
-from nodejs_pipeline.definition_swagger_generator import get_function_definition_swagger
+from nodejs_pipeline.definition_swagger_generator import (
+    get_batch_definition_swagger,
+    get_function_definition_swagger,
+)
 from nodejs_pipeline.constants import (
     SUPPORTED_NODE_FILE_EXTENSIONS,
     METADATA_DIR_NAME,
@@ -20,9 +29,37 @@ from utils import (
     get_repo_name,
     get_output_filepath,
     get_changed_files_since,
+    num_tokens_from_string,
 )
 
 config = Configurations()
+
+# Keys of an OpenAPI path item that hold an operation body.
+HTTP_VERB_KEYS = {"get", "post", "put", "delete", "patch", "options", "head", "trace"}
+
+# One LLM call documents at most this many endpoints of the same source file.
+MAX_ENDPOINTS_PER_BATCH = 10
+
+# Combined token cap for the shared context plus every handler body in one prompt.
+CONTEXT_TOKEN_BUDGET = 6000
+
+# Headroom for the separators joined between sections and blocks, so the
+# budget holds for the final assembled prompt, not just the parts.
+_EFFECTIVE_CONTEXT_BUDGET = CONTEXT_TOKEN_BUDGET - 64
+
+# A single handler body longer than this is cut down before the budget is applied.
+MAX_HANDLER_TOKENS = 2000
+
+TRUNCATION_MARKER = "\n... truncated"
+
+# Operation keys older prompts asked for, mapped to their OpenAPI 3.0 compliant form.
+_LEGACY_OPERATION_FIELDS = {
+    "api_description": "description",
+    "authorization_tag": "x-authorization-tag",
+    "module_tag": "x-module-tag",
+    "auth_tag": "x-auth-tag",
+    "sensitive_information": "x-sensitive-information",
+}
 
 
 def _metadata_dir_path(directory_path: str) -> str:
@@ -35,11 +72,14 @@ def _metadata_file_name(file_path: str) -> str:
     return f"{name}.json"
 
 
-def should_process_directory(dir_path: str) -> bool:
+def should_process_directory(dir_path: str, root: str = None) -> bool:
     """
-    Check if a directory should be processed or ignored
+    Check if a directory should be processed or ignored.
+    Only components below root count, otherwise a repo living under /var or
+    /build is ignored entirely.
     """
-    path_parts = dir_path.split(os.sep)
+    relative_path = os.path.relpath(dir_path, root) if root else dir_path
+    path_parts = relative_path.split(os.sep)
     return not any(part in config.ignored_dirs for part in path_parts)
 
 
@@ -64,7 +104,9 @@ def _load_file_metadata(directory_path: str, file_path: str):
 
 def _endpoint_key(route, method):
     method_value = (method or "UNKNOWN").upper()
-    route_value = route or ""
+    # Keys must use the same normalized route the swagger paths are keyed by,
+    # otherwise removals of deleted endpoints never match.
+    route_value = _normalize_route(route) or ""
     return f"{method_value} {route_value}".strip()
 
 
@@ -198,9 +240,38 @@ def _load_existing_swagger():
         return None
     try:
         with open(swagger_path, "r", encoding="utf-8") as f:
-            return json.load(f)
+            return _migrate_legacy_spec(json.load(f))
     except Exception:
         return None
+
+_LEGACY_INFO_FIELDS = {
+    "generated_at": "x-generated-at",
+    "commit_reference": "x-commit-reference",
+    "github_repo_url": "x-github-repo-url",
+}
+
+
+def _migrate_legacy_spec(swagger):
+    """Upgrade a pre-x-extension spec in place so incremental runs never write
+    the legacy spellings back out. New keys win when both exist."""
+    if not isinstance(swagger, dict):
+        return swagger
+    info = swagger.get("info")
+    if isinstance(info, dict):
+        for old_key, new_key in _LEGACY_INFO_FIELDS.items():
+            if old_key in info:
+                value = info.pop(old_key)
+                info.setdefault(new_key, value)
+    paths = swagger.get("paths")
+    if isinstance(paths, dict):
+        for path_item in paths.values():
+            if not isinstance(path_item, dict):
+                continue
+            for operation in path_item.values():
+                if isinstance(operation, dict):
+                    _normalize_operation_fields(operation)
+    return swagger
+
 
 
 def _load_existing_api_index():
@@ -250,6 +321,7 @@ def _split_endpoint_key(key: str):
 
 def _remove_endpoint_from_swagger(swagger: dict, key: str) -> None:
     method, route = _split_endpoint_key(key)
+    route = _normalize_route(route)
     if not route:
         return
     paths = swagger.get("paths", {})
@@ -265,18 +337,291 @@ def _remove_endpoint_from_swagger(swagger: dict, key: str) -> None:
             del paths[route]
 
 
-def _update_swagger_for_endpoints(swagger: dict, directory_path: str, endpoints: list) -> None:
-    for method_info in endpoints:
-        route = method_info.get("route")
-        if not route:
+def _endpoint_method(method_info):
+    return (method_info.get("method") or method_info.get("http_method") or "").lower()
+
+
+def _endpoint_label(method_info):
+    return _endpoint_key(
+        method_info.get("route"), method_info.get("method") or method_info.get("http_method")
+    )
+
+
+def _handler_lines(method_info) -> list:
+    """The handler's own source lines, read for pricing its batch section."""
+    try:
+        with open(method_info.get("file_path") or "", "r", encoding="utf-8") as f:
+            lines = f.readlines()
+    except OSError:
+        return []
+    start_line = method_info.get("start_line") or 1
+    end_line = method_info.get("end_line") or start_line
+    return lines[start_line - 1:end_line]
+
+
+def _batch_section_tokens(method_info) -> int:
+    """What this endpoint's section costs the batch."""
+    section, _ = _handler_section(
+        f"{_endpoint_label(method_info)}:", "".join(_handler_lines(method_info))
+    )
+    return num_tokens_from_string(section)
+
+
+def _batch_endpoint_jobs(endpoint_jobs: list) -> list:
+    """
+    One batch per source file, packed so the handler sections of a batch stay
+    inside CONTEXT_TOKEN_BUDGET: capping each handler on its own still let ten
+    of them add up to far more than the prompt can carry. A batch is closed as
+    soon as the next section would push it past the budget, with
+    MAX_ENDPOINTS_PER_BATCH as the secondary limit.
+    """
+    by_file = {}
+    for method_info in endpoint_jobs:
+        by_file.setdefault(method_info.get("file_path") or "", []).append(method_info)
+    batches = []
+    for jobs in by_file.values():
+        current = []
+        used = 0
+        for method_info in jobs:
+            cost = _batch_section_tokens(method_info)
+            if current and (
+                len(current) >= MAX_ENDPOINTS_PER_BATCH
+                or used + cost > _EFFECTIVE_CONTEXT_BUDGET
+            ):
+                batches.append(current)
+                current = []
+                used = 0
+            current.append(method_info)
+            used += cost
+        if current:
+            batches.append(current)
+    return batches
+
+
+def _block_text(block) -> str:
+    """A code block arrives either as a list of source lines or as plain text."""
+    if isinstance(block, str):
+        return block
+    return "".join(block)
+
+
+def _truncate_to_tokens(text: str, max_tokens: int):
+    """
+    Cut text down to its first max_tokens tokens. The character position is
+    binary searched because only the token count is exposed, not the encoder.
+    """
+    if num_tokens_from_string(text) <= max_tokens:
+        return text, False
+    low, high = 0, len(text)
+    while low < high:
+        middle = (low + high + 1) // 2
+        if num_tokens_from_string(text[:middle]) <= max_tokens:
+            low = middle
+        else:
+            high = middle - 1
+    return text[:low] + TRUNCATION_MARKER, True
+
+
+def _handler_section(header: str, body: str):
+    """One endpoint's prompt section, with its handler capped."""
+    body, was_truncated = _truncate_to_tokens(body, MAX_HANDLER_TOKENS)
+    return (f"{header}\n{body}" if header else body), was_truncated
+
+
+def _apply_context_budget(handler_sections: list, shared_blocks: list, file_label: str):
+    """
+    Fit the handler bodies and the shared context inside CONTEXT_TOKEN_BUDGET.
+    Handler bodies are kept first, each capped at MAX_HANDLER_TOKENS; the deduped
+    shared blocks then fill whatever is left and are dropped from the end. The
+    batches are packed so their sections already fit, so what is left here is
+    whatever room the shared blocks get.
+    Returns (kept_shared_blocks, handler_sections) as plain text.
+    """
+    truncated = False
+    sections = []
+    used = 0
+    for header, body in handler_sections:
+        section, was_truncated = _handler_section(header, body)
+        truncated = truncated or was_truncated
+        sections.append(section)
+        used += num_tokens_from_string(section)
+
+    seen = set()
+    unique_blocks = []
+    for block in shared_blocks:
+        text = _block_text(block)
+        if not text.strip() or text in seen:
             continue
-        context_code_blocks, method_definition_code_block = provide_context_codeblock(
-            directory_path, method_info
-        )
-        swagger_for_def = get_function_definition_swagger(
-            method_definition_code_block, context_code_blocks, route
-        )
-        _merge_paths(swagger, swagger_for_def)
+        seen.add(text)
+        unique_blocks.append(text)
+
+    kept_blocks = []
+    dropped = 0
+    for index, text in enumerate(unique_blocks):
+        cost = num_tokens_from_string(text) + 2
+        if used + cost > _EFFECTIVE_CONTEXT_BUDGET:
+            dropped = len(unique_blocks) - index
+            break
+        kept_blocks.append(text)
+        used += cost
+
+    if dropped or truncated:
+        print(f"apimesh: context truncated for {file_label} ({dropped} blocks dropped)")
+    return kept_blocks, sections
+
+
+def _collect_batch_context(directory_path: str, batch: list):
+    """
+    Read the context of every endpoint in the batch. An endpoint whose context
+    cannot be read is reported back instead of taking the whole batch down.
+    Returns (usable_jobs, endpoints_list, shared_context, sections, failures).
+    """
+    usable_jobs = []
+    endpoint_lines = []
+    handler_sections = []
+    shared_blocks = []
+    failures = []
+    for method_info in batch:
+        try:
+            context_code_blocks, method_definition_code_block = provide_context_codeblock(
+                directory_path, method_info
+            )
+        except Exception as ex:
+            failures.append((method_info, ex))
+            continue
+        label = _endpoint_label(method_info)
+        usable_jobs.append(method_info)
+        endpoint_lines.append(label)
+        handler_sections.append((f"{label}:", _block_text(method_definition_code_block)))
+        shared_blocks.extend(context_code_blocks)
+    file_label = batch[0].get("file_path") or "unknown file"
+    kept_blocks, sections = _apply_context_budget(handler_sections, shared_blocks, file_label)
+    return (
+        usable_jobs,
+        "\n".join(endpoint_lines),
+        "\n\n".join(kept_blocks),
+        "\n\n".join(sections),
+        failures,
+    )
+
+
+def _batch_response_is_usable(response) -> bool:
+    return isinstance(response, dict) and isinstance(response.get("paths"), dict)
+
+
+def _generate_endpoint_fragment(directory_path: str, method_info: dict):
+    """The per endpoint call, with the same dedupe and token budget as a batch."""
+    context_code_blocks, method_definition_code_block = provide_context_codeblock(
+        directory_path, method_info
+    )
+    kept_blocks, sections = _apply_context_budget(
+        [("", _block_text(method_definition_code_block))],
+        context_code_blocks,
+        method_info.get("file_path") or "unknown file",
+    )
+    return get_function_definition_swagger(
+        [sections[0] if sections else ""],
+        [[block] for block in kept_blocks],
+        method_info.get("route"),
+        http_method=method_info.get("method") or method_info.get("http_method"),
+    )
+
+
+def _generate_fragments_per_endpoint(directory_path: str, batch: list) -> list:
+    """The pre-batch path: one call per endpoint, each failing on its own."""
+    results = []
+    for method_info in batch:
+        try:
+            results.append((method_info, _generate_endpoint_fragment(directory_path, method_info), None))
+        except Exception as ex:
+            results.append((method_info, None, ex))
+    return results
+
+
+def _generate_batch_fragments(directory_path: str, batch: list) -> list:
+    """
+    Document a whole batch with one call, retried once. Returns one
+    (method_info, fragment, error) triple per endpoint; a fragment is None when
+    the model left that endpoint out, which counts as a failure so the next run
+    retries it. An unusable reply falls back to the per endpoint calls.
+    """
+    usable_jobs, endpoints_list, shared_context, sections, failures = _collect_batch_context(
+        directory_path, batch
+    )
+    results = [(method_info, None, error) for method_info, error in failures]
+    if not usable_jobs:
+        return results
+
+    response = None
+    for _ in range(2):
+        try:
+            response = get_batch_definition_swagger(endpoints_list, shared_context, sections)
+        except Exception:
+            response = None
+        if _batch_response_is_usable(response):
+            break
+        response = None
+
+    if response is None:
+        return results + _generate_fragments_per_endpoint(directory_path, usable_jobs)
+
+    # Two model keys can normalize to the same route, so the verbs are merged
+    # instead of the second path item being dropped.
+    paths_by_route = {}
+    for path_key, path_item in response["paths"].items():
+        if not isinstance(path_item, dict):
+            continue
+        merged = paths_by_route.setdefault(_normalize_route(path_key), {})
+        for verb, payload in path_item.items():
+            merged.setdefault(verb, payload)
+
+    for method_info in usable_jobs:
+        route = _normalize_route(method_info.get("route"))
+        method = _endpoint_method(method_info)
+        operation = None
+        for key, payload in (paths_by_route.get(route) or {}).items():
+            if key.lower() == method and isinstance(payload, dict):
+                operation = payload
+                break
+        fragment = {"paths": {route: {method: operation}}} if operation is not None else None
+        results.append((method_info, fragment, None))
+    return results
+
+
+def _update_swagger_for_endpoints(swagger: dict, directory_path: str, endpoints: list):
+    """
+    Generate the given endpoints in file batches. Returns (succeeded, failed) as
+    lists of the endpoints themselves, so the caller can tell which index keys
+    are safe to refresh.
+    """
+    succeeded = []
+    failed = []
+    routable = []
+    for method_info in endpoints:
+        if not method_info.get("route"):
+            failed.append(method_info)
+            continue
+        routable.append(method_info)
+    for batch in _batch_endpoint_jobs(routable):
+        try:
+            results = _generate_batch_fragments(directory_path, batch)
+        except Exception as ex:
+            failed.extend(batch)
+            for method_info in batch:
+                print(f"apimesh: skipping {_endpoint_label(method_info)}: {ex}")
+            continue
+        for method_info, fragment, error in results:
+            label = _endpoint_label(method_info)
+            if error is not None:
+                failed.append(method_info)
+                print(f"apimesh: skipping {label}: {error}")
+                continue
+            if not _merge_paths(swagger, fragment, method_info):
+                failed.append(method_info)
+                print(f"apimesh: skipping {label}: unusable swagger fragment")
+                continue
+            succeeded.append(method_info)
+    return succeeded, failed
 
 
 def _maybe_incremental_update(directory_path: str, endpoint_jobs: list):
@@ -284,19 +629,23 @@ def _maybe_incremental_update(directory_path: str, endpoint_jobs: list):
     existing_index = _load_existing_api_index()
     if not existing_swagger or not isinstance(existing_index, dict):
         return None
-    base_commit = existing_swagger.get("info", {}).get("commit_reference")
+    existing_info = existing_swagger.get("info", {})
+    # Specs written before the extension rename still carry the bare key.
+    base_commit = existing_info.get("x-commit-reference") or existing_info.get("commit_reference")
     if not base_commit:
         return None
     changed_files = get_changed_files_since(base_commit, directory_path, include_uncommitted=True)
     if changed_files is None:
         return None
-    if not changed_files:
-        return existing_swagger
     endpoint_map = _group_endpoints(endpoint_jobs)
     existing_keys = set(existing_index.keys())
     new_keys = set(endpoint_map.keys())
     removed_keys = existing_keys - new_keys
     added_keys = new_keys - existing_keys
+    # An endpoint that failed last run is absent from the index, so it reads as
+    # added and still has to be generated when git reports nothing changed.
+    if not changed_files and not added_keys and not removed_keys:
+        return existing_swagger
     changed_keys = set()
     for key in existing_keys & new_keys:
         if _endpoint_has_changed(existing_index.get(key), endpoint_map.get(key), changed_files):
@@ -309,17 +658,34 @@ def _maybe_incremental_update(directory_path: str, endpoint_jobs: list):
         updated_index.pop(key, None)
         _remove_endpoint_from_swagger(existing_swagger, key)
 
+    # Every dirty endpoint goes through the batch path in one pass: generating
+    # them key by key put the endpoints of one changed file in a call each.
+    jobs_to_update = []
     for key in keys_to_update:
-        entry_map = _build_api_index(directory_path, endpoint_map.get(key, []))
-        if entry_map:
-            for entry_key, entry_value in entry_map.items():
-                updated_index[entry_key] = entry_value
+        jobs_to_update.extend(endpoint_map.get(key, []))
+    succeeded, failed = _update_swagger_for_endpoints(
+        existing_swagger, directory_path, jobs_to_update
+    )
+    # A failed endpoint has to stay dirty: refreshing its index entry would
+    # make the next run see no change and never retry it. Leaving the entry
+    # stale (or absent for a new endpoint) is what schedules the retry, and a
+    # key is only refreshed when every endpoint behind it made it.
+    failed_keys = {_endpoint_label(method_info) for method_info in failed}
+    # A failed key's stale entry is dropped, not kept: once the commit
+    # reference advances, a kept entry would hide the failure forever, while
+    # an absent key reads as newly added and is retried on the next run.
+    for failed_key in failed_keys:
+        updated_index.pop(failed_key, None)
 
-    for key in keys_to_update:
-        _update_swagger_for_endpoints(existing_swagger, directory_path, endpoint_map.get(key, []))
+    for entry_key, entry_value in _build_api_index(directory_path, succeeded).items():
+        if entry_key in failed_keys:
+            continue
+        updated_index[entry_key] = entry_value
 
     _post_process_swagger(existing_swagger)
-    existing_swagger.setdefault("info", {})["commit_reference"] = get_git_commit_hash()
+    info = existing_swagger.setdefault("info", {})
+    info.pop("commit_reference", None)
+    info["x-commit-reference"] = get_git_commit_hash()
     _write_api_index(updated_index)
     return existing_swagger
 
@@ -330,26 +696,41 @@ def _normalize_route(route: str):
     return re.sub(r":([A-Za-z_][\w-]*)", r"{\1}", route)
 
 
-def _extract_brace_block(lines, start_idx: int):
-    brace_depth = 0
-    collected = []
-    started = False
-    for line in lines[start_idx:]:
-        collected.append(line)
-        brace_depth += line.count("{") - line.count("}")
-        if "{" in line:
-            started = True
-        if started and brace_depth <= 0:
-            break
-    return collected
+def _record_mount_prefix(prefixes: dict, module_name: str, base_directory: str, prefix: str) -> None:
+    origin = get_module_origin(module_name, base_directory)
+    if not origin or origin == "<node_builtin_or_external>":
+        return
+    prefixes.setdefault(os.path.abspath(origin), prefix)
 
 
-def _find_use_block(lines, pattern: str):
-    matcher = re.compile(pattern)
-    for idx, line in enumerate(lines):
-        if matcher.search(line):
-            return _extract_brace_block(lines, idx)
-    return None
+def _build_mount_prefix_map(directory_path: str) -> dict:
+    """
+    Map an absolute file path to the mount prefix its router is mounted under
+    elsewhere, e.g. app.js doing app.use('/api/v1', require('./routes/users'))
+    gives routes/users.js the prefix /api/v1. One level only.
+    """
+    prefixes = {}
+    for node_file in find_node_files(directory_path):
+        try:
+            source = node_file.read_text(encoding='utf-8')
+        except Exception:
+            continue
+        mounts = find_mount_prefixes(source)
+        inline_mounts = find_inline_require_mounts(source)
+        if not mounts and not inline_mounts:
+            continue
+        imports = find_module_imports(source)
+        base_directory = os.path.dirname(os.path.abspath(str(node_file)))
+        for identifier, prefix in mounts.items():
+            module_name = imports.get(identifier)
+            if not module_name:
+                continue
+            _record_mount_prefix(prefixes, module_name, base_directory, prefix)
+        # app.use('/api', require('./routes/users')) has no identifier to resolve,
+        # the module string is right there in the mount call.
+        for module_name, prefix in inline_mounts.items():
+            _record_mount_prefix(prefixes, module_name, base_directory, prefix)
+    return prefixes
 
 
 def run_swagger_generation(host):
@@ -364,7 +745,7 @@ def run_swagger_generation(host):
                 suffix = Path(file_path).suffix.lower()
                 if (
                     os.path.exists(file_path)
-                    and should_process_directory(str(file_path))
+                    and should_process_directory(str(file_path), directory_path)
                     and suffix in SUPPORTED_NODE_FILE_EXTENSIONS
                 ):
                     try:
@@ -375,12 +756,17 @@ def run_swagger_generation(host):
                     with open(json_file_name, "w") as f:
                         json.dump(file_info, f, indent=4)
         api_definition_files = find_api_definition_files(directory_path)
+        mount_prefixes = _build_mount_prefix_map(directory_path)
         all_endpoints_dict = dict()
         for file in api_definition_files:
             all_endpoints = []
             py_file = Path(file)
             eps = find_api_endpoints_js(py_file)
             if eps:
+                file_prefix = mount_prefixes.get(os.path.abspath(file))
+                if file_prefix:
+                    for endpoint in eps:
+                        endpoint['route'] = join_mount_prefix(file_prefix, endpoint.get('route'))
                 all_endpoints.extend(eps)
                 all_endpoints_dict[file] = all_endpoints
         swagger = {
@@ -389,9 +775,9 @@ def run_swagger_generation(host):
                     "title": repo_name,
                     "version": "1.0.0",
                     "description": "This Swagger file was generated using OpenAI GPT.",
-                    "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
-                    "commit_reference": get_git_commit_hash(),
-                    "github_repo_url": get_github_repo_url()
+                    "x-generated-at": datetime.datetime.utcnow().isoformat() + "Z",
+                    "x-commit-reference": get_git_commit_hash(),
+                    "x-github-repo-url": get_github_repo_url()
                 },
                 "servers": [
                     {
@@ -411,36 +797,60 @@ def run_swagger_generation(host):
         for job in endpoint_jobs:
             if 'route' in job:
                 job['route'] = _normalize_route(job['route'])
+        if not endpoint_jobs:
+            print("apimesh: nodejs parser found 0 endpoints, falling back to generic extraction")
+            return None
         incremental_swagger = _maybe_incremental_update(directory_path, endpoint_jobs)
         if incremental_swagger is not None:
             return incremental_swagger
-        api_index = _build_api_index(directory_path, endpoint_jobs)
-        _write_api_index(api_index)
-        if not endpoint_jobs:
-            return swagger
-
-        def _generate_swagger_fragment(method_info):
-            context_code_blocks, method_definition_code_block = provide_context_codeblock(directory_path, method_info)
-            return get_function_definition_swagger(method_definition_code_block, context_code_blocks, method_info['route'])
-
-        max_workers = min(5, len(endpoint_jobs))
+        batches = _batch_endpoint_jobs(endpoint_jobs)
+        max_workers = min(5, len(batches))
         start_time = time.time()
-        completed = 0
+        generated = []
+        failed = 0
         latest_message = ""
         with ThreadPoolExecutor(max_workers=max_workers or 1) as executor:
-            futures = [executor.submit(_generate_swagger_fragment, method) for method in endpoint_jobs]
+            futures = {
+                executor.submit(_generate_batch_fragments, directory_path, batch): batch
+                for batch in batches
+            }
             for future in as_completed(futures):
-                swagger_for_def = future.result()
-                _merge_paths(swagger, swagger_for_def)
-                completed += 1
-                latest_message = (
-                    f"Completed generating endpoint related information for {completed} endpoints in "
-                    f"{int(time.time() - start_time)} seconds"
-                )
-                print(latest_message, end="\r", flush=True)
-        if completed:
+                batch = futures[future]
+                # One bad batch must never discard the ones that already worked.
+                try:
+                    results = future.result()
+                except Exception as ex:
+                    failed += len(batch)
+                    for method_info in batch:
+                        print(f"apimesh: skipping {_endpoint_label(method_info)}: {ex}")
+                    continue
+                for method_info, swagger_for_def, error in results:
+                    endpoint_label = _endpoint_label(method_info)
+                    if error is not None:
+                        failed += 1
+                        print(f"apimesh: skipping {endpoint_label}: {error}")
+                        continue
+                    if not _merge_paths(swagger, swagger_for_def, method_info):
+                        failed += 1
+                        print(f"apimesh: skipping {endpoint_label}: unusable swagger fragment")
+                        continue
+                    generated.append(method_info)
+                    latest_message = (
+                        f"Completed generating endpoint related information for {len(generated)} endpoints in "
+                        f"{int(time.time() - start_time)} seconds"
+                    )
+                    print(latest_message, end="\r", flush=True)
+        if generated:
             print(latest_message)
+        print(f"generated {len(generated)} of {len(endpoint_jobs)} endpoints ({failed} failed)")
+        if not generated:
+            raise RuntimeError(
+                f"nodejs swagger generation failed for all {len(endpoint_jobs)} endpoints"
+            )
         _post_process_swagger(swagger)
+        # Only endpoints that made it into the spec are indexed, otherwise a
+        # failure looks unchanged next run and is never retried.
+        _write_api_index(_build_api_index(directory_path, generated))
         return swagger
     finally:
         if os.path.exists(new_dir_path):
@@ -576,38 +986,81 @@ def provide_context_codeblock(directory_path, method_info):
         file_name,
         directory_path
     )
-    # Include catch-all responder middleware (e.g., app.use('/:name', ...)) to give the LLM response semantics.
-    responder_block = _find_use_block(lines, pattern=r"\.use\s*\(\s*['\"]/:")
-    if responder_block:
-        context_code_blocks.append(responder_block)
     return context_code_blocks, method_definition_code_block
 
 
-def _merge_paths(target, source):
-    paths = source.get("paths", {})
-    for path_key, methods in paths.items():
-        target.setdefault("paths", {})
-        normalized_path = _normalize_route(path_key)
-        target["paths"].setdefault(normalized_path, {})
-        for method, payload in methods.items():
-            target["paths"][normalized_path][method] = payload
+def _select_operation(path_item):
+    """
+    Pick the operation body out of one path item. A path item may legally hold
+    non-operation keys such as `parameters` or vendor extensions, so only an
+    HTTP verb with a dict body counts. A path item without one contributes no
+    operation, which is what keeps a vendor-extension-only fragment out of the
+    spec.
+    """
+    if not isinstance(path_item, dict):
+        return None, None
+    for key, payload in path_item.items():
+        if key.lower() in HTTP_VERB_KEYS and isinstance(payload, dict):
+            return key.lower(), payload
+    return None, None
+
+
+def _first_operation(source):
+    """Return the first operation body in an LLM fragment, or None if it is unusable."""
+    if not isinstance(source, dict):
+        return None
+    paths = source.get("paths")
+    if not isinstance(paths, dict) or not paths:
+        return None
+    for path_item in paths.values():
+        _, payload = _select_operation(path_item)
+        if payload is not None:
+            return payload
+    return None
+
+
+def _normalize_operation_fields(operation):
+    """
+    Rename the legacy operation keys an older model reply may still carry to
+    their OpenAPI compliant form. A value already under the new name wins, so a
+    reply holding both does not end up with duplicated content.
+    """
+    if not isinstance(operation, dict):
+        return operation
+    for legacy_key, new_key in _LEGACY_OPERATION_FIELDS.items():
+        if legacy_key not in operation:
+            continue
+        operation.setdefault(new_key, operation.pop(legacy_key))
+    return operation
+
+
+def _merge_paths(target, source, method_info):
+    """
+    Merge one generated fragment. The model routinely rewrites the path and the
+    method, so the operation is re-keyed under the route we extracted; that is
+    also the key the api index and incremental removals use.
+    """
+    operation = _first_operation(source)
+    if operation is None:
+        return False
+    route = _normalize_route(method_info.get("route"))
+    method = (method_info.get("method") or method_info.get("http_method") or "").lower()
+    if not route or not method:
+        return False
+    target.setdefault("paths", {}).setdefault(route, {})[method] = _normalize_operation_fields(operation)
+    return True
 
 
 def _post_process_swagger(swagger):
     """
-    Clean up generated swagger to better align with tinyhttp behavior:
-    - drop wildcard /* CORS path
-    - normalize any lingering :param segments
-    - adjust /{name} POST to return 201 and optional body
-    - remove spurious 400 from GET /{name}
-    - allow string|array for _dependent in DELETE /{name}/{id}
+    Framework neutral cleanup of the merged swagger:
+    - drop wildcard /* catch-all paths that come from generic middleware
+    - re-key any lingering express-style :param segments
     """
     paths = swagger.get("paths", {})
-    # drop wildcard CORS catch-all if present
     paths.pop("/*", None)
     paths.pop("*", None)
 
-    # Re-key any lingering express-style paths
     for original in list(paths.keys()):
         normalized = _normalize_route(original)
         if normalized != original:
@@ -616,57 +1069,3 @@ def _post_process_swagger(swagger):
                 paths[normalized] = existing
             else:
                 paths[normalized].update(existing)
-
-    # Fix POST /{name}
-    post_name = paths.get("/{name}", {}).get("post")
-    if post_name:
-        # body optional
-        if "requestBody" in post_name:
-            post_name["requestBody"]["required"] = False
-        # prefer 201, reuse existing schema if available
-        responses = post_name.setdefault("responses", {})
-        schema = None
-        for code in ("201", "200"):
-            resp = responses.get(code)
-            if not resp:
-                continue
-            content = resp.get("content", {})
-            app_json = content.get("application/json", {})
-            schema = app_json.get("schema")
-            if schema:
-                break
-        if not schema:
-            schema = {
-                "type": "object",
-                "properties": {"id": {"type": "string"}},
-                "additionalProperties": True,
-            }
-        responses.clear()
-        responses["201"] = {
-            "description": "Resource created successfully.",
-            "content": {
-                "application/json": {
-                    "schema": schema
-                }
-            }
-        }
-        responses["404"] = {"description": "Collection not found."}
-
-    # Clean GET /{name} errors
-    get_name = paths.get("/{name}", {}).get("get")
-    if get_name:
-        get_responses = get_name.get("responses", {})
-        get_responses.pop("400", None)
-
-    # Fix _dependent param schema on DELETE /{name}/{id}
-    delete_item = paths.get("/{name}/{id}", {}).get("delete")
-    if delete_item:
-        for param in delete_item.get("parameters", []):
-            if param.get("name") == "_dependent":
-                param["schema"] = {
-                    "oneOf": [
-                        {"type": "string"},
-                        {"type": "array", "items": {"type": "string"}},
-                    ]
-                }
-                break
