@@ -8,12 +8,19 @@ BRANCH_NAME="${BRANCH_NAME:-main}"
 REPO_DIR=""
 
 PROJECT_API_KEY="null"
-OPENAI_API_KEY="null"
+# Passed to the CLI as argv. The real OpenAI key travels only in the OPENAI_API_KEY
+# environment variable, which must flow through to python untouched; naming this
+# variable OPENAI_API_KEY would clobber that env var for the child process.
+CLI_OPENAI_API_KEY="null"
 AI_CHAT_ID="null"
 REPO_PATH="$SCRIPT_DIR"
 APIMESH_DIR=""
 VENV_DIR=""
 CLONE_DIR=""
+
+# Flags forwarded to the Python CLI as-is. APIMESH_API_HOST and APIMESH_OPENAI_MODEL
+# need no forwarding, Python reads them straight from the environment.
+EXTRA_ARGS=()
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "Missing dependency: $1" >&2; exit 2; }; }
 need bash; need git; need curl; need python3; need pip3
@@ -21,9 +28,12 @@ need bash; need git; need curl; need python3; need pip3
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --project-api-key) PROJECT_API_KEY="${2:-null}"; shift 2 ;;
-    --openai-api-key)  OPENAI_API_KEY="${2:-null}";  shift 2 ;;
+    --openai-api-key)  CLI_OPENAI_API_KEY="${2:-null}";  shift 2 ;;
     --ai-chat-id)      AI_CHAT_ID="${2:-null}";      shift 2 ;;
     --repo-path)       REPO_PATH="${2:-$REPO_PATH}"; shift 2 ;;
+    --api-host)        EXTRA_ARGS+=(--api-host "${2:-}"); shift 2 ;;
+    --model)           EXTRA_ARGS+=(--model "${2:-}");    shift 2 ;;
+    --redetect-framework) EXTRA_ARGS+=(--redetect-framework); shift ;;
     *) echo "Ignoring unknown arg: $1"; shift ;;
   esac
 done
@@ -120,6 +130,6 @@ export APIMESH_OUTPUT_FILEPATH="$APIMESH_DIR/swagger.json"
 
 
 cd "$REPO_DIR"
-python3 -m swagger_generation_cli "$OPENAI_API_KEY" "$PROJECT_API_KEY" "$AI_CHAT_ID" true
+python3 -m swagger_generation_cli "$CLI_OPENAI_API_KEY" "$PROJECT_API_KEY" "$AI_CHAT_ID" true ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
 
 exit 0
