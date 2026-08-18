@@ -837,6 +837,25 @@ def _apply_host(swagger, host):
     return swagger
 
 
+def _record_coverage(swagger, extracted, generated, skipped, failed, dropped=None):
+    """An honest completeness block, so a consuming agent can tell a complete
+    spec from a lower bound without re-running anything."""
+    coverage = {
+        "endpoints_extracted": extracted,
+        "generated": generated,
+        "skipped_unchanged": skipped,
+        "failed": failed,
+    }
+    if dropped is not None:
+        coverage["dropped_routes"] = dropped
+    swagger.setdefault("info", {})["x-apimesh-coverage"] = coverage
+    print(
+        f"apimesh coverage: {generated} generated, {skipped} unchanged, "
+        f"{failed} failed of {extracted} extracted"
+    )
+    return swagger
+
+
 def _context_is_unchanged(directory_path: str, existing_entry, jobs) -> bool:
     """
     True when the prompt this endpoint would be regenerated from is the one its
@@ -904,6 +923,7 @@ def _maybe_incremental_update(directory_path: str, endpoint_jobs: list, host=Non
     # An endpoint that failed last run is absent from the index, so it reads as
     # added and still has to be generated when git reports nothing changed.
     if not changed_files and not added_keys and not removed_keys:
+        _record_coverage(existing_swagger, len(endpoint_jobs), 0, len(endpoint_jobs), 0)
         return _apply_host(existing_swagger, host)
     changed_keys = set()
     for key in existing_keys & new_keys:
@@ -971,6 +991,13 @@ def _maybe_incremental_update(directory_path: str, endpoint_jobs: list, host=Non
     info.pop("commit_reference", None)
     info["x-commit-reference"] = get_git_commit_hash()
     _write_api_index(updated_index)
+    _record_coverage(
+        existing_swagger,
+        len(endpoint_jobs),
+        len(succeeded),
+        max(len(endpoint_jobs) - len(succeeded) - len(failed), 0),
+        len(failed),
+    )
     return _apply_host(existing_swagger, host)
 
 def _constraint_end(route: str, start: int):
@@ -1180,6 +1207,7 @@ def run_swagger_generation(host):
         # Only endpoints that made it into the spec are indexed, otherwise a
         # failure looks unchanged next run and is never retried.
         _write_api_index(_build_api_index(generated))
+        _record_coverage(swagger, len(endpoint_jobs), len(generated), 0, failed)
         return swagger
     finally:
         # The cache outlives the run; only entries for content that is gone are

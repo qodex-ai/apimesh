@@ -90,6 +90,16 @@ class SwaggerGeneration:
         print(f"\ngenerated {completed} of {total} endpoints ({failed} failed)")
         if total > 0 and completed == 0:
             raise RuntimeError("Swagger generation failed for every endpoint.")
+        swagger["info"]["x-apimesh-coverage"] = {
+            "endpoints_extracted": total,
+            "generated": completed,
+            "skipped_unchanged": 0,
+            "failed": failed,
+        }
+        print(
+            f"apimesh coverage: {completed} generated, 0 unchanged, "
+            f"{failed} failed of {total} extracted"
+        )
         return swagger
 
     @staticmethod
