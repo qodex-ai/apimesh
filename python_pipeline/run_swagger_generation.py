@@ -1,4 +1,5 @@
-import os, json, ast
+import os, json
+import hashlib
 import re
 import shutil
 import datetime
@@ -6,15 +7,16 @@ import time
 from pathlib import Path
 from openai import APIError
 from python_pipeline.generate_file_information import process_file
-from python_pipeline.find_api_definition_files import find_api_definition_files, find_python_files
+from python_pipeline.django_urlconf import collect_django_endpoints
+from python_pipeline.find_api_definition_files import find_api_definition_sources, find_python_files
 from python_pipeline.identify_api_functions import (
-    set_parents,
     find_api_endpoints,
     collect_external_prefixes,
 )
 from config import Configurations
 from python_pipeline.definition_swagger_generator import (
     CONTEXT_TOKEN_BUDGET,
+    build_endpoint_section,
     get_batch_definition_swagger,
     get_function_definition_swagger,
     section_token_cost,
@@ -122,7 +124,9 @@ def _api_index_output_path() -> str:
 def _metadata_file_path(directory_path: str, file_path: str) -> str:
     json_dir_path = os.path.join(directory_path, "qodex_file_information")
     sanitized = str(file_path).replace("/", "_q_").replace("\\", "_q_")
-    json_file = sanitized.strip(".py") + ".json"
+    # strip(".py") strips a character set, so apply.py and appl.py collided on
+    # one metadata file and the second one to be written won.
+    json_file = sanitized.removesuffix(".py") + ".json"
     return os.path.join(json_dir_path, json_file)
 
 
@@ -228,6 +232,16 @@ def _merge_file_entry(files, entry):
 
 
 def _build_api_index(directory_path: str, endpoints: list) -> dict:
+    """The api_index entries for the endpoints this run generated.
+
+    One entry per endpoint key:
+    ``{"files": [{"file_path", "imports": [...]}], "context_hash": "<sha256>"}``.
+    The hash covers the exact prompt text the endpoint was generated from, so
+    the next run can tell an endpoint whose source context is byte for byte
+    unchanged from one that has to be documented again. It is absent for an
+    endpoint indexed before hashing existed, and such an endpoint always
+    regenerates.
+    """
     api_index = {}
     for endpoint in endpoints:
         route = endpoint.get("route")
@@ -254,6 +268,9 @@ def _build_api_index(directory_path: str, endpoints: list) -> dict:
             "imports": _dedupe_imports(imports),
         }
         api_index.setdefault(key, {"files": []})
+        context_hash = endpoint.get("context_hash")
+        if context_hash:
+            api_index[key]["context_hash"] = context_hash
         _merge_file_entry(api_index[key]["files"], entry)
     return api_index
 
@@ -373,6 +390,13 @@ def _group_endpoints(endpoints: list) -> dict:
 
 
 def _endpoint_has_changed(existing_entry, endpoints_for_key, changed_files: set) -> bool:
+    """Whether an edit reached this endpoint, one dependency hop included.
+
+    A handler is documented from the helpers and classes it pulls in, so
+    editing one of those files makes the endpoint stale even though its own
+    file was never touched. The hop stops there: the context hash decides
+    whether the edit actually changed anything the model would see.
+    """
     if existing_entry:
         for file_entry in existing_entry.get("files", []):
             file_path = file_entry.get("file_path")
@@ -508,6 +532,13 @@ def _swagger_fragment_for_endpoint(directory_path: str, method_info: dict):
     )
     if fragment is None:
         print(f"apimesh: skipping {route}: the model returned an unusable swagger fragment")
+        return fragment
+    # The fallback stores the batch-shaped hash, not the hash of its own prompt:
+    # the next run recomputes the batch shape, and a hash it could never match
+    # would make this endpoint regenerate forever.
+    method_info["context_hash"] = _context_hash(
+        _batch_label(method_info), method_definition_code_block, context_code_blocks
+    )
     return fragment
 
 
@@ -532,7 +563,7 @@ def _update_swagger_for_endpoints(swagger: dict, directory_path: str, endpoints:
 def _handler_lines(method_info) -> list:
     """The handler's own source lines, read for pricing its batch section."""
     try:
-        with open(method_info.get("file_path") or "", "r", encoding="utf-8") as handle:
+        with open(method_info.get("file_path") or "", "r", encoding="utf-8", errors="replace") as handle:
             lines = handle.readlines()
     except OSError:
         return []
@@ -626,16 +657,57 @@ def _call_batch_llm(entries, context_blocks, source_file):
     return None
 
 
+def _batch_entry(directory_path: str, method_info):
+    """One endpoint's prompt material: its label, its handler body, its context."""
+    context_code_blocks, method_definition_code_block = provide_context_codeblock(
+        directory_path, method_info
+    )
+    return _batch_label(method_info), method_definition_code_block, context_code_blocks
+
+
+def _context_hash(label, body, context_blocks) -> str:
+    """sha256 over the exact text this endpoint puts in front of the model.
+
+    A batch's shared context is the union of its endpoints' blocks, and which
+    endpoints share a batch depends on which ones happen to be dirty, so
+    hashing that union would never match twice. What is hashed instead is the
+    endpoint's own section plus the blocks it contributes, joined the way the
+    prompt joins them.
+    """
+    section, _ = build_endpoint_section(label, body)
+    parts = [section]
+    for block in context_blocks or []:
+        text = block if isinstance(block, str) else "".join(str(line) for line in block or [])
+        if text.strip():
+            parts.append(text)
+    return hashlib.sha256("\n\n".join(parts).encode("utf-8")).hexdigest()
+
+
+def _endpoint_context_hash(directory_path: str, method_info):
+    """This endpoint's context hash, or None when its source cannot be read."""
+    try:
+        label, body, blocks = _batch_entry(directory_path, method_info)
+    except Exception:
+        return None
+    return _context_hash(label, body, blocks)
+
+
+def _stored_context_hash(entry):
+    if not isinstance(entry, dict):
+        return None
+    stored = entry.get("context_hash")
+    return stored if isinstance(stored, str) and stored else None
+
+
 def _generate_batch_payload(directory_path: str, batch: list):
     """One LLM call for a file's endpoints. Returns the model's raw payload."""
     entries = []
     context_blocks = []
     for method_info in batch:
-        context_code_blocks, method_definition_code_block = provide_context_codeblock(
-            directory_path, method_info
-        )
-        entries.append((_batch_label(method_info), "".join(method_definition_code_block)))
-        context_blocks.extend(context_code_blocks)
+        label, body, blocks = _batch_entry(directory_path, method_info)
+        method_info["context_hash"] = _context_hash(label, body, blocks)
+        entries.append((label, "".join(body)))
+        context_blocks.extend(blocks)
     return _call_batch_llm(entries, context_blocks, _batch_source_file(batch))
 
 
@@ -737,6 +809,51 @@ def _apply_host(swagger, host):
     return swagger
 
 
+def _unchanged_context_keys(directory_path: str, keys, endpoint_map, existing_index) -> set:
+    """The dirty keys whose prompt text is what they were generated from.
+
+    Their stored spec operation and index entry are already correct, so they
+    cost no LLM call. This is what makes the dependency hop cheap: an edit in
+    an imported file that never reaches the endpoint's own context lands here.
+    """
+    unchanged = set()
+    for key in keys:
+        stored = _stored_context_hash(existing_index.get(key))
+        if not stored:
+            continue
+        jobs = endpoint_map.get(key) or []
+        # One hash is stored per key, so a key several jobs share has nothing
+        # to compare against and is regenerated.
+        if len(jobs) != 1:
+            continue
+        if _endpoint_context_hash(directory_path, jobs[0]) == stored:
+            unchanged.add(key)
+    return unchanged
+
+
+def _rebuild_unchanged_index_entries(
+    directory_path: str, keys, endpoint_map, existing_index, updated_index
+) -> None:
+    """Rebuild the index entries of the endpoints that skipped on their hash.
+
+    Their spec operation is right, but the dependency edges the old entry stores
+    can be stale: a helper that moved into a file with identical text leaves the
+    prompt text, and so the hash, untouched while the import moved with it.
+    Keeping the old entry would point the next run's dependency hop at the file
+    the helper left, and an edit to the file it moved to would never mark the
+    endpoint dirty again. The entry is taken from the current extraction, and
+    carries over the hash that matched, since nothing was regenerated.
+    """
+    for key in keys:
+        rebuilt = _build_api_index(directory_path, endpoint_map.get(key, [])).get(key)
+        if not rebuilt:
+            continue
+        stored = _stored_context_hash(existing_index.get(key))
+        if stored:
+            rebuilt["context_hash"] = stored
+        updated_index[key] = rebuilt
+
+
 def _maybe_incremental_update(directory_path: str, endpoint_jobs: list, host=None):
     existing_swagger = _load_existing_swagger()
     existing_index = _load_existing_api_index()
@@ -765,11 +882,35 @@ def _maybe_incremental_update(directory_path: str, endpoint_jobs: list, host=Non
             changed_keys.add(key)
 
     keys_to_update = added_keys | changed_keys
+    # Past half the endpoints a surgical pass buys nothing: it costs the same
+    # LLM calls one file at a time, while the full run writes a fresh index
+    # with a hash for every endpoint.
+    if keys_to_update and len(keys_to_update) * 2 > len(new_keys):
+        print(
+            f"apimesh: {len(keys_to_update)} of {len(new_keys)} endpoints affected, "
+            "running a full regeneration"
+        )
+        return None
+
+    unchanged_keys = _unchanged_context_keys(
+        directory_path, keys_to_update, endpoint_map, existing_index
+    )
+    if unchanged_keys:
+        keys_to_update -= unchanged_keys
+        print(
+            f"apimesh: skipped {len(unchanged_keys)} unchanged endpoints "
+            "(context hash match)"
+        )
+
     updated_index = dict(existing_index)
 
     for key in removed_keys:
         updated_index.pop(key, None)
         _remove_endpoint_from_swagger(existing_swagger, key)
+
+    _rebuild_unchanged_index_entries(
+        directory_path, unchanged_keys, endpoint_map, existing_index, updated_index
+    )
 
     jobs_to_update = []
     for key in keys_to_update:
@@ -797,7 +938,8 @@ def _maybe_incremental_update(directory_path: str, endpoint_jobs: list, host=Non
     # persisting the index below (failed keys dropped) is what schedules the
     # retry. Raising here would discard both and launch the slow fallback.
     total = len(generated) + len(failed)
-    print(f"generated {len(generated)} of {total} endpoints ({len(failed)} failed)")
+    if total:
+        print(f"generated {len(generated)} of {total} endpoints ({len(failed)} failed)")
     if failed and not generated:
         print("apimesh: every changed endpoint failed; keeping the previous spec, they will retry next run")
 
@@ -806,6 +948,34 @@ def _maybe_incremental_update(directory_path: str, endpoint_jobs: list, host=Non
     info["x-commit-reference"] = get_git_commit_hash()
     _write_api_index(updated_index)
     return _apply_host(existing_swagger, host)
+
+def _routed_endpoints(endpoint_jobs: list) -> list:
+    """The jobs that can actually be documented, each of them once.
+
+    A decorator that carries no route (a bare ``@api_view``, whose route lives
+    in the URLconf) can never produce a spec entry, and counting it as a
+    failure hides the endpoints that did work. The same handler reached from
+    both the decorator and the URLconf is one endpoint, not two.
+    """
+    unique = []
+    seen = set()
+    for job in endpoint_jobs:
+        route = job.get("route")
+        if not route:
+            continue
+        key = (
+            job.get("file_path"),
+            job.get("start_line"),
+            job.get("end_line"),
+            _normalize_route(route),
+            (_job_method(job) or "").upper(),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(job)
+    return unique
+
 
 def run_swagger_generation(host):
     directory_path = get_repo_path()
@@ -818,25 +988,27 @@ def run_swagger_generation(host):
             for file in files:
                 file_path = os.path.join(root, file)
                 if os.path.exists(file_path) and should_process_directory(str(file_path), directory_path) and file_path.endswith(".py"):
-                    file_info = process_file(file_path, directory_path)
-                    json_file_name = new_dir_path +"/"+ str(file_path).replace("/", "_q_").strip(".py") + ".json"
-                    with open(json_file_name, "w") as f:
-                        json.dump(file_info, f, indent=4)
-        api_definition_files = find_api_definition_files(directory_path)
+                    # One unreadable file must not cost the run every other
+                    # file's metadata.
+                    try:
+                        file_info = process_file(file_path, directory_path)
+                        with open(_metadata_file_path(directory_path, file_path), "w", encoding="utf-8") as f:
+                            json.dump(file_info, f, indent=4)
+                    except Exception as exc:
+                        print(f"apimesh: skipping metadata for {file_path}: {exc}")
+        python_files = find_python_files(directory_path)
         # Blueprints are often mounted from a file that defines no route itself,
         # so registrations are collected from every scanned file.
-        external_prefixes = collect_external_prefixes(find_python_files(directory_path), directory_path)
+        external_prefixes = collect_external_prefixes(python_files, directory_path)
         all_endpoints_dict = dict()
-        for file in api_definition_files:
-            all_endpoints = []
-            py_file = Path(file)
-            source = py_file.read_text(encoding="utf-8")
-            tree = ast.parse(source)
-            set_parents(tree)
-            eps = find_api_endpoints(py_file, external_prefixes.get(os.path.abspath(file)))
+        for py_file, tree in find_api_definition_sources(directory_path):
+            eps = find_api_endpoints(
+                py_file,
+                external_prefixes.get(os.path.abspath(str(py_file))),
+                tree=tree,
+            )
             if eps:
-                all_endpoints.extend(eps)
-                all_endpoints_dict[file] = all_endpoints
+                all_endpoints_dict[str(py_file)] = eps
         endpoint_jobs = []
         for value in all_endpoints_dict.values():
             for item in value:
@@ -844,6 +1016,10 @@ def run_swagger_generation(host):
                     endpoint_jobs.extend(item.get('methods', []))
                 else:
                     endpoint_jobs.append(item)
+        # Django declares its routes in urls.py, which carries no decorator at
+        # all, so nothing above sees a conventional Django project.
+        endpoint_jobs.extend(collect_django_endpoints(python_files, directory_path))
+        endpoint_jobs = _routed_endpoints(endpoint_jobs)
         if not endpoint_jobs:
             print("apimesh: python parser found 0 endpoints, falling back to generic extraction")
             return None
@@ -897,45 +1073,44 @@ def get_dependencies(data, start_line, end_line, file_path):
                         imported_functions.append(item)
     return in_file_dependency_functions, imported_functions
 
+def _source_lines(file_name):
+    with open(file_name, "r", encoding="utf-8", errors="replace") as f:
+        return f.readlines()
+
+
 def get_code_blocks(in_file_dependency_functions, imported_functions, file_name, directory_path):
     code_blocks = []
     for block in in_file_dependency_functions:
-        with open(file_name, "r") as f:
-            lines = f.readlines()
-            f.close()
-        code_blocks.append(lines[block['function_start_line'] - 1 : block['function_start_line']])
+        lines = _source_lines(file_name)
+        # The whole helper is the context, not its signature line.
+        code_blocks.append(lines[block['function_start_line'] - 1 : block['function_end_line']])
     for func in imported_functions:
         visited = False
         file_name = func['origin']
-        json_dir_path = directory_path + "/" + "qodex_file_information"
-        json_file = str(file_name).replace("/", "_q_").strip(".py") + ".json"
-        complete_json_file_path = json_dir_path + "/" + json_file
-        with open(complete_json_file_path, "r") as f:
+        complete_json_file_path = _metadata_file_path(directory_path, file_name)
+        # A module imported from an ignored directory was never processed, so
+        # it has no metadata and simply contributes no context.
+        if not os.path.exists(complete_json_file_path):
+            continue
+        with open(complete_json_file_path, "r", encoding="utf-8") as f:
             data = json.load(f)
-            f.close()
         for item in data['elements']['classes']:
             if item['name'] == func['imported_name']:
                 visited = True
-                with open(file_name, "r") as f:
-                    lines = f.readlines()
-                    f.close()
+                lines = _source_lines(file_name)
                 code_blocks.append(lines[item['start_line']-1: item['end_line']])
                 break
         if not visited:
             for item in data['elements']['functions']:
                 if item['name'] == func['imported_name']:
                     visited = True
-                    with open(file_name, "r") as f:
-                        lines = f.readlines()
-                        f.close()
+                    lines = _source_lines(file_name)
                     code_blocks.append(lines[item['start_line'] - 1: item['end_line']])
                     break
         if not visited:
             for item in data['elements']['variables']:
                 if item['name'] == func['imported_name']:
-                    with open(file_name, "r") as f:
-                        lines = f.readlines()
-                        f.close()
+                    lines = _source_lines(file_name)
                     code_blocks.append(lines[item['start_line'] - 1: item['end_line']])
                     break
     return code_blocks
@@ -943,13 +1118,10 @@ def get_code_blocks(in_file_dependency_functions, imported_functions, file_name,
 
 def provide_context_codeblock(directory_path, method_info):
     file_name = method_info['file_path']
-    with open(method_info['file_path'], "r") as f:
-        lines = f.readlines()
+    lines = _source_lines(file_name)
     method_definition_code_block = lines[method_info["start_line"]-1: method_info["end_line"]]
-    json_dir_path = directory_path + "/" + "qodex_file_information"
-    json_file = str(file_name).replace("/", "_q_").strip(".py") + ".json"
-    complete_json_file_path = json_dir_path + "/" + json_file
-    with open(complete_json_file_path, "r") as f:
+    complete_json_file_path = _metadata_file_path(directory_path, file_name)
+    with open(complete_json_file_path, "r", encoding="utf-8") as f:
         data = json.load(f)
     in_file_dependency_functions, imported_functions = get_dependencies(data, method_info["start_line"], method_info["end_line"], method_info['file_path'])
     context_code_blocks = get_code_blocks(in_file_dependency_functions, imported_functions, file_name, directory_path)
