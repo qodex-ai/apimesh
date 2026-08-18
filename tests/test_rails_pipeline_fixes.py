@@ -8,7 +8,6 @@ contract. Nothing here touches the network: no endpoint is ever generated.
 import copy
 import json
 import os
-import shutil
 from pathlib import Path
 
 import pytest
@@ -899,6 +898,7 @@ def test_batches_are_packed_to_fit_the_context_budget(tmp_path, monkeypatch):
 def test_packed_batches_keep_their_sections_inside_the_budget(tmp_path, monkeypatch):
     """The invariant the packing exists for, read off the prompt sections."""
     monkeypatch.setattr(run_module, "MAX_HANDLER_TOKENS", 4000)
+    _prepare_run(monkeypatch, tmp_path, tmp_path / "out")
     _, jobs = _write_sized_actions(tmp_path, [2500, 2500, 2500])
     sections_sent = []
 
@@ -1728,22 +1728,20 @@ end
 
 def _stage_file_information(repo_root: Path) -> None:
     """The per file metadata the run writes before anything reads the index."""
-    json_dir = repo_root / "qodex_file_information"
-    json_dir.mkdir(parents=True, exist_ok=True)
-    for ruby_file in repo_root.rglob("*.rb"):
-        file_info = process_file(str(ruby_file), str(repo_root))
-        name = run_module._sanitize_json_filename(str(ruby_file))
-        (json_dir / name).write_text(json.dumps(file_info), encoding="utf-8")
+    run_module._CONTENT_HASHES.clear()
+    run_module._METADATA_ENTRIES.clear()
+    run_module._build_metadata_cache(str(repo_root))
 
 
-def _build_class_index(repo_root: Path) -> dict:
+def _build_class_index(monkeypatch, repo_root: Path, output_dir: Path) -> dict:
+    _prepare_run(monkeypatch, repo_root, output_dir)
     _stage_file_information(repo_root)
     run_module._CLASS_INDEX_CACHE = {}
     run_module._CLASS_INDEX_CACHE_ROOT = None
     return run_module._ensure_class_index(str(repo_root))
 
 
-def test_an_inherited_action_documents_the_parent_method(tmp_path):
+def test_an_inherited_action_documents_the_parent_method(tmp_path, monkeypatch):
     """show lives in the parent controller, so the parent's body is the endpoint."""
     repo_root = tmp_path / "inherited_app"
     _write(repo_root / "config" / "routes.rb", INHERITED_ROUTES)
@@ -1754,7 +1752,7 @@ def test_an_inherited_action_documents_the_parent_method(tmp_path):
         repo_root / "app" / "controllers" / "widgets_controller.rb",
         INHERITING_CONTROLLER,
     )
-    class_index = _build_class_index(repo_root)
+    class_index = _build_class_index(monkeypatch, repo_root, tmp_path / "out")
 
     route_map: dict = {}
     find_api_endpoints(repo_root / "config" / "routes.rb", str(repo_root), route_map)
@@ -1787,13 +1785,14 @@ end
 """
 
 
-def test_a_bare_helper_call_reaches_the_context_blocks(tmp_path):
+def test_a_bare_helper_call_reaches_the_context_blocks(tmp_path, monkeypatch):
     """`set_widget` parses as an identifier, so the call pass never saw it."""
     repo_root = tmp_path / "helper_app"
     controller = _write(
         repo_root / "app" / "controllers" / "helper_widgets_controller.rb",
         HELPER_CONTROLLER,
     )
+    _prepare_run(monkeypatch, repo_root, tmp_path / "out")
     _stage_file_information(repo_root)
     run_module._CLASS_INDEX_CACHE = {}
     run_module._CLASS_INDEX_CACHE_ROOT = None
@@ -1823,11 +1822,9 @@ def test_the_class_index_is_complete_before_the_workers_start(tmp_path, monkeypa
         APPLICATION_CONTROLLER,
     )
     _write(repo_root / "app" / "controllers" / "orders_controller.rb", ORDERS_CONTROLLER)
-    expected = copy.deepcopy(_build_class_index(repo_root))
-    shutil.rmtree(repo_root / "qodex_file_information")
+    expected = copy.deepcopy(_build_class_index(monkeypatch, repo_root, tmp_path / "out"))
     run_module._CLASS_INDEX_CACHE = {}
     run_module._CLASS_INDEX_CACHE_ROOT = None
-    _prepare_run(monkeypatch, repo_root, tmp_path / "out")
 
     seen = []
     real_context = run_module.provide_context_codeblock
@@ -1926,3 +1923,129 @@ def test_the_extractor_leaves_one_llm_job_for_an_update_action(tmp_path):
     requested, mirrors = batches[0][0]
     assert requested["http_method"] == "PATCH"
     assert [mirror["http_method"] for mirror in mirrors] == ["PUT"]
+
+
+CACHE_ROUTES = """Rails.application.routes.draw do
+  get '/widgets', to: 'widgets#index'
+end
+"""
+
+CACHE_CONTROLLER = """class WidgetsController < ApplicationController
+  def index
+    render json: []
+  end
+end
+"""
+
+
+def _cache_dir(out_dir: Path) -> Path:
+    return out_dir / "metadata_cache" / "rails"
+
+
+def _cache_repo(tmp_path: Path) -> Path:
+    repo_root = tmp_path / "cache_app"
+    _write(repo_root / "config" / "routes.rb", CACHE_ROUTES)
+    _write(repo_root / "app" / "controllers" / "widgets_controller.rb", CACHE_CONTROLLER)
+    return repo_root
+
+
+def _cache_run(monkeypatch, repo_root: Path, out_dir: Path):
+    """One full run over the repo, with every LLM call answered locally."""
+    _prepare_run(monkeypatch, repo_root, out_dir)
+    # The incremental pass would skip the work these tests are about.
+    monkeypatch.setattr(run_module, "_maybe_incremental_update", lambda *args: None)
+    fragment = {"paths": {"/widgets": {"get": {"summary": "listed"}}}}
+    monkeypatch.setattr(
+        run_module, "get_batch_definition_swagger", lambda *args, **kwargs: fragment
+    )
+    monkeypatch.setattr(
+        run_module, "get_function_definition_swagger", lambda *args, **kwargs: fragment
+    )
+    return run_swagger_generation("http://localhost:3000")
+
+
+def _count_parses(monkeypatch) -> list:
+    """Every file the run actually hands to the parser."""
+    parsed = []
+    real_process_file = run_module.process_file
+
+    def _counting(file_path, directory_path):
+        parsed.append(file_path)
+        return real_process_file(file_path, directory_path)
+
+    monkeypatch.setattr(run_module, "process_file", _counting)
+    return parsed
+
+
+def test_metadata_is_cached_outside_the_scanned_repo(tmp_path, monkeypatch):
+    """The run built its metadata directory inside the repo it was reading."""
+    repo_root = _cache_repo(tmp_path)
+    out_dir = tmp_path / "out"
+    before = sorted(path.name for path in repo_root.iterdir())
+
+    _cache_run(monkeypatch, repo_root, out_dir)
+
+    entries = sorted(path.name for path in _cache_dir(out_dir).glob("*.json"))
+    assert len(entries) == 2
+    assert any(name.startswith("widgets_controller_") for name in entries)
+    assert sorted(path.name for path in repo_root.iterdir()) == before
+
+
+def test_a_second_run_over_unchanged_files_parses_nothing(tmp_path, monkeypatch):
+    """The cache is content addressed, so untouched files are never reparsed."""
+    repo_root = _cache_repo(tmp_path)
+    out_dir = tmp_path / "out"
+    _cache_run(monkeypatch, repo_root, out_dir)
+
+    parsed = _count_parses(monkeypatch)
+    _cache_run(monkeypatch, repo_root, out_dir)
+
+    assert parsed == []
+
+
+def test_an_edited_file_is_reparsed_and_its_stale_entry_dropped(tmp_path, monkeypatch):
+    """A new content hash means a new entry, and the old one has to go."""
+    repo_root = _cache_repo(tmp_path)
+    out_dir = tmp_path / "out"
+    _cache_run(monkeypatch, repo_root, out_dir)
+    controller = repo_root / "app" / "controllers" / "widgets_controller.rb"
+    stale = _cache_dir(out_dir) / run_module._metadata_cache_filename(
+        str(controller), run_module._content_hash(str(controller))
+    )
+    assert stale.exists()
+
+    _write(controller, CACHE_CONTROLLER.replace("render json: []", "render json: [1]"))
+    parsed = _count_parses(monkeypatch)
+    _cache_run(monkeypatch, repo_root, out_dir)
+
+    assert parsed == [str(controller)]
+    assert not stale.exists()
+    assert len(list(_cache_dir(out_dir).glob("*.json"))) == 2
+
+
+def test_an_existing_qodex_directory_in_the_repo_is_left_alone(tmp_path, monkeypatch):
+    """That directory used to be rebuilt and then deleted, user files and all."""
+    repo_root = _cache_repo(tmp_path)
+    kept = _write(repo_root / "qodex_file_information" / "notes.txt", "mine\n")
+    out_dir = tmp_path / "out"
+
+    _cache_run(monkeypatch, repo_root, out_dir)
+
+    assert kept.read_text(encoding="utf-8") == "mine\n"
+
+
+def test_a_stale_version_marker_wipes_the_cache(tmp_path, monkeypatch):
+    """Entries written by an older metadata format must not be read back."""
+    repo_root = _cache_repo(tmp_path)
+    out_dir = tmp_path / "out"
+    _cache_run(monkeypatch, repo_root, out_dir)
+    cache_dir = _cache_dir(out_dir)
+    (cache_dir / "cache_version").write_text("0", encoding="utf-8")
+
+    parsed = _count_parses(monkeypatch)
+    _cache_run(monkeypatch, repo_root, out_dir)
+
+    assert len(parsed) == 2
+    assert (cache_dir / "cache_version").read_text(
+        encoding="utf-8"
+    ) == run_module.METADATA_CACHE_VERSION

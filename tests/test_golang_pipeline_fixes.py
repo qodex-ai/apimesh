@@ -508,6 +508,7 @@ def test_batches_are_packed_to_fit_the_context_budget(tmp_path, monkeypatch):
 def test_packed_batches_keep_their_sections_inside_the_budget(tmp_path, monkeypatch):
     """The invariant the packing exists for, read off the prompt entries."""
     monkeypatch.setattr(dsg, "HANDLER_TOKEN_BUDGET", 4000)
+    _prepare_run(monkeypatch, tmp_path, tmp_path / "out")
     _, jobs = _write_sized_handlers(tmp_path, [2500, 2500, 2500])
     calls = []
 
@@ -938,7 +939,7 @@ def _relocation_jobs(repo: Path) -> list:
     ]
 
 
-def _relocation_pass(monkeypatch, repo: Path, metadata_dir: Path, out_dir: Path, changed_files, summary):
+def _relocation_pass(monkeypatch, repo: Path, out_dir: Path, changed_files, summary):
     """One incremental pass over the repo as it is on disk right now."""
     calls = []
 
@@ -952,8 +953,7 @@ def _relocation_pass(monkeypatch, repo: Path, metadata_dir: Path, out_dir: Path,
     # Two runs in one process are two checkouts: nothing may be read from the
     # cache the previous run filled.
     rsg._reset_caches()
-    monkeypatch.setattr(rsg, "_METADATA_DIR", str(metadata_dir))
-    _write_metadata(repo, metadata_dir)
+    _write_metadata(repo)
 
     swagger = rsg._maybe_incremental_update(str(repo), _relocation_jobs(repo))
 
@@ -986,8 +986,6 @@ def test_a_relocated_dependency_is_reindexed_when_the_endpoint_skips(tmp_path, m
     (repo / "main.go").write_text(RELOCATION_MAIN, encoding="utf-8")
     (repo / "handlers" / "users.go").write_text(RELOCATION_LIST_USERS, encoding="utf-8")
     (repo / "handlers" / "health.go").write_text(RELOCATION_HEALTH, encoding="utf-8")
-    metadata_dir = tmp_path / "meta"
-    metadata_dir.mkdir()
     out_dir = tmp_path / "out"
     out_dir.mkdir()
     (out_dir / "swagger.json").write_text(
@@ -1000,9 +998,7 @@ def test_a_relocated_dependency_is_reindexed_when_the_endpoint_skips(tmp_path, m
     monkeypatch.setenv("APIMESH_USER_REPO_PATH", str(repo))
     monkeypatch.setenv("APIMESH_OUTPUT_FILEPATH", str(out_dir / "swagger.json"))
 
-    index, calls = _relocation_pass(
-        monkeypatch, repo, metadata_dir, out_dir, set(), "documented"
-    )
+    index, calls = _relocation_pass(monkeypatch, repo, out_dir, set(), "documented")
 
     assert calls == [["GET /users"]]
     assert _imported_paths(index["GET /users"]) == [str(repo / "handlers" / "users.go")]
@@ -1016,7 +1012,6 @@ def test_a_relocated_dependency_is_reindexed_when_the_endpoint_skips(tmp_path, m
     index, calls = _relocation_pass(
         monkeypatch,
         repo,
-        metadata_dir,
         out_dir,
         {os.path.abspath(str(repo / "handlers" / "users.go"))},
         "never asked for",
@@ -1034,7 +1029,6 @@ def test_a_relocated_dependency_is_reindexed_when_the_endpoint_skips(tmp_path, m
     index, calls = _relocation_pass(
         monkeypatch,
         repo,
-        metadata_dir,
         out_dir,
         {os.path.abspath(str(repo / "handlers" / "list_users.go"))},
         "redocumented",
@@ -1401,11 +1395,19 @@ def _cross_package_repo(tmp_path: Path) -> Path:
     return repo
 
 
-def _write_metadata(repo: Path, metadata_dir: Path) -> None:
-    for go_file in sorted(repo.rglob("*.go")):
-        info = process_file(str(go_file), str(repo))
-        target = metadata_dir / rsg._sanitize_json_filename(str(go_file))
-        target.write_text(json.dumps(info), encoding="utf-8")
+def _prepare_run(monkeypatch, repo: Path, output_dir: Path) -> Path:
+    """The two paths every run reads: the repo scanned and where output lands."""
+    monkeypatch.setenv("APIMESH_USER_REPO_PATH", str(repo))
+    output_filepath = output_dir / "swagger.json"
+    monkeypatch.setenv("APIMESH_OUTPUT_FILEPATH", str(output_filepath))
+    return output_filepath
+
+
+def _write_metadata(repo: Path) -> None:
+    """The per file metadata the run writes before anything reads the index."""
+    rsg._CONTENT_HASHES.clear()
+    rsg._METADATA_ENTRIES.clear()
+    rsg._build_metadata_cache(str(repo))
 
 
 def test_a_cross_package_handler_reaches_the_prompt(tmp_path, monkeypatch):
@@ -1413,10 +1415,8 @@ def test_a_cross_package_handler_reaches_the_prompt(tmp_path, monkeypatch):
     the call site the pipeline compared "handlers" against function names and
     every cross-package handler was documented from its route line alone."""
     repo = _cross_package_repo(tmp_path)
-    metadata_dir = tmp_path / "meta"
-    metadata_dir.mkdir()
-    monkeypatch.setattr(rsg, "_METADATA_DIR", str(metadata_dir))
-    _write_metadata(repo, metadata_dir)
+    _prepare_run(monkeypatch, repo, tmp_path / "out")
+    _write_metadata(repo)
 
     blocks, definition = rsg.provide_context_codeblock(
         str(repo),
@@ -1433,10 +1433,8 @@ def test_a_cross_package_handler_is_indexed_as_a_dependency(tmp_path, monkeypatc
     """The same resolution feeds the api_index, so an edit in the handler's own
     package marks the endpoint stale on the next run."""
     repo = _cross_package_repo(tmp_path)
-    metadata_dir = tmp_path / "meta"
-    metadata_dir.mkdir()
-    monkeypatch.setattr(rsg, "_METADATA_DIR", str(metadata_dir))
-    _write_metadata(repo, metadata_dir)
+    _prepare_run(monkeypatch, repo, tmp_path / "out")
+    _write_metadata(repo)
 
     metadata = rsg._load_file_metadata(str(repo / "main.go"))
     _, imported = rsg.get_dependencies(metadata, 9, 11, str(repo / "main.go"))
@@ -1463,13 +1461,10 @@ def test_metadata_filenames_fit_the_filesystem_limit():
     metadata write failed for exactly the deepest files."""
     deep = "/" + "a-rather-long-directory-name/" * 30 + "handlers.go"
 
-    name = rsg._sanitize_json_filename(deep)
+    name = rsg._metadata_cache_filename(deep, "0123456789abcdef")
 
     assert len(name.encode("utf-8")) <= 255
-    assert name.startswith("handlers.go_")
-    # Same basename, different paths: still two different metadata files.
-    other = "/" + "another-long-directory-name/" * 30 + "handlers.go"
-    assert rsg._sanitize_json_filename(other) != name
+    assert name.startswith("handlers_")
 
 
 def test_duplicate_registrations_cost_one_job(tmp_path):
@@ -1500,6 +1495,7 @@ def test_a_second_run_starts_from_empty_caches(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / "main.go").write_text("package main\n\nfunc main() {}\n", encoding="utf-8")
+    _prepare_run(monkeypatch, repo, tmp_path / "out")
     monkeypatch.setattr(rsg, "get_repo_path", lambda: str(repo))
     monkeypatch.setattr(rsg, "get_repo_name", lambda: "repo")
     monkeypatch.setattr(rsg, "get_git_commit_hash", lambda: "abc123")
@@ -1568,7 +1564,7 @@ def test_metadata_filenames_survive_a_long_basename():
     """A single path component can fill NAME_MAX on its own."""
     long_name = "/repo/" + "a" * 235 + ".go"
 
-    name = rsg._sanitize_json_filename(long_name)
+    name = rsg._metadata_cache_filename(long_name, "0123456789abcdef")
 
     assert len(name.encode("utf-8")) <= 255
 
@@ -1601,12 +1597,10 @@ def test_a_cross_package_handler_resolves_inside_its_own_package(tmp_path, monke
     (repo / "billing" / "list.go").write_text(
         "package billing\n\nfunc List() {}\n", encoding="utf-8"
     )
-    metadata_dir = tmp_path / "meta"
-    metadata_dir.mkdir()
-    monkeypatch.setattr(rsg, "_METADATA_DIR", str(metadata_dir))
+    _prepare_run(monkeypatch, repo, tmp_path / "out")
     monkeypatch.setattr(rsg, "_FUNCTION_INDEX_CACHE", {})
     monkeypatch.setattr(rsg, "_FUNCTION_INDEX_CACHE_ROOT", None)
-    _write_metadata(repo, metadata_dir)
+    _write_metadata(repo)
 
     endpoints = find_api_endpoints(repo / "main.go", str(repo))
     hydrated = rsg._hydrate_method_info(str(repo), endpoints[0])
@@ -1655,12 +1649,10 @@ def test_a_method_handler_hydrates_from_its_receiver_type(tmp_path, monkeypatch)
     (repo / "main.go").write_text(TYPED_RECEIVER_MAIN, encoding="utf-8")
     (repo / "users.go").write_text(USER_SERVICE, encoding="utf-8")
     (repo / "orders.go").write_text(ORDER_SERVICE, encoding="utf-8")
-    metadata_dir = tmp_path / "meta"
-    metadata_dir.mkdir()
-    monkeypatch.setattr(rsg, "_METADATA_DIR", str(metadata_dir))
+    _prepare_run(monkeypatch, repo, tmp_path / "out")
     monkeypatch.setattr(rsg, "_FUNCTION_INDEX_CACHE", {})
     monkeypatch.setattr(rsg, "_FUNCTION_INDEX_CACHE_ROOT", None)
-    _write_metadata(repo, metadata_dir)
+    _write_metadata(repo)
 
     endpoints = find_api_endpoints(repo / "main.go", str(repo))
     hydrated = {
@@ -1699,6 +1691,7 @@ def test_the_module_name_cache_is_reset_between_runs(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / "main.go").write_text("package main\n\nfunc main() {}\n", encoding="utf-8")
+    _prepare_run(monkeypatch, repo, tmp_path / "out")
     monkeypatch.setattr(rsg, "get_repo_path", lambda: str(repo))
     monkeypatch.setattr(rsg, "get_repo_name", lambda: "repo")
     monkeypatch.setattr(rsg, "get_git_commit_hash", lambda: "abc123")
@@ -1708,3 +1701,130 @@ def test_the_module_name_cache_is_reset_between_runs(tmp_path, monkeypatch):
     assert rsg.run_swagger_generation("https://api.example.com") is None
 
     assert str(repo) not in gfi._MODULE_NAME_CACHE
+
+
+CACHE_MAIN = """package main
+
+import "github.com/gin-gonic/gin"
+
+func listUsers(c *gin.Context) {}
+
+func RegisterRoutes(r *gin.Engine) {
+	r.GET("/users", listUsers)
+}
+"""
+
+
+def _cache_dir(out_dir: Path) -> Path:
+    return out_dir / "metadata_cache" / "golang"
+
+
+def _cache_repo(tmp_path: Path) -> Path:
+    repo = tmp_path / "repo"
+    repo.mkdir(parents=True, exist_ok=True)
+    (repo / "go.mod").write_text("module example.com/app\n\ngo 1.22\n", encoding="utf-8")
+    (repo / "main.go").write_text(CACHE_MAIN, encoding="utf-8")
+    return repo
+
+
+def _cache_run(monkeypatch, repo: Path, out_dir: Path):
+    """One full run over the repo, with every LLM call answered locally."""
+    _prepare_run(monkeypatch, repo, out_dir)
+    # The incremental pass would skip the work these tests are about.
+    monkeypatch.setattr(rsg, "_maybe_incremental_update", lambda *args: None)
+    fragment = {"paths": {"/users": {"get": {"summary": "listed"}}}}
+    monkeypatch.setattr(
+        rsg, "get_batch_definition_swagger", lambda *args, **kwargs: fragment
+    )
+    monkeypatch.setattr(
+        rsg, "get_function_definition_swagger", lambda *args, **kwargs: fragment
+    )
+    return rsg.run_swagger_generation("https://api.example.com")
+
+
+def _count_parses(monkeypatch) -> list:
+    """Every file the run actually hands to the parser."""
+    parsed = []
+    real_process_file = rsg.process_file
+
+    def _counting(file_path, directory_path):
+        parsed.append(file_path)
+        return real_process_file(file_path, directory_path)
+
+    monkeypatch.setattr(rsg, "process_file", _counting)
+    return parsed
+
+
+def test_metadata_is_cached_outside_the_scanned_repo(tmp_path, monkeypatch):
+    """The run built its metadata in a temp directory it then threw away."""
+    repo = _cache_repo(tmp_path)
+    out_dir = tmp_path / "out"
+    before = sorted(path.name for path in repo.iterdir())
+
+    _cache_run(monkeypatch, repo, out_dir)
+
+    entries = sorted(path.name for path in _cache_dir(out_dir).glob("*.json"))
+    assert len(entries) == 1 and entries[0].startswith("main_")
+    assert sorted(path.name for path in repo.iterdir()) == before
+
+
+def test_a_second_run_over_unchanged_files_parses_nothing(tmp_path, monkeypatch):
+    """The cache is content addressed, so untouched files are never reparsed."""
+    repo = _cache_repo(tmp_path)
+    out_dir = tmp_path / "out"
+    _cache_run(monkeypatch, repo, out_dir)
+
+    parsed = _count_parses(monkeypatch)
+    _cache_run(monkeypatch, repo, out_dir)
+
+    assert parsed == []
+
+
+def test_an_edited_file_is_reparsed_and_its_stale_entry_dropped(tmp_path, monkeypatch):
+    """A new content hash means a new entry, and the old one has to go."""
+    repo = _cache_repo(tmp_path)
+    out_dir = tmp_path / "out"
+    _cache_run(monkeypatch, repo, out_dir)
+    stale = sorted(_cache_dir(out_dir).glob("*.json"))
+
+    (repo / "main.go").write_text(
+        CACHE_MAIN.replace("func listUsers(c *gin.Context) {}",
+                           "func listUsers(c *gin.Context) { _ = c }"),
+        encoding="utf-8",
+    )
+    parsed = _count_parses(monkeypatch)
+    _cache_run(monkeypatch, repo, out_dir)
+
+    assert parsed == [str(repo / "main.go")]
+    assert not stale[0].exists()
+    assert len(list(_cache_dir(out_dir).glob("*.json"))) == 1
+
+
+def test_an_existing_qodex_directory_in_the_repo_is_left_alone(tmp_path, monkeypatch):
+    """Nothing inside the scanned repo is created, read back or removed."""
+    repo = _cache_repo(tmp_path)
+    kept = repo / "qodex_file_information" / "notes.txt"
+    kept.parent.mkdir(parents=True, exist_ok=True)
+    kept.write_text("mine\n", encoding="utf-8")
+    out_dir = tmp_path / "out"
+
+    _cache_run(monkeypatch, repo, out_dir)
+
+    assert kept.read_text(encoding="utf-8") == "mine\n"
+
+
+def test_a_stale_version_marker_wipes_the_cache(tmp_path, monkeypatch):
+    """Entries written by an older metadata format must not be read back."""
+    repo = _cache_repo(tmp_path)
+    out_dir = tmp_path / "out"
+    _cache_run(monkeypatch, repo, out_dir)
+    cache_dir = _cache_dir(out_dir)
+    (cache_dir / "cache_version").write_text("0", encoding="utf-8")
+
+    parsed = _count_parses(monkeypatch)
+    _cache_run(monkeypatch, repo, out_dir)
+
+    assert parsed == [str(repo / "main.go")]
+    assert (cache_dir / "cache_version").read_text(
+        encoding="utf-8"
+    ) == rsg.METADATA_CACHE_VERSION
