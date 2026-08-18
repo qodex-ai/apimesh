@@ -30,6 +30,12 @@ ENV APIMESH_USER_CONFIG_PATH=/workspace/apimesh/config.json
 ENV APIMESH_USER_REPO_PATH=/workspace
 ENV APIMESH_OUTPUT_FILEPATH=/workspace/apimesh/swagger.json
 
+# Run as a non-root user. UID 1000 is the first regular user on most Linux hosts,
+# so files written into the mounted /workspace stay owned by the caller.
+RUN useradd --create-home --uid 1000 --shell /bin/bash apimesh \
+    && chown -R apimesh:apimesh /app /workspace
+USER apimesh
+
 # Set the entrypoint
 ENTRYPOINT ["docker-entrypoint.sh"]
 

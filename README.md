@@ -96,12 +96,14 @@ Run interactively - will prompt for any missing inputs
 docker run --pull always -it --rm -v $(pwd):/workspace qodexai/apimesh:latest
 ```
 
+> The image runs as UID 1000. On Linux, if your repo is owned by a different user, add `--user "$(id -u):$(id -g)"` so the output files are writable and owned by you.
+
 ### Option 2: Using MCP
 
 Download the MCP server file
 
 ```bash
-curl https://raw.githubusercontent.com/qodex-ai/apimesh/main/swagger_mcp.py -o swagger_mcp.py
+curl -f https://raw.githubusercontent.com/qodex-ai/apimesh/main/swagger_mcp.py -o swagger_mcp.py
 ```
 
 Add this to your MCP settings
@@ -129,11 +131,15 @@ cd /path/to/your/repo
 Inside your repo root
 ```bash
 mkdir -p apimesh && \
-  curl -sSL https://raw.githubusercontent.com/qodex-ai/apimesh/refs/heads/main/run.sh -o apimesh/run.sh && \
+  curl -fsSL https://raw.githubusercontent.com/qodex-ai/apimesh/refs/heads/main/run.sh -o apimesh/run.sh && \
   chmod +x apimesh/run.sh && apimesh/run.sh
 ```
 
 > Each run leaves `swagger.json`, `apimesh-docs.html`, `run.sh`, and `config.json` side-by-side inside the `apimesh/` workspace folder.
+
+### Swagger-only runs (no HTML viewer)
+
+Pass `--no-html` to the docker image or to `run.sh` to write `swagger.json` and skip `apimesh-docs.html`. The same thing happens if you set `APIMESH_SKIP_HTML=1` in the environment, which is handy for CI and agent runs.
 
 ---
 
