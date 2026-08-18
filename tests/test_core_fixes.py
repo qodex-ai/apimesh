@@ -807,3 +807,25 @@ def test_changed_files_include_untracked(tmp_path, monkeypatch):
     changed = get_changed_files_since(base, repo_path=str(repo))
     assert changed is not None
     assert str(repo / "new_routes.py") in {str(Path(p)) for p in changed}
+
+
+def test_legacy_generation_reports_coverage(monkeypatch, tmp_path):
+    monkeypatch.setenv("APIMESH_USER_REPO_PATH", str(tmp_path))
+    generator = _generator()
+
+    def generate(endpoint, auth, framework):
+        if endpoint["path"] == "/broken":
+            raise RuntimeError("boom")
+        return {"paths": {endpoint["path"]: {"get": {"summary": "ok"}}}}
+
+    generator.generate_endpoint_swagger = generate
+    swagger = generator.create_swagger_json(
+        [_endpoint("/broken", "GET"), _endpoint("/healthy", "GET")],
+        "", "flask", "https://api.example.com",
+    )
+    assert swagger["info"]["x-apimesh-coverage"] == {
+        "endpoints_extracted": 2,
+        "generated": 1,
+        "skipped_unchanged": 0,
+        "failed": 1,
+    }

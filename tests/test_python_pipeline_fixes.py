@@ -1824,3 +1824,34 @@ def test_a_stale_version_marker_wipes_the_cache(tmp_path, monkeypatch):
     assert (cache_dir / "cache_version").read_text(
         encoding="utf-8"
     ) == rsg.METADATA_CACHE_VERSION
+
+
+def test_incremental_no_change_run_reports_all_unchanged(tmp_path, monkeypatch, capsys):
+    written = {}
+    existing_swagger = {
+        "openapi": "3.0.0",
+        "info": {"x-commit-reference": "same"},
+        "paths": {"/orders": {"post": {"summary": "keep"}}},
+    }
+    existing_index = {
+        "POST /orders": {
+            "files": [{"file_path": "/repo/b.py", "imports": []}],
+            "context_hash": "irrelevant",
+        }
+    }
+    monkeypatch.setattr(rsg, "_load_existing_swagger", lambda: existing_swagger)
+    monkeypatch.setattr(rsg, "_load_existing_api_index", lambda: existing_index)
+    monkeypatch.setattr(rsg, "_write_api_index", lambda index: written.update(index))
+    monkeypatch.setattr(rsg, "get_changed_files_since", lambda *a, **k: set())
+    jobs = [{"route": "/orders", "method": "POST", "file_path": "/repo/b.py",
+             "name": "o", "start_line": 1, "end_line": 2, "type": "function"}]
+    result = rsg._maybe_incremental_update("/repo", jobs)
+    assert result is existing_swagger
+    coverage = result["info"]["x-apimesh-coverage"]
+    assert coverage == {
+        "endpoints_extracted": 1,
+        "generated": 0,
+        "skipped_unchanged": 1,
+        "failed": 0,
+    }
+    assert "apimesh coverage: 0 generated, 1 unchanged, 0 failed of 1 extracted" in capsys.readouterr().out
