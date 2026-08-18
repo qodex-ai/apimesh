@@ -1,6 +1,4 @@
-__pycahce__/
-*/__pycahce__/
-**/__pycahce__/
+__pycache__/
 .qodexai/
 .DS_Store
 .idea/

@@ -661,3 +661,22 @@ def test_loading_a_legacy_spec_migrates_it_in_every_pipeline(monkeypatch, tmp_pa
         assert operation["description"] == "old description"
         assert operation["x-authorization-tag"] == "Authorization Required"
         assert "api_description" not in operation and "authorization_tag" not in operation
+
+
+def test_legacy_extractor_rejects_extension_only_fragments():
+    fragment = {"paths": {"/x": {"x-metadata": {"owner": "payments"}}}}
+    assert SwaggerGeneration._extract_first_operation(fragment) is None
+    ok = {"paths": {"/x": {"parameters": [], "get": {"summary": "s"}}}}
+    assert SwaggerGeneration._extract_first_operation(ok) == {"summary": "s"}
+
+
+def test_sanitize_swagger_normalizes_angle_bracket_params():
+    swagger = {"paths": {"/users/<int:pk>": {"get": {}}, "/files/<path>": {"get": {}}}}
+    sanitized = SwaggerGeneration._sanitize_swagger(swagger)
+    assert set(sanitized["paths"]) == {"/users/{pk}", "/files/{path}"}
+
+
+def test_cli_parses_no_html_flag():
+    args = swagger_generation_cli.parse_args(["sk", "", "", "", "--no-html"])
+    assert args.no_html is True
+    assert swagger_generation_cli.parse_args(["sk"]).no_html is False

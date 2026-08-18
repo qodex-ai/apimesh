@@ -11,6 +11,9 @@ from utils import get_git_commit_hash, get_github_repo_url, get_repo_path, get_r
 
 config = Configurations()
 
+# Keys of an OpenAPI path item that hold an operation body.
+HTTP_VERB_KEYS = {"get", "post", "put", "delete", "patch", "options", "head", "trace"}
+
 # Operation keys older prompts asked for, mapped to their OpenAPI 3.0 compliant form.
 LEGACY_OPERATION_FIELDS = {
     "api_description": "description",
@@ -120,8 +123,10 @@ class SwaggerGeneration:
         for methods in paths.values():
             if not isinstance(methods, dict):
                 continue
-            for operation in methods.values():
-                if isinstance(operation, dict):
+            # Only an HTTP verb key counts: a path item may legally carry
+            # `parameters` or vendor extensions, which are not operations.
+            for name, operation in methods.items():
+                if str(name).lower() in HTTP_VERB_KEYS and isinstance(operation, dict):
                     return SwaggerGeneration._normalize_operation_fields(operation)
         return None
 
@@ -289,6 +294,9 @@ class SwaggerGeneration:
             return swagger
 
         def normalize(path: str) -> str:
+            # Flask/Django-style <converter:param> converts first, or the colon
+            # rule below would eat the converter's colon and mangle the name.
+            path = re.sub(r"<(?:[^<>:]+:)?([^<>]+)>", r"{\1}", path)
             return re.sub(r":([A-Za-z_][\w-]*)", r"{\1}", path)
 
         # Drop wildcard paths
