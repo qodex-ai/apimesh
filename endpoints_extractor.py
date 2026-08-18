@@ -1,4 +1,5 @@
 import ast
+import json
 from llm_client import OpenAiClient
 from config import Configurations
 import prompts
@@ -54,18 +55,43 @@ class EndpointsExtractor:
                 {"role": "system", "content": prompts.golang_endpoint_extractor_system_prompt},
                 {"role": "user", "content": content}
             ]
+        else:
+            # Frameworks without a dedicated prompt (spring, laravel, nestjs fallback, ...)
+            # go through a framework-agnostic extractor instead of crashing.
+            content = prompts.generic_endpoint_extractor_prompt.format(file_content=file_content)
+            messages = [
+                {"role": "system", "content": prompts.generic_endpoint_extractor_system_prompt},
+                {"role": "user", "content": content}
+            ]
         # Call the OpenAI API
         response = self.openai_client.call_chat_completion(messages=messages, temperature=0)
         start = response.find('[')
         end = response.rfind(']') + 1
         json_like_string = response[start:end]
 
+        # json.loads first: the prompts demand JSON, and literal_eval rejects
+        # JSON-only tokens (true/false/null). literal_eval stays as a fallback
+        # for python-flavored output (single quotes).
         try:
-            # Convert the JSON-like string to a Python list
-            parsed_list = ast.literal_eval(json_like_string)
-        except (ValueError, SyntaxError):
-            print("Error parsing JSON-like string from GPT response")
+            parsed_list = json.loads(json_like_string)
+        except (ValueError, TypeError):
+            try:
+                parsed_list = ast.literal_eval(json_like_string)
+            except (ValueError, SyntaxError):
+                print("Error parsing JSON-like string from GPT response")
+                parsed_list = []
+        if not isinstance(parsed_list, list):
+            print("Unexpected non-list endpoint payload from GPT response")
             parsed_list = []
+        # The model occasionally emits null or malformed entries; only dicts
+        # with a string method and path survive, everything downstream
+        # subscripts both keys.
+        parsed_list = [
+            entry for entry in parsed_list
+            if isinstance(entry, dict)
+            and isinstance(entry.get("method"), str)
+            and isinstance(entry.get("path"), str)
+        ]
 
         print(f"Completed finding endpoints for {file_path}")
         return parsed_list

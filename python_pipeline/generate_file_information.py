@@ -1,9 +1,7 @@
 from tree_sitter import Language, Parser, QueryCursor
 import tree_sitter_python
 import ast
-import importlib.util
 import os
-import sys
 from config import Configurations
 
 config = Configurations()
@@ -21,29 +19,19 @@ def parse_file(filename):
 
 
 def get_module_origin(module_name, base_directory=None):
-    try:
-        original_path = sys.path.copy()
-        if base_directory and base_directory not in sys.path:
-            sys.path.insert(0, base_directory)
+    """Resolve a module to a file inside the scanned repo, on disk only.
 
-        spec = importlib.util.find_spec(module_name)
-        if spec and spec.origin:
-            return spec.origin
-        elif spec is None:
-            return "<built-in>"
-    except Exception:
-        pass
-    finally:
-        sys.path = original_path
-
-    if base_directory and "." in module_name:
+    importlib.find_spec would execute the scanned repo's package __init__.py
+    files, so modules are matched against candidate paths instead. Anything that
+    does not resolve inside the repo is external and gets the built-in sentinel.
+    """
+    if base_directory and module_name:
         parts = module_name.split(".")
         potential_path = os.path.join(base_directory, *parts)
-        for ext in (".py", "/__init__.py"):
-            candidate = potential_path + ext
-            if os.path.exists(candidate):
-                return candidate
-    return None
+        for candidate in (potential_path + ".py", os.path.join(potential_path, "__init__.py")):
+            if os.path.isfile(candidate):
+                return os.path.abspath(candidate)
+    return "<built-in>"
 
 
 def find_import_usages(tree, imported_names):

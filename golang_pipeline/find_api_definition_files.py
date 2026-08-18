@@ -6,8 +6,14 @@ from config import Configurations
 config = Configurations()
 
 
-def _is_ignored(path: Path) -> bool:
-    return any(part in config.ignored_dirs for part in path.parts)
+def _is_ignored(path: Path, base_path: Path) -> bool:
+    # Only components below the scanned repo may be ignored, otherwise a repo
+    # living under /var, /tmp or /build discovers nothing.
+    try:
+        relative = path.relative_to(base_path)
+    except ValueError:
+        relative = path
+    return any(part in config.ignored_dirs for part in relative.parts)
 
 
 def _is_test_file(path: Path) -> bool:
@@ -35,7 +41,7 @@ def find_go_files(directory: str) -> List[Path]:
     base_path = Path(directory)
     go_files: List[Path] = []
     for file_path in base_path.rglob("*.go"):
-        if _is_ignored(file_path) or _is_test_file(file_path):
+        if _is_ignored(file_path, base_path) or _is_test_file(file_path):
             continue
         go_files.append(file_path)
     return go_files

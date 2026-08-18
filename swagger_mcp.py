@@ -1,3 +1,7 @@
+# /// script
+# requires-python = ">=3.10"
+# dependencies = ["mcp>=1.2,<2"]
+# ///
 from mcp.server.fastmcp import FastMCP
 from typing import Optional
 import os, subprocess, shutil, sys
@@ -23,10 +27,12 @@ def _ensure_dir(p: str):
 def run_swagger_generation(
     openai_api_key: str,
     repo_path: str,
-    timeout_seconds: int = 900
+    timeout_seconds: int = 900,
+    api_host: Optional[str] = None
 ) -> dict:
     """
     This tool takes the path of the repository, openai_api_key and timeout to generate a openapi spec swagger json for that repo.
+    Pass api_host (for example https://api.acme.com) to set servers[0].url in the generated spec, otherwise it stays a placeholder.
     """
     _require("openai_api_key", openai_api_key)
     _require("repo_path", repo_path)
@@ -52,7 +58,7 @@ def run_swagger_generation(
     print(f"[mcp] script_path={script_path!r} ({type(script_path)})", file=sys.stderr)
 
     curl = subprocess.run(
-        ["curl", "-sSL", script_url, "-o", script_path],
+        ["curl", "-fsSL", script_url, "-o", script_path],
         capture_output=True, text=True
     )
     if curl.returncode != 0:
@@ -71,33 +77,52 @@ def run_swagger_generation(
     })
 
     # --- command (ALL ARGS AS STRINGS) ---
+    # The key travels in OPENAI_API_KEY above, never in argv: argv is visible to every
+    # process on the box and this command line is printed to the debug log below.
     cmd = [
         "bash", script_path,
         "--repo-path", repo_path,
-        "--openai-api-key", openai_api_key,
+        "--openai-api-key", "null",
         "--project-api-key", "null",
         "--ai-chat-id", "null",
         "--is-mcp", "true",
     ]
+    if api_host and str(api_host).strip().lower() != "null":
+        cmd += ["--api-host", str(api_host).strip()]
     print(f"[mcp] running: {cmd} (cwd={base_dir})", file=sys.stderr)
 
-    proc = subprocess.run(
-        cmd,
-        cwd=base_dir,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=timeout_seconds,
-    )
-    os.remove(script_path)
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=base_dir,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+        )
+    finally:
+        # Cleanup must never replace the real error (a TimeoutExpired or the
+        # nonzero-exit RuntimeError below) with an OSError of its own.
+        try:
+            if os.path.exists(script_path):
+                os.remove(script_path)
+        except OSError as cleanup_error:
+            print(f"[mcp] could not remove {script_path}: {cleanup_error}", file=sys.stderr)
 
-    result = {
+    if proc.returncode != 0:
+        # A failed generation must surface as a tool error, not a success payload
+        # that happens to carry a nonzero exit_code the client never reads.
+        raise RuntimeError(
+            f"swagger generation failed with exit code {proc.returncode}. "
+            f"stdout tail: {proc.stdout[-2000:]!r} stderr tail: {proc.stderr[-2000:]!r}"
+        )
+
+    return {
         "exit_code": proc.returncode,
         "work_dir": base_dir,
         "stdout": proc.stdout[-200_000:],
         "stderr": proc.stderr[-200_000:],
     }
-    return result
 
 if __name__ == "__main__":
     print("[mcp] server booted; waiting on stdio", file=sys.stderr)

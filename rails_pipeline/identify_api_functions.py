@@ -156,8 +156,10 @@ def _handle_command(
 
     if method_lower == "scope":
         options = _collect_hash_options(args)
+        # scope '/public' and scope :v2 carry the path as a positional argument.
+        scope_path = options.get("path") or _first_symbol_or_string(args)
         scoped_context = context.with_scope(
-            options.get("path"), options.get("module")
+            scope_path, options.get("module")
         )
         if block_node:
             _walk_routes(block_node, source, scoped_context, routes)

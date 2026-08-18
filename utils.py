@@ -124,11 +124,51 @@ def get_api_index_filepath() -> str:
     default_path = os.path.join(repo_path, "apimesh", "api_index.json")
     return os.path.abspath(default_path)
 
+def _sanitize_remote_url(remote_url: str) -> str:
+    """
+    Turn a git remote URL into a public URL that is safe to publish.
+
+    Credentials embedded in the remote (https://TOKEN@github.com/owner/repo) end up
+    in swagger.json and the HTML viewer, so anything that is not a clean http(s) or
+    github ssh remote is dropped instead of returned verbatim.
+
+    Examples:
+        https://TOKEN@github.com/owner/repo.git -> https://github.com/owner/repo
+        git@github.com:owner/repo.git           -> https://github.com/owner/repo
+        /local/path/to/repo                     -> ""
+
+    Args:
+        remote_url: Raw output of `git remote get-url origin`.
+
+    Returns:
+        Sanitized URL, or empty string if the remote is not a recognised http(s)/ssh URL.
+    """
+    remote_url = (remote_url or "").strip()
+    if not remote_url:
+        return ""
+
+    ssh_match = re.match(r'^git@github\.com:(.+?)(?:\.git)?/?$', remote_url)
+    if ssh_match:
+        return f"https://github.com/{ssh_match.group(1)}"
+
+    https_match = re.match(r'^(https?)://(?:[^/]*@)?([^/?#]+)(/[^?#]*)?', remote_url)
+    if https_match:
+        scheme = https_match.group(1)
+        host = https_match.group(2)
+        path = (https_match.group(3) or "").rstrip('/')
+        if path.endswith('.git'):
+            path = path[:-len('.git')]
+        if not path:
+            return ""
+        return f"{scheme}://{host}{path}"
+
+    return ""
+
 def get_github_repo_url() -> str:
     """
     Get the GitHub repository URL from git remote.
     Uses APIMESH_USER_REPO_PATH environment variable to determine the repository path.
-    
+
     Returns:
         GitHub repository URL (e.g., "https://github.com/owner/repo") or empty string if not available.
     """
@@ -150,25 +190,8 @@ def get_github_repo_url() -> str:
             return ""
         
         if result.returncode == 0 and result.stdout:
-            remote_url = result.stdout.strip()
-            # Convert SSH format (git@github.com:owner/repo.git) to HTTPS format
-            # or extract from HTTPS format (https://github.com/owner/repo.git)
-            ssh_pattern = r'git@github\.com:(.+?)(?:\.git)?$'
-            https_pattern = r'https?://(?:www\.)?github\.com/(.+?)(?:\.git)?$'
-            
-            ssh_match = re.match(ssh_pattern, remote_url)
-            if ssh_match:
-                owner_repo = ssh_match.group(1)
-                return f"https://github.com/{owner_repo}"
-            
-            https_match = re.match(https_pattern, remote_url)
-            if https_match:
-                owner_repo = https_match.group(1)
-                return f"https://github.com/{owner_repo}"
-            
-            # Return as-is if it doesn't match GitHub patterns
-            return remote_url
-        
+            return _sanitize_remote_url(result.stdout.strip())
+
         return ""
     except Exception:
         return ""
