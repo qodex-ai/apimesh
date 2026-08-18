@@ -676,12 +676,8 @@ def _relocation_jobs(repo: Path) -> list:
 
 def _stage_metadata(repo: Path) -> None:
     """The per file metadata the run writes before anything reads the index."""
-    json_dir = Path(run_module._metadata_dir_path(str(repo)))
-    json_dir.mkdir(parents=True, exist_ok=True)
-    for js_file in sorted(repo.rglob("*.js")):
-        info = process_file(str(js_file), str(repo))
-        name = run_module._metadata_file_name(str(js_file))
-        (json_dir / name).write_text(json.dumps(info), encoding="utf-8")
+    run_module._reset_metadata_state()
+    run_module._build_metadata_cache(str(repo))
 
 
 def _relocation_pass(monkeypatch, repo: Path, out_dir: Path, changed_files, summary):
@@ -987,6 +983,8 @@ def test_batches_are_packed_to_fit_the_context_budget(tmp_path, monkeypatch):
 def test_packed_batches_keep_their_sections_inside_the_budget(tmp_path, monkeypatch):
     """The invariant the packing exists for, read off the prompt sections."""
     monkeypatch.setattr(run_module, "MAX_HANDLER_TOKENS", 4000)
+    monkeypatch.setenv("APIMESH_USER_REPO_PATH", str(tmp_path))
+    monkeypatch.setenv("APIMESH_OUTPUT_FILEPATH", str(tmp_path / "out" / "swagger.json"))
     _, jobs = _write_sized_handlers(tmp_path, [2500, 2500, 2500])
     sections_sent = []
 
@@ -1481,3 +1479,119 @@ def test_a_jsdoc_module_tag_alone_does_not_select_a_file(tmp_path):
 
     found = find_api_definition_files(str(repo))
     assert [Path(path).resolve() for path in found] == [router.resolve()]
+
+
+CACHE_APP = """const express = require('express');
+const app = express();
+
+app.get('/users', (req, res) => res.send([]));
+
+module.exports = app;
+"""
+
+
+def _cache_dir(out_dir: Path) -> Path:
+    return out_dir / "metadata_cache" / "nodejs"
+
+
+def _cache_run(monkeypatch, repo: Path, out_dir: Path):
+    """One full run over the repo, with every LLM call answered locally."""
+    monkeypatch.setenv("APIMESH_USER_REPO_PATH", str(repo))
+    monkeypatch.setenv("APIMESH_OUTPUT_FILEPATH", str(out_dir / "swagger.json"))
+    # The incremental pass would skip the work these tests are about.
+    monkeypatch.setattr(run_module, "_maybe_incremental_update", lambda *args: None)
+    fragment = {"paths": {"/users": {"get": {"summary": "listed"}}}}
+    monkeypatch.setattr(
+        run_module, "get_batch_definition_swagger", lambda *args, **kwargs: fragment
+    )
+    monkeypatch.setattr(
+        run_module, "get_function_definition_swagger", lambda *args, **kwargs: fragment
+    )
+    return run_swagger_generation("http://localhost:3000")
+
+
+def _count_parses(monkeypatch) -> list:
+    """Every file the run actually hands to the parser."""
+    parsed = []
+    real_process_file = run_module.process_file
+
+    def _counting(file_path, directory_path):
+        parsed.append(file_path)
+        return real_process_file(file_path, directory_path)
+
+    monkeypatch.setattr(run_module, "process_file", _counting)
+    return parsed
+
+
+def test_metadata_is_cached_outside_the_scanned_repo(tmp_path, monkeypatch):
+    """The run built its metadata directory inside the repo it was reading."""
+    repo = tmp_path / "repo"
+    _write(repo / "app.js", CACHE_APP)
+    out_dir = tmp_path / "out"
+    before = sorted(path.name for path in repo.iterdir())
+
+    _cache_run(monkeypatch, repo, out_dir)
+
+    entries = sorted(path.name for path in _cache_dir(out_dir).glob("*.json"))
+    assert len(entries) == 1 and entries[0].startswith("app_")
+    assert sorted(path.name for path in repo.iterdir()) == before
+
+
+def test_a_second_run_over_unchanged_files_parses_nothing(tmp_path, monkeypatch):
+    """The cache is content addressed, so untouched files are never reparsed."""
+    repo = tmp_path / "repo"
+    _write(repo / "app.js", CACHE_APP)
+    out_dir = tmp_path / "out"
+    _cache_run(monkeypatch, repo, out_dir)
+
+    parsed = _count_parses(monkeypatch)
+    _cache_run(monkeypatch, repo, out_dir)
+
+    assert parsed == []
+
+
+def test_an_edited_file_is_reparsed_and_its_stale_entry_dropped(tmp_path, monkeypatch):
+    """A new content hash means a new entry, and the old one has to go."""
+    repo = tmp_path / "repo"
+    source = _write(repo / "app.js", CACHE_APP)
+    out_dir = tmp_path / "out"
+    _cache_run(monkeypatch, repo, out_dir)
+    stale = sorted(_cache_dir(out_dir).glob("*.json"))
+
+    _write(source, CACHE_APP.replace("res.send([])", "res.send([1])"))
+    parsed = _count_parses(monkeypatch)
+    _cache_run(monkeypatch, repo, out_dir)
+
+    assert parsed == [str(source)]
+    assert not stale[0].exists()
+    assert len(list(_cache_dir(out_dir).glob("*.json"))) == 1
+
+
+def test_an_existing_qodex_directory_in_the_repo_is_left_alone(tmp_path, monkeypatch):
+    """That directory used to be rebuilt and then deleted, user files and all."""
+    repo = tmp_path / "repo"
+    _write(repo / "app.js", CACHE_APP)
+    kept = _write(repo / "qodex_file_information" / "notes.txt", "mine\n")
+    out_dir = tmp_path / "out"
+
+    _cache_run(monkeypatch, repo, out_dir)
+
+    assert kept.read_text(encoding="utf-8") == "mine\n"
+
+
+def test_a_stale_version_marker_wipes_the_cache(tmp_path, monkeypatch):
+    """Entries written by an older metadata format must not be read back."""
+    repo = tmp_path / "repo"
+    source = _write(repo / "app.js", CACHE_APP)
+    out_dir = tmp_path / "out"
+    _cache_run(monkeypatch, repo, out_dir)
+    cache_dir = _cache_dir(out_dir)
+    (cache_dir / "cache_version").write_text("0", encoding="utf-8")
+
+    parsed = _count_parses(monkeypatch)
+    _cache_run(monkeypatch, repo, out_dir)
+
+    assert parsed == [str(source)]
+    assert (cache_dir / "cache_version").read_text(
+        encoding="utf-8"
+    ) == run_module.METADATA_CACHE_VERSION

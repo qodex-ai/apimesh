@@ -3,7 +3,6 @@ import json
 import os
 import re
 import shutil
-import tempfile
 import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -42,7 +41,10 @@ config = Configurations()
 _FUNCTION_INDEX_CACHE: Dict[str, List[Dict[str, object]]] = {}
 _FUNCTION_INDEX_CACHE_ROOT: Optional[str] = None
 _FILE_CONTENT_CACHE: Dict[str, List[str]] = {}
-_METADATA_DIR: Optional[str] = None
+# File path -> content hash, and file path -> the cache entry holding its
+# metadata. Both are per run: two runs in one process are two checkouts.
+_CONTENT_HASHES: Dict[str, Optional[str]] = {}
+_METADATA_ENTRIES: Dict[str, str] = {}
 _HEADER_PATTERN = re.compile(
     r"""\.Get(?:String|Header)\(\s*["']([^"']+)["']\s*\)|
         Header\.Get\(\s*["']([^"']+)["']\s*\)""",
@@ -85,12 +87,134 @@ def _api_index_output_path() -> str:
     return os.path.join(output_dir, "api_index.json")
 
 
-def _load_file_metadata(file_path: str):
-    metadata_dir = _METADATA_DIR
-    if not metadata_dir:
+# Per file metadata is cached under the output directory, never inside the
+# scanned repo: a run must not create or delete anything in the user's tree.
+METADATA_CACHE_PIPELINE = "golang"
+
+# Bumped when the shape of a metadata entry changes. A missing or stale marker
+# wipes this pipeline's cache before anything reads it.
+METADATA_CACHE_VERSION = "1"
+_METADATA_CACHE_VERSION_FILE = "cache_version"
+
+
+def _metadata_cache_dir() -> str:
+    return os.path.join(
+        os.path.dirname(get_output_filepath()), "metadata_cache", METADATA_CACHE_PIPELINE
+    )
+
+
+def _content_hash(file_path: str) -> Optional[str]:
+    """First 16 hex chars of the file's sha256, read once per run.
+
+    The path is hashed along with the content because an entry records the file
+    it came from and the import origins resolved around it, so two files that
+    read identically in different directories are not interchangeable.
+    """
+    key = os.path.abspath(file_path)
+    if key not in _CONTENT_HASHES:
+        try:
+            with open(key, "rb") as handle:
+                content = handle.read()
+        except OSError:
+            _CONTENT_HASHES[key] = None
+        else:
+            digest = hashlib.sha256(key.encode("utf-8") + b"\0" + content)
+            _CONTENT_HASHES[key] = digest.hexdigest()[:16]
+    return _CONTENT_HASHES[key]
+
+
+def _metadata_cache_filename(file_path: str, content_hash: str) -> str:
+    """One cache entry name: the file's basename plus the hash of its content.
+
+    A single path component can fill NAME_MAX on its own, so the readable half
+    is capped and the hash is what keeps the name unique.
+    """
+    stem = os.path.splitext(os.path.basename(file_path))[0]
+    stem = stem.encode("utf-8")[:200].decode("utf-8", "ignore")
+    return f"{stem}_{content_hash}.json"
+
+
+def _metadata_cache_path(file_path: str) -> Optional[str]:
+    """Where this file's metadata sits for the content it holds right now."""
+    content_hash = _content_hash(file_path)
+    if not content_hash:
         return None
-    json_file = os.path.join(metadata_dir, _sanitize_json_filename(file_path))
-    if not os.path.exists(json_file):
+    return os.path.join(
+        _metadata_cache_dir(), _metadata_cache_filename(file_path, content_hash)
+    )
+
+
+def _prepare_metadata_cache() -> str:
+    """The cache directory, emptied first when another schema wrote it."""
+    cache_dir = _metadata_cache_dir()
+    marker_path = os.path.join(cache_dir, _METADATA_CACHE_VERSION_FILE)
+    try:
+        with open(marker_path, "r", encoding="utf-8") as handle:
+            stored = handle.read().strip()
+    except OSError:
+        stored = None
+    if stored != METADATA_CACHE_VERSION:
+        shutil.rmtree(cache_dir, ignore_errors=True)
+    os.makedirs(cache_dir, exist_ok=True)
+    with open(marker_path, "w", encoding="utf-8") as handle:
+        handle.write(METADATA_CACHE_VERSION)
+    return cache_dir
+
+
+def _cache_file_metadata(file_path: str, directory_path: str) -> None:
+    """Extract one file's metadata, unless the cache already holds its content."""
+    cache_path = _metadata_cache_path(file_path)
+    if not cache_path:
+        return
+    key = os.path.abspath(file_path)
+    if os.path.exists(cache_path):
+        # Byte for byte what a previous run parsed, so its metadata still holds.
+        _METADATA_ENTRIES[key] = cache_path
+        return
+    try:
+        file_info = process_file(file_path, directory_path)
+    except Exception:
+        return
+    with open(cache_path, "w", encoding="utf-8") as handle:
+        json.dump(file_info, handle, indent=4)
+    _METADATA_ENTRIES[key] = cache_path
+
+
+def _build_metadata_cache(directory_path: str) -> None:
+    """One cache entry per go file below the repo root."""
+    _prepare_metadata_cache()
+    for root, _, files in os.walk(directory_path):
+        for filename in files:
+            file_path = os.path.join(root, filename)
+            if (
+                os.path.exists(file_path)
+                and should_process_directory(file_path, directory_path)
+                and file_path.endswith(".go")
+            ):
+                _cache_file_metadata(file_path, directory_path)
+
+
+def _prune_metadata_cache() -> None:
+    """Drop entries for content the repo no longer holds, so the cache stays bounded."""
+    live = set(_METADATA_ENTRIES.values())
+    try:
+        entries = list(os.scandir(_metadata_cache_dir()))
+    except OSError:
+        return
+    for entry in entries:
+        if not entry.is_file() or not entry.name.endswith(".json"):
+            continue
+        if entry.path in live:
+            continue
+        try:
+            os.remove(entry.path)
+        except OSError:
+            pass
+
+
+def _load_file_metadata(file_path: str):
+    json_file = _metadata_cache_path(file_path)
+    if not json_file or not os.path.exists(json_file):
         return None
     try:
         with open(json_file, "r", encoding="utf-8") as handle:
@@ -937,20 +1061,6 @@ def _maybe_incremental_update(
     return _apply_host(existing_swagger, host)
 
 
-def _sanitize_json_filename(file_path: str) -> str:
-    """A metadata filename that is unique per path and fits NAME_MAX.
-
-    Expanding every separator of an absolute path pushed a deep checkout past
-    the 255 byte filename limit, and the write then failed for exactly the
-    files that sit deepest in the tree.
-    """
-    digest = hashlib.sha1(file_path.encode("utf-8")).hexdigest()[:12]
-    # A single path component can fill NAME_MAX on its own, so the readable
-    # half is capped and the digest is what keeps the name unique.
-    basename = os.path.basename(file_path).encode("utf-8")[:200].decode("utf-8", "ignore")
-    return f"{basename}_{digest}.json"
-
-
 def _reset_caches() -> None:
     """Drop everything held between runs.
 
@@ -959,11 +1069,11 @@ def _reset_caches() -> None:
     """
     global _FUNCTION_INDEX_CACHE
     global _FUNCTION_INDEX_CACHE_ROOT
-    global _METADATA_DIR
     _FUNCTION_INDEX_CACHE = {}
     _FUNCTION_INDEX_CACHE_ROOT = None
     _FILE_CONTENT_CACHE.clear()
-    _METADATA_DIR = None
+    _CONTENT_HASHES.clear()
+    _METADATA_ENTRIES.clear()
     reset_module_cache()
 
 
@@ -976,15 +1086,12 @@ def _ensure_function_index(directory_path: str) -> Dict[str, List[Dict[str, obje
 
     _FUNCTION_INDEX_CACHE = {}
     _FUNCTION_INDEX_CACHE_ROOT = directory_path
-    metadata_dir = _METADATA_DIR
-    if not metadata_dir or not os.path.exists(metadata_dir):
-        return _FUNCTION_INDEX_CACHE
 
-    for entry in os.scandir(metadata_dir):
-        if not entry.is_file() or not entry.name.endswith(".json"):
-            continue
+    # Only the entries this run touched: the cache also holds entries for
+    # content that is no longer anywhere in the repo.
+    for cache_path in _METADATA_ENTRIES.values():
         try:
-            with open(entry.path, "r", encoding="utf-8") as handle:
+            with open(cache_path, "r", encoding="utf-8") as handle:
                 data = json.load(handle)
         except (OSError, json.JSONDecodeError):
             continue
@@ -1208,9 +1315,6 @@ def get_code_blocks(
         if segment:
             code_blocks.append(segment)
 
-    metadata_dir = _METADATA_DIR
-    if not metadata_dir:
-        return code_blocks
     for imp in imported_functions:
         origin = imp.get("origin")
         if not origin:
@@ -1229,10 +1333,8 @@ def get_code_blocks(
         for candidate in candidates:
             if not wanted:
                 break
-            json_file = os.path.join(
-                metadata_dir, _sanitize_json_filename(candidate)
-            )
-            if not os.path.exists(json_file):
+            json_file = _metadata_cache_path(candidate)
+            if not json_file or not os.path.exists(json_file):
                 continue
             try:
                 with open(json_file, "r", encoding="utf-8") as handle:
@@ -1279,9 +1381,6 @@ def _build_header_hint_block(method_lines: List[str]) -> Optional[List[str]]:
 def _load_types_from_origin(
     origin: str, alias: Optional[str], per_alias_limit: int
 ) -> List[List[str]]:
-    metadata_dir = _METADATA_DIR
-    if not metadata_dir:
-        return []
     file_candidates: List[str] = []
     if os.path.isdir(origin):
         for entry in os.scandir(origin):
@@ -1292,8 +1391,8 @@ def _load_types_from_origin(
     blocks: List[List[str]] = []
     collected = 0
     for candidate in file_candidates:
-        json_file = os.path.join(metadata_dir, _sanitize_json_filename(candidate))
-        if not os.path.exists(json_file):
+        json_file = _metadata_cache_path(candidate)
+        if not json_file or not os.path.exists(json_file):
             continue
         try:
             with open(json_file, "r", encoding="utf-8") as handle:
@@ -1352,15 +1451,10 @@ def provide_context_codeblock(directory_path: str, method_info: Dict):
     end_line = method_info.get("end_line", start_line)
     method_definition_code_block = lines[start_line - 1 : end_line]
 
-    metadata_dir = _METADATA_DIR
-    data = {"elements": {"functions": [], "function_calls": []}, "imports": []}
-    if metadata_dir:
-        json_file = os.path.join(metadata_dir, _sanitize_json_filename(file_name))
-        try:
-            with open(json_file, "r", encoding="utf-8") as handle:
-                data = json.load(handle)
-        except (OSError, json.JSONDecodeError):
-            data = {"elements": {"functions": [], "function_calls": []}, "imports": []}
+    data = _load_file_metadata(file_name) or {
+        "elements": {"functions": [], "function_calls": []},
+        "imports": [],
+    }
 
     in_file_dependency_functions, imported_functions = get_dependencies(
         data, start_line, end_line, file_name
@@ -1399,29 +1493,11 @@ def run_swagger_generation(host: str) -> Optional[Dict]:
     _reset_caches()
     directory_path = get_repo_path()
     repo_name = get_repo_name()
-    global _METADATA_DIR
-    metadata_dir = tempfile.mkdtemp(prefix="qodex_go_file_info_")
-    _METADATA_DIR = metadata_dir
+    # Built before the try: a walk that dies leaves an incomplete picture of
+    # which entries are still live, and pruning against it would be wrong.
+    _build_metadata_cache(directory_path)
 
     try:
-        for root, _, files in os.walk(directory_path):
-            for filename in files:
-                file_path = os.path.join(root, filename)
-                if (
-                    os.path.exists(file_path)
-                    and should_process_directory(file_path, directory_path)
-                    and file_path.endswith(".go")
-                ):
-                    try:
-                        file_info = process_file(file_path, directory_path)
-                    except Exception:
-                        continue
-                    json_file_name = os.path.join(
-                        metadata_dir, _sanitize_json_filename(file_path)
-                    )
-                    with open(json_file_name, "w", encoding="utf-8") as handle:
-                        json.dump(file_info, handle, indent=4)
-
         api_files = find_api_definition_files(directory_path)
         endpoints: List[Dict] = []
         reset_extraction_drops()
@@ -1494,6 +1570,6 @@ def run_swagger_generation(host: str) -> Optional[Dict]:
 
         return swagger
     finally:
-        if metadata_dir and os.path.exists(metadata_dir):
-            shutil.rmtree(metadata_dir, ignore_errors=True)
-        _METADATA_DIR = None
+        # The cache outlives the run; only entries for content that is gone are
+        # dropped, so the next run parses just what changed.
+        _prune_metadata_cache()

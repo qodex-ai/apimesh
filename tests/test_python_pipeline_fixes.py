@@ -974,7 +974,7 @@ def test_generation_stores_the_context_hash(monkeypatch):
     )
 
     generated, failed = rsg._update_swagger_for_batches({"paths": {}}, "/repo", jobs)
-    index = rsg._build_api_index("/repo", generated)
+    index = rsg._build_api_index(generated)
 
     assert (len(generated), len(failed)) == (2, 0)
     assert index["GET /users"]["context_hash"] == rsg._endpoint_context_hash("/repo", jobs[0])
@@ -1085,11 +1085,8 @@ def _relocation_jobs(repo: Path) -> list:
 
 def _stage_metadata(repo: Path) -> None:
     """The per file metadata the run writes before anything reads the index."""
-    for py_file in sorted(repo.rglob("*.py")):
-        info = process_file(str(py_file), str(repo))
-        target = Path(rsg._metadata_file_path(str(repo), str(py_file)))
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(json.dumps(info), encoding="utf-8")
+    rsg._reset_metadata_state()
+    rsg._build_metadata_cache(str(repo))
 
 
 def _relocation_pass(monkeypatch, repo: Path, out_dir: Path, changed_files, summary):
@@ -1237,6 +1234,8 @@ def test_two_handlers_on_one_route_keep_their_own_keys(tmp_path):
 
 def test_both_verbs_of_one_route_reach_the_spec_and_the_index(tmp_path, monkeypatch):
     target = _write(tmp_path / "app.py", FLASK_MULTI_METHOD)
+    monkeypatch.setenv("APIMESH_USER_REPO_PATH", str(tmp_path))
+    monkeypatch.setenv("APIMESH_OUTPUT_FILEPATH", str(tmp_path / "out" / "swagger.json"))
     jobs = find_api_endpoints(target)
     _stub_context(monkeypatch)
     monkeypatch.setattr(
@@ -1255,7 +1254,7 @@ def test_both_verbs_of_one_route_reach_the_spec_and_the_index(tmp_path, monkeypa
         "get": {"summary": "list"},
         "post": {"summary": "create"},
     }
-    assert set(rsg._build_api_index(str(tmp_path), generated)) == {"GET /users", "POST /users"}
+    assert set(rsg._build_api_index(generated)) == {"GET /users", "POST /users"}
 
 
 DJANGO_PROJECT_URLS = '''
@@ -1581,14 +1580,20 @@ def test_routeless_and_duplicate_jobs_are_dropped(tmp_path):
     assert jobs == [routed]
 
 
-def test_metadata_filenames_do_not_collide_on_a_shared_suffix(tmp_path):
+def test_metadata_filenames_do_not_collide_on_a_shared_suffix(tmp_path, monkeypatch):
     """strip('.py') strips a character set: apply.py and appl.py shared a file."""
-    apply_path = rsg._metadata_file_path(str(tmp_path), "/repo/apply.py")
-    appl_path = rsg._metadata_file_path(str(tmp_path), "/repo/appl.py")
+    monkeypatch.setenv("APIMESH_USER_REPO_PATH", str(tmp_path))
+    monkeypatch.setenv("APIMESH_OUTPUT_FILEPATH", str(tmp_path / "out" / "swagger.json"))
+    rsg._reset_metadata_state()
+    apply_file = _write(tmp_path / "apply.py", "value = 1\n")
+    appl_file = _write(tmp_path / "appl.py", "value = 1\n")
+
+    apply_path = rsg._metadata_cache_path(str(apply_file))
+    appl_path = rsg._metadata_cache_path(str(appl_file))
 
     assert apply_path != appl_path
-    assert os.path.basename(apply_path) == "_q_repo_q_apply.json"
-    assert os.path.basename(appl_path) == "_q_repo_q_appl.json"
+    assert os.path.basename(apply_path).startswith("apply_")
+    assert os.path.basename(appl_path).startswith("appl_")
 
 
 HELPER_SOURCE = '''def helper(payload):
@@ -1701,3 +1706,121 @@ def test_a_django_repo_runs_end_to_end(tmp_path, monkeypatch):
     index = json.loads((tmp_path / "out" / "api_index.json").read_text(encoding="utf-8"))
     assert "GET /api/users/{pk}/" in index
     assert index["GET /api/users/{pk}/"]["files"][0]["file_path"].endswith("myapp/views.py")
+
+
+CACHE_APP = '''from flask import Flask
+
+app = Flask(__name__)
+
+
+@app.route("/users", methods=["GET"])
+def list_users():
+    return []
+'''
+
+
+def _cache_dir(out_dir: Path) -> Path:
+    return out_dir / "metadata_cache" / "python"
+
+
+def _cache_run(monkeypatch, repo: Path, out_dir: Path):
+    """One full run over the repo, with every LLM call answered locally."""
+    monkeypatch.setenv("APIMESH_USER_REPO_PATH", str(repo))
+    monkeypatch.setenv("APIMESH_OUTPUT_FILEPATH", str(out_dir / "swagger.json"))
+    # The incremental pass would skip the work these tests are about.
+    monkeypatch.setattr(rsg, "_maybe_incremental_update", lambda *args: None)
+    fragment = {"paths": {"/users": {"get": {"summary": "listed"}}}}
+    monkeypatch.setattr(
+        rsg, "get_batch_definition_swagger", lambda *args, **kwargs: fragment
+    )
+    monkeypatch.setattr(
+        rsg, "get_function_definition_swagger", lambda *args, **kwargs: fragment
+    )
+    return rsg.run_swagger_generation("http://localhost:8000")
+
+
+def _count_parses(monkeypatch) -> list:
+    """Every file the run actually hands to the parser."""
+    parsed = []
+    real_process_file = rsg.process_file
+
+    def _counting(file_path, directory_path):
+        parsed.append(file_path)
+        return real_process_file(file_path, directory_path)
+
+    monkeypatch.setattr(rsg, "process_file", _counting)
+    return parsed
+
+
+def test_metadata_is_cached_outside_the_scanned_repo(tmp_path, monkeypatch):
+    """The run built its metadata directory inside the repo it was reading."""
+    repo = tmp_path / "repo"
+    _write(repo / "app.py", CACHE_APP)
+    out_dir = tmp_path / "out"
+    before = sorted(path.name for path in repo.iterdir())
+
+    _cache_run(monkeypatch, repo, out_dir)
+
+    entries = sorted(path.name for path in _cache_dir(out_dir).glob("*.json"))
+    assert len(entries) == 1 and entries[0].startswith("app_")
+    assert sorted(path.name for path in repo.iterdir()) == before
+
+
+def test_a_second_run_over_unchanged_files_parses_nothing(tmp_path, monkeypatch):
+    """The cache is content addressed, so untouched files are never reparsed."""
+    repo = tmp_path / "repo"
+    _write(repo / "app.py", CACHE_APP)
+    out_dir = tmp_path / "out"
+    _cache_run(monkeypatch, repo, out_dir)
+
+    parsed = _count_parses(monkeypatch)
+    _cache_run(monkeypatch, repo, out_dir)
+
+    assert parsed == []
+
+
+def test_an_edited_file_is_reparsed_and_its_stale_entry_dropped(tmp_path, monkeypatch):
+    """A new content hash means a new entry, and the old one has to go."""
+    repo = tmp_path / "repo"
+    source = _write(repo / "app.py", CACHE_APP)
+    out_dir = tmp_path / "out"
+    _cache_run(monkeypatch, repo, out_dir)
+    stale = sorted(_cache_dir(out_dir).glob("*.json"))
+
+    _write(source, CACHE_APP.replace("return []", "return [1]"))
+    parsed = _count_parses(monkeypatch)
+    _cache_run(monkeypatch, repo, out_dir)
+
+    assert parsed == [str(source)]
+    assert not stale[0].exists()
+    assert len(list(_cache_dir(out_dir).glob("*.json"))) == 1
+
+
+def test_an_existing_qodex_directory_in_the_repo_is_left_alone(tmp_path, monkeypatch):
+    """That directory used to be rebuilt and then deleted, user files and all."""
+    repo = tmp_path / "repo"
+    _write(repo / "app.py", CACHE_APP)
+    kept = _write(repo / "qodex_file_information" / "notes.txt", "mine\n")
+    out_dir = tmp_path / "out"
+
+    _cache_run(monkeypatch, repo, out_dir)
+
+    assert kept.read_text(encoding="utf-8") == "mine\n"
+
+
+def test_a_stale_version_marker_wipes_the_cache(tmp_path, monkeypatch):
+    """Entries written by an older metadata format must not be read back."""
+    repo = tmp_path / "repo"
+    source = _write(repo / "app.py", CACHE_APP)
+    out_dir = tmp_path / "out"
+    _cache_run(monkeypatch, repo, out_dir)
+    cache_dir = _cache_dir(out_dir)
+    (cache_dir / "cache_version").write_text("0", encoding="utf-8")
+
+    parsed = _count_parses(monkeypatch)
+    _cache_run(monkeypatch, repo, out_dir)
+
+    assert parsed == [str(source)]
+    assert (cache_dir / "cache_version").read_text(
+        encoding="utf-8"
+    ) == rsg.METADATA_CACHE_VERSION
