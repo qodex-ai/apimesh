@@ -680,3 +680,29 @@ def test_cli_parses_no_html_flag():
     args = swagger_generation_cli.parse_args(["sk", "", "", "", "--no-html"])
     assert args.no_html is True
     assert swagger_generation_cli.parse_args(["sk"]).no_html is False
+
+
+def test_extractor_filters_malformed_endpoint_entries(monkeypatch):
+    import endpoints_extractor as ee
+
+    class FakeClient:
+        def call_chat_completion(self, messages, temperature=0.5):
+            return '[null, {"method": "GET", "path": "/health"}, {"method": 5, "path": "/x"}, "junk"]'
+
+    monkeypatch.setattr(ee, "OpenAiClient", lambda: FakeClient())
+    extractor = ee.EndpointsExtractor()
+    import tempfile, os as _os
+    with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
+        f.write("@app.route('/health')\ndef h(): pass\n")
+        name = f.name
+    try:
+        endpoints = extractor.extract_endpoints_with_gpt(name, "flask")
+    finally:
+        _os.unlink(name)
+    assert endpoints == [{"method": "GET", "path": "/health"}]
+
+
+def test_config_json_is_written_owner_only(user_config_file):
+    _configure(user_config_file)
+    mode = user_config_file.stat().st_mode & 0o777
+    assert mode == 0o600

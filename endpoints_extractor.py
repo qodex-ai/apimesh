@@ -83,6 +83,15 @@ class EndpointsExtractor:
         if not isinstance(parsed_list, list):
             print("Unexpected non-list endpoint payload from GPT response")
             parsed_list = []
+        # The model occasionally emits null or malformed entries; only dicts
+        # with a string method and path survive, everything downstream
+        # subscripts both keys.
+        parsed_list = [
+            entry for entry in parsed_list
+            if isinstance(entry, dict)
+            and isinstance(entry.get("method"), str)
+            and isinstance(entry.get("path"), str)
+        ]
 
         print(f"Completed finding endpoints for {file_path}")
         return parsed_list

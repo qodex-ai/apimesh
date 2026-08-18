@@ -422,6 +422,68 @@ def test_unchanged_repo_returns_the_existing_swagger_untouched(tmp_path, monkeyp
     assert json.loads(index_path.read_text(encoding="utf-8")) == existing_index
 
 
+def test_legacy_route_spellings_are_canonicalized_on_load(tmp_path, monkeypatch):
+    """A spec and index written before routes were canonicalized must load in
+    the canonical spelling, otherwise the first run after the upgrade reads
+    every endpoint as removed and re-added and regenerates all of them."""
+    _incremental_fixture(
+        tmp_path,
+        monkeypatch,
+        {
+            "GET /users/:id": {"files": [{"file_path": "/repo/legacy.js"}]},
+            "GET /users/{id}": {"files": [{"file_path": "/repo/routes.js"}]},
+            "POST /users/:id": {"files": []},
+        },
+        existing_paths={
+            "/users/:id": {
+                "get": {"summary": "stale"},
+                "delete": {"summary": "only on the legacy key"},
+            },
+            "/users/{id}": {"get": {"summary": "fresh"}},
+            "/health": {"get": {"summary": "untouched"}},
+        },
+    )
+
+    # The canonical key wins, its legacy twin only contributes the missing verb.
+    assert run_module._load_existing_swagger()["paths"] == {
+        "/users/{id}": {
+            "get": {"summary": "fresh"},
+            "delete": {"summary": "only on the legacy key"},
+        },
+        "/health": {"get": {"summary": "untouched"}},
+    }
+
+    index = run_module._load_existing_api_index()
+    assert set(index) == {"GET /users/{id}", "POST /users/{id}"}
+    assert index["GET /users/{id}"]["files"][0]["file_path"] == "/repo/routes.js"
+
+
+def test_incremental_no_change_return_carries_the_new_host(tmp_path, monkeypatch):
+    """--api-host has to reach the spec on the incremental path too, or a run
+    that changes the host keeps publishing the previous server url."""
+    repo, _, _, jobs = _incremental_fixture(tmp_path, monkeypatch, {"GET /orders": {"files": []}})
+    Path(os.environ["APIMESH_OUTPUT_FILEPATH"]).write_text(
+        json.dumps(
+            {
+                "info": {"commit_reference": "base"},
+                "servers": [{"url": "https://old.example.com"}],
+                "paths": {"/orders": {"get": {"summary": "old"}}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(run_module, "get_changed_files_since", lambda *args, **kwargs: set())
+    monkeypatch.setattr(
+        run_module,
+        "get_function_definition_swagger",
+        lambda *args, **kwargs: pytest.fail("nothing changed, nothing may be generated"),
+    )
+
+    swagger = _maybe_incremental_update(str(repo), jobs, "https://new.example.com")
+    assert swagger["servers"] == [{"url": "https://new.example.com"}]
+    assert swagger["paths"] == {"/orders": {"get": {"summary": "old"}}}
+
+
 TWO_ROUTE_JS = """const express = require('express');
 const router = express.Router();
 router.get('/orders', (req, res) => res.send([]));

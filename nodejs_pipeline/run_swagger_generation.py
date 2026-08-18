@@ -270,8 +270,34 @@ def _migrate_legacy_spec(swagger):
             for operation in path_item.values():
                 if isinstance(operation, dict):
                     _normalize_operation_fields(operation)
+        swagger["paths"] = _canonicalize_path_keys(paths)
     return swagger
 
+
+def _canonicalize_path_keys(paths: dict) -> dict:
+    """Re-key a spec written before routes were canonicalized.
+
+    A stored /users/:id reads as removed next to the /users/{id} the extractor
+    now emits, which regenerates the whole spec on the first run after the
+    upgrade. A key already in the canonical spelling wins; its legacy-spelled
+    twin only fills the verbs the canonical one is missing.
+    """
+    canonical = {}
+    legacy = []
+    for path_key, path_item in paths.items():
+        normalized = _normalize_route(path_key) or path_key
+        if normalized == path_key:
+            canonical[path_key] = path_item
+        else:
+            legacy.append((normalized, path_item))
+    for normalized, path_item in legacy:
+        existing = canonical.get(normalized)
+        if existing is None:
+            canonical[normalized] = path_item
+        elif isinstance(existing, dict) and isinstance(path_item, dict):
+            for operation_name, operation in path_item.items():
+                existing.setdefault(operation_name, operation)
+    return canonical
 
 
 def _load_existing_api_index():
@@ -280,9 +306,29 @@ def _load_existing_api_index():
         return None
     try:
         with open(api_index_path, "r", encoding="utf-8") as f:
-            return json.load(f)
+            return _canonicalize_index_keys(json.load(f))
     except Exception:
         return None
+
+
+def _canonicalize_index_keys(api_index):
+    """Same upgrade for the api_index: an index written before routes were
+    canonicalized holds the express spelling, which reads as removed while the
+    freshly extracted key reads as added. The canonical key wins."""
+    if not isinstance(api_index, dict):
+        return api_index
+    canonical = {}
+    legacy = []
+    for key, entry in api_index.items():
+        method, route = _split_endpoint_key(key)
+        normalized = _endpoint_key(route, method) if route else key
+        if normalized == key:
+            canonical[key] = entry
+        else:
+            legacy.append((normalized, entry))
+    for normalized, entry in legacy:
+        canonical.setdefault(normalized, entry)
+    return canonical
 
 
 def _group_endpoints(endpoints: list) -> dict:
@@ -624,7 +670,15 @@ def _update_swagger_for_endpoints(swagger: dict, directory_path: str, endpoints:
     return succeeded, failed
 
 
-def _maybe_incremental_update(directory_path: str, endpoint_jobs: list):
+def _apply_host(swagger, host):
+    """The host this run was given wins over the one the stored spec carries,
+    otherwise --api-host is silently ignored on every incremental run."""
+    if swagger is not None and host:
+        swagger["servers"] = [{"url": host}]
+    return swagger
+
+
+def _maybe_incremental_update(directory_path: str, endpoint_jobs: list, host=None):
     existing_swagger = _load_existing_swagger()
     existing_index = _load_existing_api_index()
     if not existing_swagger or not isinstance(existing_index, dict):
@@ -645,7 +699,7 @@ def _maybe_incremental_update(directory_path: str, endpoint_jobs: list):
     # An endpoint that failed last run is absent from the index, so it reads as
     # added and still has to be generated when git reports nothing changed.
     if not changed_files and not added_keys and not removed_keys:
-        return existing_swagger
+        return _apply_host(existing_swagger, host)
     changed_keys = set()
     for key in existing_keys & new_keys:
         if _endpoint_has_changed(existing_index.get(key), endpoint_map.get(key), changed_files):
@@ -687,7 +741,7 @@ def _maybe_incremental_update(directory_path: str, endpoint_jobs: list):
     info.pop("commit_reference", None)
     info["x-commit-reference"] = get_git_commit_hash()
     _write_api_index(updated_index)
-    return existing_swagger
+    return _apply_host(existing_swagger, host)
 
 def _normalize_route(route: str):
     if not route:
@@ -800,7 +854,7 @@ def run_swagger_generation(host):
         if not endpoint_jobs:
             print("apimesh: nodejs parser found 0 endpoints, falling back to generic extraction")
             return None
-        incremental_swagger = _maybe_incremental_update(directory_path, endpoint_jobs)
+        incremental_swagger = _maybe_incremental_update(directory_path, endpoint_jobs, host)
         if incremental_swagger is not None:
             return incremental_swagger
         batches = _batch_endpoint_jobs(endpoint_jobs)

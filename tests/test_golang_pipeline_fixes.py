@@ -10,6 +10,7 @@ Covers three defects that silently produced wrong or empty specs:
   path (/users/:id returned as /users/{id}) diverged from the api_index key.
 """
 
+import json
 import os
 from pathlib import Path
 
@@ -644,3 +645,76 @@ def test_per_endpoint_prompt_is_deduped_and_budgeted_too(monkeypatch, capsys):
     assert captured["prompt"].count("// block") <= 1
     assert "... truncated" in captured["prompt"]
     assert "apimesh: context truncated for /repo/app.go" in capsys.readouterr().out
+
+
+def test_legacy_route_spellings_are_canonicalized_on_load(tmp_path, monkeypatch):
+    """A spec and index written before routes were canonicalized must load in
+    the canonical spelling, otherwise the first run after the upgrade reads
+    every endpoint as removed and re-added and regenerates all of them."""
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    swagger_path = out_dir / "swagger.json"
+    swagger_path.write_text(
+        json.dumps(
+            {
+                "info": {"x-commit-reference": "old"},
+                "paths": {
+                    "/users/:id": {
+                        "get": {"summary": "stale"},
+                        "delete": {"summary": "only on the legacy key"},
+                    },
+                    "/users/{id}": {"get": {"summary": "fresh"}},
+                    "/health": {"get": {"summary": "untouched"}},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (out_dir / "api_index.json").write_text(
+        json.dumps(
+            {
+                "GET /users/:id": {"files": [{"file_path": "/repo/legacy.go"}]},
+                "GET /users/{id}": {"files": [{"file_path": "/repo/app.go"}]},
+                "POST /users/:id": {"files": []},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("APIMESH_OUTPUT_FILEPATH", str(swagger_path))
+
+    # The canonical key wins, its legacy twin only contributes the missing verb.
+    assert rsg._load_existing_swagger()["paths"] == {
+        "/users/{id}": {
+            "get": {"summary": "fresh"},
+            "delete": {"summary": "only on the legacy key"},
+        },
+        "/health": {"get": {"summary": "untouched"}},
+    }
+
+    index = rsg._load_existing_api_index()
+    assert set(index) == {"GET /users/{id}", "POST /users/{id}"}
+    assert index["GET /users/{id}"]["files"][0]["file_path"] == "/repo/app.go"
+
+
+def test_incremental_no_change_return_carries_the_new_host(monkeypatch):
+    """--api-host has to reach the spec on the incremental path too, or a run
+    that changes the host keeps publishing the previous server url."""
+    existing_swagger = {
+        "info": {"x-commit-reference": "old"},
+        "servers": [{"url": "https://old.example.com"}],
+        "paths": {"/users": {"get": {"summary": "old"}}},
+    }
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("nothing changed, nothing may be generated")
+
+    monkeypatch.setattr(rsg, "_load_existing_swagger", lambda: existing_swagger)
+    monkeypatch.setattr(rsg, "_load_existing_api_index", lambda: {"GET /users": {"files": []}})
+    monkeypatch.setattr(rsg, "get_changed_files_since", lambda *args, **kwargs: set())
+    monkeypatch.setattr(rsg, "_swagger_fragment_for_endpoint", _boom)
+
+    result = rsg._maybe_incremental_update(
+        "/repo", [_job("/users", "GET")], "https://new.example.com"
+    )
+    assert result["servers"] == [{"url": "https://new.example.com"}]
+    assert result["paths"] == {"/users": {"get": {"summary": "old"}}}
