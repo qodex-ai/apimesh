@@ -6,11 +6,11 @@ from prompts import (
     batch_swagger_generation_system_prompt,
     node_js_prompt,
 )
+import pipeline_common
 from llm_client import OpenAiClient
 
 
-# Backoff before each retry of a failed OpenAI call.
-RETRY_BACKOFF_SECONDS = (1, 4)
+RETRY_BACKOFF_SECONDS = pipeline_common.API_RETRY_DELAYS
 
 # Framework wording handed to the shared batch prompt.
 BATCH_FRAMEWORK_LABEL = "Node.js (Express or NestJS)"

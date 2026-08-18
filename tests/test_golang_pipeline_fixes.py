@@ -827,8 +827,11 @@ def test_generation_stores_the_context_hash(monkeypatch):
     assert (len(generated), len(failed)) == (2, 0)
     assert index["GET /users"]["context_hash"] == rsg._endpoint_context_hash("/repo", jobs[0])
     assert index["POST /orders"]["context_hash"] == rsg._endpoint_context_hash("/repo", jobs[1])
-    # Two endpoints of one file share their context, the label keeps them apart.
-    assert index["GET /users"]["context_hash"] != index["POST /orders"]["context_hash"]
+    # The recipe covers the endpoint's own prompt text and not its label, so two
+    # endpoints a stub hands identical bodies and context to hash alike. Real
+    # endpoints are kept apart by their bodies, and a rails PUT mirroring a
+    # PATCH relies on exactly this.
+    assert index["GET /users"]["context_hash"] == index["POST /orders"]["context_hash"]
 
 
 def test_unchanged_context_hash_skips_the_llm(monkeypatch, capsys):

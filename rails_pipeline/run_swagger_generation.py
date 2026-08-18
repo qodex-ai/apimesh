@@ -1,15 +1,14 @@
 import copy
-import hashlib
 import json
 import os
 import re
-import shutil
 import time
 import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+import pipeline_common
 from config import Configurations
 from utils import (
     get_git_commit_hash,
@@ -18,7 +17,6 @@ from utils import (
     get_repo_name,
     get_output_filepath,
     get_changed_files_since,
-    num_tokens_from_string,
 )
 from rails_pipeline.definition_swagger_generator import (
     get_batch_definition_swagger,
@@ -50,32 +48,11 @@ _PARAM_HINT_FUNCTIONS = {"apply_filters"}
 _NON_HELPER_NAMES = {"get", "post", "put", "delete", "patch"}
 _ROUTE_PARAM_PATTERN = re.compile(r":([A-Za-z_][A-Za-z0-9_]*)")
 
-# Keys of an OpenAPI path item that hold an operation body.
-HTTP_VERB_KEYS = {"get", "post", "put", "delete", "patch", "options", "head", "trace"}
+MAX_ENDPOINTS_PER_BATCH = pipeline_common.MAX_ENDPOINTS_PER_BATCH
+CONTEXT_TOKEN_BUDGET = pipeline_common.CONTEXT_TOKEN_BUDGET
+_EFFECTIVE_CONTEXT_BUDGET = pipeline_common.EFFECTIVE_CONTEXT_BUDGET
+MAX_HANDLER_TOKENS = pipeline_common.MAX_HANDLER_TOKENS
 
-# One LLM call documents at most this many endpoints of the same controller.
-MAX_ENDPOINTS_PER_BATCH = 10
-
-# Combined token cap for the shared context plus every handler body in one prompt.
-CONTEXT_TOKEN_BUDGET = 6000
-
-# Headroom for the separators joined between sections and blocks, so the
-# budget holds for the final assembled prompt, not just the parts.
-_EFFECTIVE_CONTEXT_BUDGET = CONTEXT_TOKEN_BUDGET - 64
-
-# A single handler body longer than this is cut down before the budget is applied.
-MAX_HANDLER_TOKENS = 2000
-
-TRUNCATION_MARKER = "\n... truncated"
-
-# Operation keys older prompts asked for, mapped to their OpenAPI 3.0 compliant form.
-_LEGACY_OPERATION_FIELDS = {
-    "api_description": "description",
-    "authorization_tag": "x-authorization-tag",
-    "module_tag": "x-module-tag",
-    "auth_tag": "x-auth-tag",
-    "sensitive_information": "x-sensitive-information",
-}
 
 _EMPTY_EXTRACTION_WARNING = (
     "apimesh: rails parser found 0 endpoints, falling back to generic extraction"
@@ -97,9 +74,7 @@ def should_process_directory(dir_path: str, root_path: str) -> bool:
 
 
 def _api_index_output_path() -> str:
-    output_dir = os.path.dirname(get_output_filepath())
-    os.makedirs(output_dir, exist_ok=True)
-    return os.path.join(output_dir, "api_index.json")
+    return pipeline_common.api_index_output_path(get_output_filepath())
 
 
 # Per file metadata is cached under the output directory, never inside the
@@ -109,7 +84,6 @@ METADATA_CACHE_PIPELINE = "rails"
 # Bumped when the shape of a metadata entry changes. A missing or stale marker
 # wipes this pipeline's cache before anything reads it.
 METADATA_CACHE_VERSION = "1"
-_METADATA_CACHE_VERSION_FILE = "cache_version"
 
 # File path -> content hash, and file path -> the cache entry holding its
 # metadata. Both are per run: two runs in one process are two checkouts.
@@ -118,130 +92,59 @@ _METADATA_ENTRIES: Dict[str, str] = {}
 
 
 def _metadata_cache_dir() -> str:
-    return os.path.join(
-        os.path.dirname(get_output_filepath()), "metadata_cache", METADATA_CACHE_PIPELINE
+    return pipeline_common.metadata_cache_dir(
+        get_output_filepath(), METADATA_CACHE_PIPELINE
     )
 
 
 def _content_hash(file_path: str) -> Optional[str]:
-    """First 16 hex chars of the file's sha256, read once per run.
-
-    The path is hashed along with the content because an entry records the file
-    it came from and the import origins resolved around it, so two files that
-    read identically in different directories are not interchangeable.
-    """
-    key = os.path.abspath(file_path)
-    if key not in _CONTENT_HASHES:
-        try:
-            with open(key, "rb") as f:
-                content = f.read()
-        except OSError:
-            _CONTENT_HASHES[key] = None
-        else:
-            digest = hashlib.sha256(key.encode("utf-8") + b"\0" + content)
-            _CONTENT_HASHES[key] = digest.hexdigest()[:16]
-    return _CONTENT_HASHES[key]
+    return pipeline_common.content_hash(file_path, _CONTENT_HASHES)
 
 
 def _metadata_cache_filename(file_path: str, content_hash: str) -> str:
-    """One cache entry name: the file's basename plus the hash of its content.
-
-    A single path component can fill NAME_MAX on its own, so the readable half
-    is capped and the hash is what keeps the name unique.
-    """
-    stem = os.path.splitext(os.path.basename(file_path))[0]
-    stem = stem.encode("utf-8")[:200].decode("utf-8", "ignore")
-    return f"{stem}_{content_hash}.json"
+    return pipeline_common.metadata_cache_filename(file_path, content_hash)
 
 
 def _metadata_cache_path(file_path: str) -> Optional[str]:
     """Where this file's metadata sits for the content it holds right now."""
-    content_hash = _content_hash(file_path)
-    if not content_hash:
-        return None
-    return os.path.join(
-        _metadata_cache_dir(), _metadata_cache_filename(file_path, content_hash)
+    return pipeline_common.metadata_cache_path(
+        file_path, _metadata_cache_dir, _content_hash(file_path)
     )
 
 
 def _prepare_metadata_cache() -> str:
-    """The cache directory, emptied first when another schema wrote it."""
-    cache_dir = _metadata_cache_dir()
-    marker_path = os.path.join(cache_dir, _METADATA_CACHE_VERSION_FILE)
-    try:
-        with open(marker_path, "r", encoding="utf-8") as f:
-            stored = f.read().strip()
-    except OSError:
-        stored = None
-    if stored != METADATA_CACHE_VERSION:
-        shutil.rmtree(cache_dir, ignore_errors=True)
-    os.makedirs(cache_dir, exist_ok=True)
-    with open(marker_path, "w", encoding="utf-8") as f:
-        f.write(METADATA_CACHE_VERSION)
-    return cache_dir
+    return pipeline_common.prepare_metadata_cache(
+        _metadata_cache_dir(), METADATA_CACHE_VERSION
+    )
 
 
 def _cache_file_metadata(file_path: str, directory_path: str) -> None:
-    """Extract one file's metadata, unless the cache already holds its content."""
-    cache_path = _metadata_cache_path(file_path)
-    if not cache_path:
-        return
-    key = os.path.abspath(file_path)
-    if os.path.exists(cache_path):
-        # Byte for byte what a previous run parsed, so its metadata still holds.
-        _METADATA_ENTRIES[key] = cache_path
-        return
-    try:
-        file_info = process_file(file_path, directory_path)
-    except Exception:
-        # Skip files that fail to parse; we still want best-effort coverage.
-        return
-    with open(cache_path, "w", encoding="utf-8") as f:
-        json.dump(file_info, f, indent=4)
-    _METADATA_ENTRIES[key] = cache_path
+    pipeline_common.cache_file_metadata(
+        file_path,
+        directory_path,
+        _metadata_cache_path,
+        process_file,
+        _METADATA_ENTRIES,
+    )
 
 
 def _build_metadata_cache(directory_path: str) -> None:
     """One cache entry per ruby file below the repo root."""
-    _prepare_metadata_cache()
-    for root, _, files in os.walk(directory_path):
-        for filename in files:
-            file_path = os.path.join(root, filename)
-            if (
-                os.path.exists(file_path)
-                and should_process_directory(str(file_path), directory_path)
-                and file_path.endswith(".rb")
-            ):
-                _cache_file_metadata(file_path, directory_path)
+    pipeline_common.build_metadata_cache(
+        directory_path,
+        _prepare_metadata_cache,
+        should_process_directory,
+        lambda file_path: file_path.endswith(".rb"),
+        _cache_file_metadata,
+    )
 
 
 def _prune_metadata_cache() -> None:
-    """Drop entries for content the repo no longer holds, so the cache stays bounded."""
-    live = set(_METADATA_ENTRIES.values())
-    try:
-        entries = list(os.scandir(_metadata_cache_dir()))
-    except OSError:
-        return
-    for entry in entries:
-        if not entry.is_file() or not entry.name.endswith(".json"):
-            continue
-        if entry.path in live:
-            continue
-        try:
-            os.remove(entry.path)
-        except OSError:
-            pass
+    pipeline_common.prune_metadata_cache(_metadata_cache_dir(), _METADATA_ENTRIES)
 
 
 def _load_file_metadata(file_path: str):
-    json_path = _metadata_cache_path(file_path)
-    if not json_path or not os.path.exists(json_path):
-        return None
-    try:
-        with open(json_path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return None
+    return pipeline_common.load_file_metadata(_metadata_cache_path(file_path))
 
 
 def _normalize_route(route) -> str:
@@ -259,40 +162,11 @@ def _normalize_route(route) -> str:
 
 
 def _endpoint_key(route, method):
-    method_value = (method or "UNKNOWN").upper()
-    route_value = _normalize_route(route)
-    return f"{method_value} {route_value}".strip()
+    return pipeline_common.endpoint_key(route, method, _normalize_route)
 
 
-def _select_operation(path_item):
-    """
-    Pick the operation body out of one path item. A path item may legally hold
-    non-operation keys such as `parameters` or vendor extensions, so only an
-    HTTP verb with a dict body counts. A path item without one contributes no
-    operation, which is what keeps a vendor-extension-only fragment out of the
-    spec.
-    """
-    if not isinstance(path_item, dict):
-        return None, None
-    for key, payload in path_item.items():
-        if key.lower() in HTTP_VERB_KEYS and isinstance(payload, dict):
-            return key.lower(), payload
-    return None, None
-
-
-def _normalize_operation_fields(operation: Dict) -> Dict:
-    """
-    Rename the legacy operation keys an older model reply may still carry to
-    their OpenAPI compliant form. A value already under the new name wins, so a
-    reply holding both does not end up with duplicated content.
-    """
-    if not isinstance(operation, dict):
-        return operation
-    for legacy_key, new_key in _LEGACY_OPERATION_FIELDS.items():
-        if legacy_key not in operation:
-            continue
-        operation.setdefault(new_key, operation.pop(legacy_key))
-    return operation
+def _job_method(endpoint):
+    return endpoint.get("http_method") or endpoint.get("method")
 
 
 def _rekey_fragment(fragment, route, http_method) -> Optional[Dict]:
@@ -302,42 +176,18 @@ def _rekey_fragment(fragment, route, http_method) -> Optional[Dict]:
     only the first operation body is kept. Returns None when the fragment is
     unusable.
     """
-    if not isinstance(fragment, dict):
-        return None
-    paths = fragment.get("paths")
-    if not isinstance(paths, dict) or not paths:
-        return None
     route_key = _normalize_route(route)
     if not route_key:
         return None
-    for path_item in paths.values():
-        verb, payload = _select_operation(path_item)
-        if payload is None:
-            continue
-        method_key = (http_method or verb or "get").lower()
-        return {"paths": {route_key: {method_key: _normalize_operation_fields(payload)}}}
-    return None
-
-
-def _normalize_in_file_dependencies(deps, route, file_path):
-    imports = []
-    for dep in deps:
-        start_line = dep.get("function_start_line") or dep.get("start_line")
-        end_line = dep.get("function_end_line") or dep.get("end_line")
-        name = dep.get("name")
-        if not name or not isinstance(start_line, int) or not isinstance(end_line, int):
-            continue
-        imports.append(
-            {
-                "type": "function",
-                "name": name,
-                "start_line": start_line,
-                "end_line": end_line,
-                "route": route,
-                "file_path": file_path,
-            }
-        )
-    return imports
+    verb, payload = pipeline_common.first_operation(fragment)
+    if payload is None:
+        return None
+    method_key = (http_method or verb or "get").lower()
+    return {
+        "paths": {
+            route_key: {method_key: pipeline_common.normalize_operation_fields(payload)}
+        }
+    }
 
 
 def _resolve_imported_definitions(import_item, route):
@@ -377,223 +227,39 @@ def _resolve_imported_definitions(import_item, route):
     return candidates
 
 
-def _dedupe_imports(imports):
-    seen = set()
-    unique = []
-    for item in imports:
-        key = (
-            item.get("file_path"),
-            item.get("name"),
-            item.get("start_line"),
-            item.get("end_line"),
-        )
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(item)
-    return unique
-
-
-def _merge_file_entry(files, entry):
-    for existing in files:
-        if existing.get("file_path") == entry.get("file_path"):
-            merged = existing.get("imports", []) + entry.get("imports", [])
-            existing["imports"] = _dedupe_imports(merged)
-            return
-    files.append(entry)
+def _endpoint_imports(endpoint, abs_file_path, route):
+    return pipeline_common.endpoint_imports(
+        endpoint,
+        abs_file_path,
+        route,
+        _load_file_metadata,
+        get_dependencies,
+        _resolve_imported_definitions,
+    )
 
 
 def _build_api_index(endpoints: list) -> dict:
-    api_index = {}
-    for endpoint in endpoints:
-        route = endpoint.get("route")
-        method = endpoint.get("http_method") or endpoint.get("method")
-        key = _endpoint_key(route, method)
-        file_path = endpoint.get("file_path")
-        if not file_path:
-            continue
-        abs_file_path = os.path.abspath(file_path)
-        imports = []
-        start_line = endpoint.get("start_line")
-        end_line = endpoint.get("end_line")
-        if isinstance(start_line, int) and isinstance(end_line, int):
-            metadata = _load_file_metadata(abs_file_path)
-            if metadata:
-                in_file, imported = get_dependencies(
-                    metadata, start_line, end_line, abs_file_path
-                )
-                imports.extend(_normalize_in_file_dependencies(in_file, route, abs_file_path))
-                for item in imported:
-                    imports.extend(_resolve_imported_definitions(item, route))
-        entry = {
-            "file_path": abs_file_path,
-            "imports": _dedupe_imports(imports),
-        }
-        index_entry = api_index.setdefault(key, {"files": []})
-        # The hash of the prompt this endpoint was generated from, so the next
-        # run can tell an untouched endpoint from one whose context moved.
-        context_hash = endpoint.get("context_hash")
-        if context_hash:
-            index_entry["context_hash"] = context_hash
-        _merge_file_entry(index_entry["files"], entry)
-    return api_index
+    return pipeline_common.build_api_index(
+        endpoints, _endpoint_key, _job_method, _endpoint_imports
+    )
 
 
 def _write_api_index(api_index: dict) -> None:
-    output_path = _api_index_output_path()
-    try:
-        with open(output_path, "w", encoding="utf-8") as f:
-            json.dump(api_index, f, indent=2)
-    except Exception:
-        return
+    pipeline_common.write_api_index(api_index, _api_index_output_path())
 
 
 def _load_existing_swagger():
-    swagger_path = get_output_filepath()
-    if not os.path.exists(swagger_path):
-        return None
-    try:
-        with open(swagger_path, "r", encoding="utf-8") as f:
-            return _migrate_legacy_spec(json.load(f))
-    except Exception:
-        return None
-
-_LEGACY_INFO_FIELDS = {
-    "generated_at": "x-generated-at",
-    "commit_reference": "x-commit-reference",
-    "github_repo_url": "x-github-repo-url",
-}
-
-
-def _migrate_legacy_spec(swagger):
-    """Upgrade a pre-x-extension spec in place so incremental runs never write
-    the legacy spellings back out. New keys win when both exist."""
-    if not isinstance(swagger, dict):
-        return swagger
-    info = swagger.get("info")
-    if isinstance(info, dict):
-        for old_key, new_key in _LEGACY_INFO_FIELDS.items():
-            if old_key in info:
-                value = info.pop(old_key)
-                info.setdefault(new_key, value)
-    paths = swagger.get("paths")
-    if isinstance(paths, dict):
-        for path_item in paths.values():
-            if not isinstance(path_item, dict):
-                continue
-            for operation in path_item.values():
-                if isinstance(operation, dict):
-                    _normalize_operation_fields(operation)
-        swagger["paths"] = _canonicalize_path_keys(paths)
-    return swagger
-
-
-def _canonicalize_path_keys(paths: Dict) -> Dict:
-    """Re-key a spec written before routes were canonicalized.
-
-    A stored /users/:id reads as removed next to the /users/{id} the extractor
-    now emits, which regenerates the whole spec on the first run after the
-    upgrade. A key already in the canonical spelling wins; its legacy-spelled
-    twin only fills the verbs the canonical one is missing.
-    """
-    canonical: Dict = {}
-    legacy: List = []
-    for path_key, path_item in paths.items():
-        normalized = _normalize_route(path_key) or path_key
-        if normalized == path_key:
-            canonical[path_key] = path_item
-        else:
-            legacy.append((normalized, path_item))
-    for normalized, path_item in legacy:
-        existing = canonical.get(normalized)
-        if existing is None:
-            canonical[normalized] = path_item
-        elif isinstance(existing, dict) and isinstance(path_item, dict):
-            for operation_name, operation in path_item.items():
-                existing.setdefault(operation_name, operation)
-    return canonical
+    return pipeline_common.load_existing_swagger(get_output_filepath(), _normalize_route)
 
 
 def _load_existing_api_index():
-    api_index_path = _api_index_output_path()
-    if not os.path.exists(api_index_path):
-        return None
-    try:
-        with open(api_index_path, "r", encoding="utf-8") as f:
-            return _canonicalize_index_keys(json.load(f))
-    except Exception:
-        return None
-
-
-def _canonicalize_index_keys(api_index):
-    """Same upgrade for the api_index: an index written before routes were
-    canonicalized holds the rails spelling, which reads as removed while the
-    freshly extracted key reads as added. The canonical key wins."""
-    if not isinstance(api_index, dict):
-        return api_index
-    canonical: Dict = {}
-    legacy: List = []
-    for key, entry in api_index.items():
-        method, route = _split_endpoint_key(key)
-        normalized = _endpoint_key(route, method) if route else key
-        if normalized == key:
-            canonical[key] = entry
-        else:
-            legacy.append((normalized, entry))
-    for normalized, entry in legacy:
-        canonical.setdefault(normalized, entry)
-    return canonical
-
-
-def _group_endpoints(endpoints: list) -> dict:
-    grouped = {}
-    for endpoint in endpoints:
-        key = _endpoint_key(endpoint.get("route"), endpoint.get("http_method") or endpoint.get("method"))
-        grouped.setdefault(key, []).append(endpoint)
-    return grouped
-
-
-def _endpoint_has_changed(existing_entry, endpoints_for_key, changed_files: set) -> bool:
-    if existing_entry:
-        for file_entry in existing_entry.get("files", []):
-            file_path = file_entry.get("file_path")
-            if file_path and os.path.abspath(file_path) in changed_files:
-                return True
-            for imp in file_entry.get("imports", []):
-                imp_path = imp.get("file_path")
-                if imp_path and os.path.abspath(imp_path) in changed_files:
-                    return True
-    for endpoint in endpoints_for_key or []:
-        file_path = endpoint.get("file_path")
-        if file_path and os.path.abspath(file_path) in changed_files:
-            return True
-    return False
-
-
-def _split_endpoint_key(key: str):
-    if not key:
-        return "UNKNOWN", ""
-    parts = key.split(" ", 1)
-    if len(parts) == 1:
-        return parts[0], ""
-    return parts[0], parts[1]
+    return pipeline_common.load_existing_api_index(
+        _api_index_output_path(), _endpoint_key
+    )
 
 
 def _remove_endpoint_from_swagger(swagger: dict, key: str) -> None:
-    method, route = _split_endpoint_key(key)
-    if not route:
-        return
-    paths = swagger.get("paths", {})
-    if route not in paths:
-        return
-    if method == "UNKNOWN":
-        paths.pop(route, None)
-        return
-    method_lower = method.lower()
-    if method_lower in paths.get(route, {}):
-        del paths[route][method_lower]
-        if not paths[route]:
-            del paths[route]
+    pipeline_common.remove_endpoint_from_swagger(swagger, key, _normalize_route)
 
 
 def _handler_lines(method_info: Dict) -> List[str]:
@@ -606,10 +272,11 @@ def _handler_lines(method_info: Dict) -> List[str]:
 
 def _batch_section_tokens(method_info: Dict) -> int:
     """What this endpoint's section costs the batch."""
-    section, _ = _handler_section(
-        f"{_endpoint_label(method_info)}:", "".join(_handler_lines(method_info))
+    return pipeline_common.section_token_cost(
+        f"{_endpoint_label(method_info)}:",
+        "".join(_handler_lines(method_info)),
+        MAX_HANDLER_TOKENS,
     )
-    return num_tokens_from_string(section)
 
 
 def _batch_endpoint_jobs(endpoint_jobs: List[Dict]) -> List[List[Tuple[Dict, List[Dict]]]]:
@@ -622,12 +289,8 @@ def _batch_endpoint_jobs(endpoint_jobs: List[Dict]) -> List[List[Tuple[Dict, Lis
     PATCH on the same route is never requested from the model: it rides along on
     the PATCH result. Each batch entry is (requested, mirrored).
     """
-    by_file: Dict[str, List[Dict]] = {}
-    for method_info in endpoint_jobs:
-        by_file.setdefault(method_info.get("file_path") or "", []).append(method_info)
-
     batches: List[List[Tuple[Dict, List[Dict]]]] = []
-    for jobs in by_file.values():
+    for jobs in pipeline_common.group_jobs_by_file(endpoint_jobs).values():
         patch_routes = {
             _normalize_route(job.get("route"))
             for job in jobs
@@ -650,96 +313,28 @@ def _batch_endpoint_jobs(endpoint_jobs: List[Dict]) -> List[List[Tuple[Dict, Lis
             )
             for job in requested
         ]
-        current: List[Tuple[Dict, List[Dict]]] = []
-        used = 0
-        for entry in entries:
-            cost = _batch_section_tokens(entry[0])
-            if current and (
-                len(current) >= MAX_ENDPOINTS_PER_BATCH
-                or used + cost > _EFFECTIVE_CONTEXT_BUDGET
-            ):
-                batches.append(current)
-                current = []
-                used = 0
-            current.append(entry)
-            used += cost
-        if current:
-            batches.append(current)
+        batches.extend(
+            pipeline_common.pack_batches(
+                entries,
+                lambda entry: _batch_section_tokens(entry[0]),
+                MAX_ENDPOINTS_PER_BATCH,
+                _EFFECTIVE_CONTEXT_BUDGET,
+            )
+        )
     return batches
-
-
-def _block_text(block) -> str:
-    """A code block arrives either as a list of source lines or as plain text."""
-    if isinstance(block, str):
-        return block
-    return "".join(block)
-
-
-def _truncate_to_tokens(text: str, max_tokens: int) -> Tuple[str, bool]:
-    """
-    Cut text down to its first max_tokens tokens. The character position is
-    binary searched because only the token count is exposed, not the encoder.
-    """
-    if num_tokens_from_string(text) <= max_tokens:
-        return text, False
-    low, high = 0, len(text)
-    while low < high:
-        middle = (low + high + 1) // 2
-        if num_tokens_from_string(text[:middle]) <= max_tokens:
-            low = middle
-        else:
-            high = middle - 1
-    return text[:low] + TRUNCATION_MARKER, True
-
-
-def _handler_section(header: str, body: str) -> Tuple[str, bool]:
-    """One endpoint's prompt section, with its handler capped."""
-    body, was_truncated = _truncate_to_tokens(body, MAX_HANDLER_TOKENS)
-    return (f"{header}\n{body}" if header else body), was_truncated
 
 
 def _apply_context_budget(
     handler_sections: List[Tuple[str, str]], shared_blocks: List, file_label: str
 ) -> Tuple[List[str], List[str]]:
-    """
-    Fit the handler bodies and the shared context inside CONTEXT_TOKEN_BUDGET.
-    Handler bodies are kept first, each capped at MAX_HANDLER_TOKENS; the deduped
-    shared blocks then fill whatever is left and are dropped from the end. The
-    batches are packed so their sections already fit, so what is left here is
-    whatever room the shared blocks get.
-    Returns (kept_shared_blocks, handler_sections) as plain text.
-    """
-    truncated = False
-    sections: List[str] = []
-    used = 0
-    for header, body in handler_sections:
-        section, was_truncated = _handler_section(header, body)
-        truncated = truncated or was_truncated
-        sections.append(section)
-        used += num_tokens_from_string(section)
-
-    seen = set()
-    unique_blocks: List[str] = []
-    for block in shared_blocks:
-        text = _block_text(block)
-        if not text.strip() or text in seen:
-            continue
-        seen.add(text)
-        unique_blocks.append(text)
-
-    kept_blocks: List[str] = []
-    dropped = 0
-    for index, text in enumerate(unique_blocks):
-        cost = num_tokens_from_string(text) + 2
-        if used + cost > _EFFECTIVE_CONTEXT_BUDGET:
-            dropped = len(unique_blocks) - index
-            break
-        kept_blocks.append(text)
-        used += cost
-
-    if dropped or truncated:
-        print(f"apimesh: context truncated for {file_label} ({dropped} blocks dropped)")
-    return kept_blocks, sections
+    """The handler bodies and the shared context, inside CONTEXT_TOKEN_BUDGET."""
+    return pipeline_common.apply_context_budget(
+        handler_sections,
+        shared_blocks,
+        file_label,
+        MAX_HANDLER_TOKENS,
+        _EFFECTIVE_CONTEXT_BUDGET,
+    )
 
 
 def _endpoint_label(method_info: Dict) -> str:
@@ -747,23 +342,14 @@ def _endpoint_label(method_info: Dict) -> str:
 
 
 def _context_hash(context_blocks: List, method_definition: List) -> str:
+    """The one context hash recipe every pipeline shares.
+
+    A mirrored PUT lands on exactly its PATCH's hash because the verb is not
+    part of it.
     """
-    Fingerprint of the prompt text one endpoint carries: its capped handler body
-    followed by its deduped context blocks, in the order the prompt sends them.
-    The endpoint label, the verb and the rest of the batch are deliberately left
-    out, so the value can be recomputed for a single endpoint before the batches
-    are packed and a mirrored PUT lands on exactly its PATCH's hash.
-    """
-    body, _ = _truncate_to_tokens(_block_text(method_definition), MAX_HANDLER_TOKENS)
-    seen = set()
-    blocks: List[str] = []
-    for block in context_blocks:
-        text = _block_text(block)
-        if not text.strip() or text in seen:
-            continue
-        seen.add(text)
-        blocks.append(text)
-    return hashlib.sha256("\n\n".join([body] + blocks).encode("utf-8")).hexdigest()
+    return pipeline_common.context_hash(
+        context_blocks, method_definition, MAX_HANDLER_TOKENS
+    )
 
 
 def _collect_batch_context(directory_path: str, batch: List[Tuple[Dict, List[Dict]]]):
@@ -790,7 +376,9 @@ def _collect_batch_context(directory_path: str, batch: List[Tuple[Dict, List[Dic
         method_info["context_hash"] = _context_hash(context_blocks, method_definition)
         usable_entries.append(entry)
         endpoint_lines.append(label)
-        handler_sections.append((f"{label}:", _block_text(method_definition)))
+        handler_sections.append(
+            (f"{label}:", pipeline_common.block_text(method_definition))
+        )
         shared_blocks.extend(context_blocks)
     file_label = batch[0][0].get("file_path") or "unknown file"
     kept_blocks, sections = _apply_context_budget(
@@ -805,10 +393,6 @@ def _collect_batch_context(directory_path: str, batch: List[Tuple[Dict, List[Dic
     )
 
 
-def _batch_response_is_usable(response) -> bool:
-    return isinstance(response, dict) and isinstance(response.get("paths"), dict)
-
-
 def _generate_endpoint_fragment(directory_path: str, method_info: Dict) -> Dict:
     """The per endpoint call, with the same dedupe and token budget as a batch."""
     context_blocks, method_definition = provide_context_codeblock(
@@ -821,7 +405,7 @@ def _generate_endpoint_fragment(directory_path: str, method_info: Dict) -> Dict:
     if http_method:
         context_blocks = [[f"HTTP_METHOD: {http_method}\n"]] + context_blocks
     kept_blocks, sections = _apply_context_budget(
-        [("", _block_text(method_definition))],
+        [("", pipeline_common.block_text(method_definition))],
         context_blocks,
         method_info.get("file_path") or "unknown file",
     )
@@ -865,18 +449,9 @@ def _generate_batch_fragments(
     if not usable_entries:
         return results
 
-    response = None
-    for _ in range(2):
-        try:
-            response = get_batch_definition_swagger(
-                endpoints_list, shared_context, sections
-            )
-        except Exception:
-            response = None
-        if _batch_response_is_usable(response):
-            break
-        response = None
-
+    response = pipeline_common.retry_batch_call(
+        lambda: get_batch_definition_swagger(endpoints_list, shared_context, sections)
+    )
     if response is None:
         return results + _generate_fragments_per_endpoint(directory_path, usable_entries)
 
@@ -977,33 +552,6 @@ def _update_swagger_for_endpoints(
     return succeeded, failed
 
 
-def _apply_host(swagger, host):
-    """The host this run was given wins over the one the stored spec carries,
-    otherwise --api-host is silently ignored on every incremental run."""
-    if swagger is not None and host:
-        swagger["servers"] = [{"url": host}]
-    return swagger
-
-
-def _record_coverage(swagger, extracted, generated, skipped, failed, dropped=None):
-    """An honest completeness block, so a consuming agent can tell a complete
-    spec from a lower bound without re-running anything."""
-    coverage = {
-        "endpoints_extracted": extracted,
-        "generated": generated,
-        "skipped_unchanged": skipped,
-        "failed": failed,
-    }
-    if dropped is not None:
-        coverage["dropped_routes"] = dropped
-    swagger.setdefault("info", {})["x-apimesh-coverage"] = coverage
-    print(
-        f"apimesh coverage: {generated} generated, {skipped} unchanged, "
-        f"{failed} failed of {extracted} extracted"
-    )
-    return swagger
-
-
 def _context_is_unchanged(directory_path: str, existing_entry, jobs: List[Dict]) -> bool:
     """
     True when the prompt this endpoint would be regenerated from is the one its
@@ -1026,34 +574,6 @@ def _context_is_unchanged(directory_path: str, existing_entry, jobs: List[Dict])
     return True
 
 
-def _rebuild_unchanged_index_entries(
-    directory_path: str,
-    keys: List[str],
-    endpoint_map: Dict,
-    existing_index: Dict,
-    updated_index: Dict,
-) -> None:
-    """Rebuild the index entries of the endpoints that skipped on their hash.
-
-    Their spec operation is right, but the files the old entry stores can be
-    stale: an action that moved into a file with identical text leaves the prompt
-    text, and so the hash, untouched while the action moved with it. Keeping the
-    old entry would point the next run's dependency hop at the file the action
-    left. A mirrored PUT is its own key here, so it is rebuilt exactly like the
-    PATCH it rides on. The entry is taken from the current extraction, and
-    carries over the hash that matched, since nothing was regenerated.
-    """
-    for key in keys:
-        rebuilt = _build_api_index(endpoint_map.get(key, [])).get(key)
-        if not rebuilt:
-            continue
-        existing_entry = existing_index.get(key)
-        stored = existing_entry.get("context_hash") if isinstance(existing_entry, dict) else None
-        if stored:
-            rebuilt["context_hash"] = stored
-        updated_index[key] = rebuilt
-
-
 def _maybe_incremental_update(
     directory_path: str, endpoint_jobs: list, host: Optional[str] = None
 ):
@@ -1061,15 +581,15 @@ def _maybe_incremental_update(
     existing_index = _load_existing_api_index()
     if not existing_swagger or not isinstance(existing_index, dict):
         return None
-    existing_info = existing_swagger.get("info", {})
-    # Specs written before the extension rename still carry the bare key.
-    base_commit = existing_info.get("x-commit-reference") or existing_info.get("commit_reference")
+    base_commit = pipeline_common.base_commit_of(existing_swagger)
     if not base_commit:
         return None
     changed_files = get_changed_files_since(base_commit, directory_path, include_uncommitted=True)
     if changed_files is None:
         return None
-    endpoint_map = _group_endpoints(endpoint_jobs)
+    endpoint_map = pipeline_common.group_endpoints(
+        endpoint_jobs, _endpoint_key, _job_method
+    )
     existing_keys = set(existing_index.keys())
     new_keys = set(endpoint_map.keys())
     removed_keys = existing_keys - new_keys
@@ -1077,22 +597,17 @@ def _maybe_incremental_update(
     # An endpoint that failed last run is absent from the index, so it reads as
     # added and still has to be generated when git reports nothing changed.
     if not changed_files and not added_keys and not removed_keys:
-        _record_coverage(existing_swagger, len(endpoint_jobs), 0, len(endpoint_jobs), 0)
-        return _apply_host(existing_swagger, host)
+        pipeline_common.record_coverage(existing_swagger, len(endpoint_jobs), 0, len(endpoint_jobs), 0)
+        return pipeline_common.apply_host(existing_swagger, host)
     changed_keys = set()
     for key in existing_keys & new_keys:
-        if _endpoint_has_changed(existing_index.get(key), endpoint_map.get(key), changed_files):
+        if pipeline_common.endpoint_has_changed(
+            existing_index.get(key), endpoint_map.get(key), changed_files
+        ):
             changed_keys.add(key)
 
     keys_to_update = added_keys | changed_keys
-    # Past the halfway mark the incremental pass is doing the whole run's work
-    # while carrying a spec and an index it has to patch around, so the caller
-    # regenerates from scratch instead.
-    if new_keys and len(keys_to_update) * 2 > len(new_keys):
-        print(
-            f"apimesh: {len(keys_to_update)} of {len(new_keys)} endpoints affected, "
-            "running a full regeneration"
-        )
+    if pipeline_common.should_regenerate_fully(keys_to_update, new_keys):
         return None
     updated_index = dict(existing_index)
 
@@ -1119,8 +634,8 @@ def _maybe_incremental_update(
         print(
             f"apimesh: skipped {len(unchanged_keys)} unchanged endpoints (context hash match)"
         )
-    _rebuild_unchanged_index_entries(
-        directory_path, unchanged_keys, endpoint_map, existing_index, updated_index
+    pipeline_common.rebuild_unchanged_index_entries(
+        unchanged_keys, endpoint_map, existing_index, updated_index, _build_api_index
     )
     succeeded, failed = _update_swagger_for_endpoints(
         existing_swagger, directory_path, jobs_to_update
@@ -1130,29 +645,20 @@ def _maybe_incremental_update(
     # stale (or absent for a new endpoint) is what schedules the retry, and a
     # key is only refreshed when every endpoint behind it made it.
     failed_keys = {_endpoint_label(method_info) for method_info in failed}
-    # A failed key's stale entry is dropped, not kept: once the commit
-    # reference advances, a kept entry would hide the failure forever, while
-    # an absent key reads as newly added and is retried on the next run.
-    for failed_key in failed_keys:
-        updated_index.pop(failed_key, None)
+    pipeline_common.apply_generated_index_entries(
+        updated_index, _build_api_index(succeeded), failed_keys
+    )
 
-    for entry_key, entry_value in _build_api_index(succeeded).items():
-        if entry_key in failed_keys:
-            continue
-        updated_index[entry_key] = entry_value
-
-    info = existing_swagger.setdefault("info", {})
-    info.pop("commit_reference", None)
-    info["x-commit-reference"] = get_git_commit_hash()
+    pipeline_common.stamp_commit_reference(existing_swagger, get_git_commit_hash())
     _write_api_index(updated_index)
-    _record_coverage(
+    pipeline_common.record_coverage(
         existing_swagger,
         len(endpoint_jobs),
         len(succeeded),
         max(len(endpoint_jobs) - len(succeeded) - len(failed), 0),
         len(failed),
     )
-    return _apply_host(existing_swagger, host)
+    return pipeline_common.apply_host(existing_swagger, host)
 
 
 MAX_DROPPED_ROUTES_LISTED = 20
@@ -1305,7 +811,7 @@ def run_swagger_generation(host: str) -> Optional[Dict]:
         # Only endpoints that made it into the spec are indexed, otherwise a
         # failure looks unchanged next run and is never retried.
         _write_api_index(_build_api_index(generated))
-        _record_coverage(
+        pipeline_common.record_coverage(
             swagger, len(endpoint_jobs), len(generated), 0, len(failures),
             dropped=len(dropped_routes) if dropped_routes is not None else None,
         )
@@ -1321,12 +827,7 @@ def _merge_paths(target: Dict, source: Dict) -> None:
     """
     Merge the path map from the LLM response into the aggregated swagger document.
     """
-    paths = source.get("paths", {})
-    for path_key, methods in paths.items():
-        target.setdefault("paths", {})
-        target["paths"].setdefault(path_key, {})
-        for method, payload in methods.items():
-            target["paths"][path_key][method] = payload
+    pipeline_common.merge_paths(target, source)
 
 
 def _reset_caches() -> None:
