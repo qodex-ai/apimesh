@@ -269,6 +269,9 @@ def get_changed_files_since(
     if include_uncommitted:
         ok = _collect(["git", "diff", "--name-only"]) and ok
         ok = _collect(["git", "diff", "--name-only", "--cached"]) and ok
+        # Untracked files are invisible to every diff form above, yet a brand
+        # new route file is exactly what an incremental run must notice.
+        ok = _collect(["git", "ls-files", "--others", "--exclude-standard"]) and ok
     if not ok and not changed:
         return None
     return changed

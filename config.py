@@ -17,8 +17,7 @@ class Configurations:
 
         # Assign values from the YAML file
         self.ignored_dirs = set(self.config.get("ignored_dirs", []))
-        self.routing_patters_map = self.config.get("routing_patterns_map", {})
-        self.gpt_4o_model_name = self.config.get("gpt_4o_model_name", "gpt-4o")
+        self.routing_patterns_map = self.config.get("routing_patterns_map", {})
 
     def _load_config(self, config_path):
         """Loads configuration from a YAML file."""

@@ -32,7 +32,7 @@ class FileScanner:
 
     @staticmethod
     def find_api_files(file_paths, framework):
-        patterns = config.routing_patters_map.get(framework)
+        patterns = config.routing_patterns_map.get(framework)
         if not patterns:
             print(f"Warning: No routing patterns configured for framework '{framework or 'unknown'}'. Scanning all supported files.")
             return list(file_paths)
