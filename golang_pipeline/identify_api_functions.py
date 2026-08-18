@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from tree_sitter import Language, Node, Parser
 import tree_sitter_go
@@ -21,6 +21,8 @@ HTTP_METHODS = {
 _CHAIN_TERMINATORS = {"methods"}
 _ROUTER_FUNCTIONS = {"handlefunc", "handle"}
 _GROUP_METHODS = {"group", "route", "pathprefix"}
+_GROUP_ASSIGNMENTS = {"short_var_declaration", "assignment_statement"}
+_FUNCTION_SCOPES = {"function_declaration", "method_declaration"}
 
 
 @dataclass
@@ -204,12 +206,35 @@ def _join_paths(*segments: Optional[str]) -> str:
     return path
 
 
-def _collect_path_prefix(node: Optional[Node], source: str) -> Optional[str]:
+def _join_prefix_segments(segments: Sequence[str]) -> str:
+    joined = ""
+    for segment in segments:
+        cleaned = segment.strip("/")
+        if cleaned:
+            joined = f"{joined}/{cleaned}"
+    return joined
+
+
+def _walk_group_chain(
+    node: Optional[Node], source: bytes
+) -> Tuple[List[str], Optional[str], bool]:
+    """Walk a receiver expression inside-out.
+
+    Returns the group prefixes in call order, the identifier the chain started
+    from (``r`` in ``r.Group("/api").Group("/v1")``), and whether any group call
+    was seen at all. Group arguments that are not string literals contribute no
+    segment because their value is unknown at parse time.
+    """
     segments: List[str] = []
     current = node
     visited = set()
-    while current and current.type == "call_expression":
-        if current.id in visited:
+    base_identifier: Optional[str] = None
+    saw_group = False
+    while current is not None:
+        if current.type == "identifier":
+            base_identifier = _node_text(source, current)
+            break
+        if current.type != "call_expression" or current.id in visited:
             break
         visited.add(current.id)
         func_node = current.child_by_field_name("function")
@@ -218,20 +243,123 @@ def _collect_path_prefix(node: Optional[Node], source: str) -> Optional[str]:
         field_node = func_node.child_by_field_name("field")
         method_lower = _node_text(source, field_node).lower() if field_node else ""
         if method_lower in _GROUP_METHODS:
+            saw_group = True
             prefix = _extract_path_argument(current, source)
             if prefix:
                 segments.append(prefix)
-        operand = func_node.child_by_field_name("operand")
-        if not operand:
-            break
-        current = operand if operand.type == "call_expression" else None
+        current = func_node.child_by_field_name("operand")
+    segments.reverse()
+    return segments, base_identifier, saw_group
+
+
+def _single_expression(list_node: Optional[Node]) -> Optional[Node]:
+    if not list_node:
+        return None
+    children = [child for child in list_node.children if child.type != ","]
+    return children[0] if len(children) == 1 else None
+
+
+def _enclosing_scope(node: Optional[Node]) -> Optional[int]:
+    """Identity of the function a node sits in, None when it sits at file scope."""
+    current = node
+    while current is not None:
+        if current.type in _FUNCTION_SCOPES:
+            return current.id
+        current = current.parent
+    return None
+
+
+def _scoped_lookup(table: Dict, scope: Optional[int], name: str):
+    """Key for a name: this function first, then file scope, then a unique match.
+
+    The last step keeps a package-level group that some other function assigns
+    resolvable, which only stays safe while the name is unambiguous.
+    """
+    for candidate in ((scope, name), (None, name)):
+        if candidate in table:
+            return candidate
+    matches = [key for key in table if key[1] == name]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _collect_group_prefixes(
+    root: Node, source: bytes
+) -> Dict[Tuple[Optional[int], str], str]:
+    """Map router group variables to their full path prefix, per function.
+
+    ``v1 := r.Group("/api/v1")`` followed by ``v1.GET("/users", h)`` is the
+    dominant gin/echo idiom, and the route call alone carries no prefix. Names
+    are keyed by the function they were declared in, so two functions that both
+    declare ``api := r.Group(...)`` do not steal each other's prefix. Raw
+    declarations are collected first and resolved afterwards because the tree
+    walk does not visit statements in source order.
+    """
+    declarations: List[Tuple[int, Optional[int], str, Optional[str], List[str]]] = []
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        if node.type in _GROUP_ASSIGNMENTS:
+            target = _single_expression(node.child_by_field_name("left"))
+            value = _single_expression(node.child_by_field_name("right"))
+            if (
+                target is not None
+                and target.type == "identifier"
+                and value is not None
+                and value.type == "call_expression"
+            ):
+                segments, base_identifier, saw_group = _walk_group_chain(value, source)
+                if saw_group:
+                    declarations.append(
+                        (
+                            node.start_byte,
+                            _enclosing_scope(node),
+                            _node_text(source, target),
+                            base_identifier,
+                            segments,
+                        )
+                    )
+        stack.extend(list(node.children))
+
+    declarations.sort(key=lambda item: item[0])
+    raw: Dict[Tuple[Optional[int], str], Tuple[Optional[str], List[str]]] = {}
+    for _, scope, name, base_identifier, segments in declarations:
+        raw.setdefault((scope, name), (base_identifier, segments))
+
+    resolved: Dict[Tuple[Optional[int], str], str] = {}
+
+    def _resolve(key: Tuple[Optional[int], str], seen: set) -> str:
+        if key in resolved:
+            return resolved[key]
+        if key in seen:
+            return ""
+        seen.add(key)
+        base_identifier, segments = raw[key]
+        parent_key = _scoped_lookup(raw, key[0], base_identifier) if base_identifier else None
+        parent = _resolve(parent_key, seen) if parent_key else ""
+        prefix = _join_prefix_segments(([parent] if parent else []) + segments)
+        resolved[key] = prefix
+        return prefix
+
+    for key in raw:
+        _resolve(key, set())
+    return {key: prefix for key, prefix in resolved.items() if prefix}
+
+
+def _collect_path_prefix(
+    node: Optional[Node],
+    source: bytes,
+    group_prefixes: Dict[Tuple[Optional[int], str], str],
+) -> Optional[str]:
+    segments, base_identifier, _ = _walk_group_chain(node, source)
+    base_prefix = None
+    if base_identifier:
+        key = _scoped_lookup(group_prefixes, _enclosing_scope(node), base_identifier)
+        base_prefix = group_prefixes.get(key) if key else None
+    if base_prefix:
+        segments = [base_prefix] + segments
     if not segments:
         return None
-    # segments collected from inner-most outward; reverse to maintain call order.
-    return "".join(
-        f"{segment if segment.startswith('/') else '/' + segment}"
-        for segment in reversed(segments)
-    )
+    return _join_prefix_segments(segments)
 
 
 def _build_endpoint_entry(
@@ -260,6 +388,7 @@ def _extract_routes_from_call(
     source: str,
     file_path: Path,
     functions_by_name: Dict[str, Dict],
+    group_prefixes: Dict[Tuple[Optional[int], str], str],
 ) -> List[Dict]:
     func_node = call_node.child_by_field_name("function")
     if not func_node:
@@ -275,7 +404,7 @@ def _extract_routes_from_call(
 
         if method_lower in _CHAIN_TERMINATORS and operand_node and operand_node.type == "call_expression":
             base_routes = _extract_routes_from_call(
-                operand_node, source, file_path, functions_by_name
+                operand_node, source, file_path, functions_by_name, group_prefixes
             )
             http_methods = _extract_methods_from_arguments(call_node, source)
             if not http_methods:
@@ -293,7 +422,7 @@ def _extract_routes_from_call(
             path = _extract_path_argument(call_node, source)
             if not path:
                 return []
-            prefix = _collect_path_prefix(operand_node, source)
+            prefix = _collect_path_prefix(operand_node, source, group_prefixes)
             full_path = _join_paths(prefix, path) if prefix else path
             handler_node = _extract_handler_node(call_node)
             handler_info = _extract_handler_info(
@@ -309,7 +438,7 @@ def _extract_routes_from_call(
             path = _extract_path_argument(call_node, source)
             if not path:
                 return []
-            prefix = _collect_path_prefix(operand_node, source)
+            prefix = _collect_path_prefix(operand_node, source, group_prefixes)
             full_path = _join_paths(prefix, path) if prefix else path
             handler_node = _extract_handler_node(call_node)
             handler_info = _extract_handler_info(
@@ -338,6 +467,7 @@ def find_api_endpoints(file_path: Path, repo_root: str) -> List[Dict]:
     functions_by_name = _collect_function_definitions(
         tree.root_node, source, file_path
     )
+    group_prefixes = _collect_group_prefixes(tree.root_node, source)
 
     endpoints: List[Dict] = []
     stack = [tree.root_node]
@@ -348,7 +478,7 @@ def find_api_endpoints(file_path: Path, repo_root: str) -> List[Dict]:
                 stack.extend(list(node.children))
                 continue
             routes = _extract_routes_from_call(
-                node, source, file_path, functions_by_name
+                node, source, file_path, functions_by_name, group_prefixes
             )
             if routes:
                 endpoints.extend(routes)

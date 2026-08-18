@@ -10,8 +10,15 @@ from typing import Dict, List, Optional, Tuple
 
 from config import Configurations
 from golang_pipeline.definition_swagger_generator import (
+    CONTEXT_TOKEN_BUDGET,
+    get_batch_definition_swagger,
     get_function_definition_swagger,
+    section_token_cost,
 )
+
+# Headroom for the separators joined between sections and blocks, so the
+# budget holds for the final assembled prompt, not just the parts.
+_EFFECTIVE_CONTEXT_BUDGET = CONTEXT_TOKEN_BUDGET - 64
 from golang_pipeline.find_api_definition_files import find_api_definition_files
 from golang_pipeline.generate_file_information import process_file
 from golang_pipeline.identify_api_functions import find_api_endpoints
@@ -35,10 +42,34 @@ _HEADER_PATTERN = re.compile(
         Header\.Get\(\s*["']([^"']+)["']\s*\)""",
     re.VERBOSE,
 )
+_ROUTE_PARAM_PATTERN = re.compile(r":([A-Za-z_][A-Za-z0-9_]*)")
+# One LLM call documents a whole file. Past ten endpoints the shared context
+# budget leaves too little room per endpoint, so a file is chunked.
+_MAX_BATCH_ENDPOINTS = 10
+_HTTP_OPERATIONS = {
+    "get",
+    "post",
+    "put",
+    "delete",
+    "patch",
+    "options",
+    "head",
+    "trace",
+}
+# Operation keys older prompts asked for, mapped to their OpenAPI 3.0 compliant form.
+_LEGACY_OPERATION_FIELDS = {
+    "api_description": "description",
+    "authorization_tag": "x-authorization-tag",
+    "module_tag": "x-module-tag",
+    "auth_tag": "x-auth-tag",
+    "sensitive_information": "x-sensitive-information",
+}
 
 
-def should_process_directory(dir_path: str) -> bool:
-    path_parts = dir_path.split(os.sep)
+def should_process_directory(dir_path: str, repo_root: str) -> bool:
+    # Only components below the scanned repo may be ignored, otherwise a repo
+    # living under /var, /tmp or /build processes nothing.
+    path_parts = os.path.relpath(dir_path, repo_root).split(os.sep)
     return not any(part in config.ignored_dirs for part in path_parts)
 
 
@@ -62,9 +93,54 @@ def _load_file_metadata(file_path: str):
         return None
 
 
+def _normalize_route(route) -> str:
+    """
+    Canonical path for a route the extractor found. Go routers write params as
+    :id while OpenAPI expects {id}, and the save step rewrites them anyway, so
+    the swagger key, the api_index key and the removal lookup all use this one
+    form and stay matched across runs. Wildcards (*name) are left alone.
+    """
+    if not route or not isinstance(route, str):
+        return ""
+    normalized = _ROUTE_PARAM_PATTERN.sub(r"{\1}", route.strip())
+    if not normalized.startswith("/"):
+        normalized = f"/{normalized}"
+    return normalized
+
+
+def _first_operation(path_item) -> Optional[Dict]:
+    """
+    The operation body of a path item. A path item legally carries members that
+    are not operations ("parameters", vendor extensions), so only an HTTP verb
+    with a dict body counts. A path item without one contributes no operation,
+    which is what keeps a vendor-extension-only fragment out of the spec.
+    """
+    if not isinstance(path_item, dict):
+        return None
+    for name, value in path_item.items():
+        if str(name).lower() in _HTTP_OPERATIONS and isinstance(value, dict):
+            return value
+    return None
+
+
+def _normalize_operation_fields(operation: Dict) -> Dict:
+    """
+    Rename the legacy operation keys an older model reply may still carry to
+    their OpenAPI compliant form. A value already under the new name wins, so a
+    reply holding both does not end up with duplicated content.
+    """
+    if not isinstance(operation, dict):
+        return operation
+    for legacy_key, new_key in _LEGACY_OPERATION_FIELDS.items():
+        if legacy_key not in operation:
+            continue
+        operation.setdefault(new_key, operation.pop(legacy_key))
+    return operation
+
+
 def _endpoint_key(route, method):
     method_value = (method or "UNKNOWN").upper()
-    route_value = route or ""
+    route_value = _normalize_route(route)
     return f"{method_value} {route_value}".strip()
 
 
@@ -210,9 +286,38 @@ def _load_existing_swagger():
         return None
     try:
         with open(swagger_path, "r", encoding="utf-8") as handle:
-            return json.load(handle)
+            return _migrate_legacy_spec(json.load(handle))
     except Exception:
         return None
+
+_LEGACY_INFO_FIELDS = {
+    "generated_at": "x-generated-at",
+    "commit_reference": "x-commit-reference",
+    "github_repo_url": "x-github-repo-url",
+}
+
+
+def _migrate_legacy_spec(swagger):
+    """Upgrade a pre-x-extension spec in place so incremental runs never write
+    the legacy spellings back out. New keys win when both exist."""
+    if not isinstance(swagger, dict):
+        return swagger
+    info = swagger.get("info")
+    if isinstance(info, dict):
+        for old_key, new_key in _LEGACY_INFO_FIELDS.items():
+            if old_key in info:
+                value = info.pop(old_key)
+                info.setdefault(new_key, value)
+    paths = swagger.get("paths")
+    if isinstance(paths, dict):
+        for path_item in paths.values():
+            if not isinstance(path_item, dict):
+                continue
+            for operation in path_item.values():
+                if isinstance(operation, dict):
+                    _normalize_operation_fields(operation)
+    return swagger
+
 
 
 def _load_existing_api_index():
@@ -262,6 +367,8 @@ def _split_endpoint_key(key: str):
 
 def _remove_endpoint_from_swagger(swagger: dict, key: str) -> None:
     method, route = _split_endpoint_key(key)
+    # An index written before routes were canonicalized still holds :id keys.
+    route = _normalize_route(route)
     if not route:
         return
     paths = swagger.get("paths", {})
@@ -277,6 +384,35 @@ def _remove_endpoint_from_swagger(swagger: dict, key: str) -> None:
             del paths[route]
 
 
+def _normalize_swagger_fragment(
+    fragment, route: str, http_method: Optional[str]
+) -> Optional[Dict]:
+    """Re-key an LLM fragment under the route and method the extractor found.
+
+    The model happily rewrites paths (/users/:id comes back as /users/{id}),
+    which would diverge from the api_index keys and make incremental removal
+    impossible, so only the first operation body is kept and re-keyed.
+    """
+    if not isinstance(fragment, dict):
+        return None
+    paths = fragment.get("paths")
+    if not isinstance(paths, dict) or not paths:
+        return None
+    route_key = _normalize_route(route)
+    if not route_key:
+        return None
+    for path_item in paths.values():
+        operation = _first_operation(path_item)
+        if operation is None:
+            continue
+        return {
+            route_key: {
+                (http_method or "GET").lower(): _normalize_operation_fields(operation)
+            }
+        }
+    return None
+
+
 def _merge_paths(target: Dict, source: Dict) -> None:
     for path_key, methods in source.get("paths", {}).items():
         target.setdefault("paths", {})
@@ -285,24 +421,233 @@ def _merge_paths(target: Dict, source: Dict) -> None:
             target["paths"][path_key][method] = payload
 
 
-def _update_swagger_for_endpoints(swagger: dict, directory_path: str, endpoints: list) -> None:
+def _generate_swagger_fragment(directory_path: str, method_info: Dict) -> Dict:
+    context_blocks, method_definition = provide_context_codeblock(
+        directory_path, method_info
+    )
+    http_method = method_info.get("http_method") or "GET"
+    if http_method:
+        context_blocks = [[f"HTTP_METHOD: {http_method}\n"]] + context_blocks
+    handler_metadata = method_info.get("handler_selector") or method_info.get("name")
+    if handler_metadata:
+        context_blocks = [[f"HANDLER: {handler_metadata}\n"]] + context_blocks
+    return get_function_definition_swagger(
+        method_definition,
+        context_blocks,
+        method_info["route"],
+        http_method,
+        source_file=method_info.get("file_path"),
+    )
+
+
+def _swagger_fragment_for_endpoint(directory_path: str, method_info: Dict) -> Optional[Dict]:
+    """One endpoint's swagger fragment, or None when it could not be generated."""
+    route = method_info.get("route")
+    http_method = method_info.get("http_method") or "GET"
+    if not route:
+        return None
+    try:
+        raw_fragment = _generate_swagger_fragment(directory_path, method_info)
+    except Exception as exc:
+        print(f"apimesh: skipped {http_method} {route}: {exc}")
+        return None
+    normalized = _normalize_swagger_fragment(raw_fragment, route, http_method)
+    if normalized is None:
+        print(
+            f"apimesh: skipped {http_method} {route}: "
+            "response had no usable swagger paths"
+        )
+        return None
+    return normalized
+
+
+def _update_swagger_for_endpoints(
+    swagger: dict, directory_path: str, endpoints: list
+) -> Tuple[List[Dict], List[Dict]]:
+    """Generate every endpoint behind its own error boundary.
+
+    One failing LLM call used to abort the whole incremental run, which dropped
+    the CLI into its slow legacy fallback.
+    """
+    generated: List[Dict] = []
+    failed: List[Dict] = []
     for method_info in endpoints:
-        route = method_info.get("route")
-        if not route:
+        normalized = _swagger_fragment_for_endpoint(directory_path, method_info)
+        if normalized is None:
+            failed.append(method_info)
             continue
-        context_blocks, method_definition = provide_context_codeblock(
-            directory_path, method_info
+        _merge_paths(swagger, {"paths": normalized})
+        generated.append(method_info)
+    return generated, failed
+
+
+def _handler_lines(job: Dict) -> List[str]:
+    """The handler's own source lines, read for pricing its batch section."""
+    lines = _read_file_lines(job.get("file_path") or "") or []
+    start_line = job.get("start_line") or 1
+    end_line = job.get("end_line") or start_line
+    return lines[start_line - 1 : end_line]
+
+
+def _batch_section_tokens(job: Dict) -> int:
+    """What this endpoint's section costs the batch, header hint included."""
+    method_definition = _handler_lines(job)
+    header_block = _build_header_hint_block(method_definition)
+    body = (header_block or []) + method_definition
+    return section_token_cost(_batch_label(job), "".join(body))
+
+
+def _batch_endpoint_jobs(endpoint_jobs: List[Dict]) -> List[List[Dict]]:
+    """Endpoint jobs grouped by source file, packed to fit the context budget.
+
+    Capping each handler on its own still let ten of them add up to far more
+    than the whole prompt can carry, so a batch is closed as soon as the next
+    section would push its sections past the budget. Ten endpoints stays the
+    secondary limit.
+    """
+    by_file: Dict[str, List[Dict]] = {}
+    for job in endpoint_jobs:
+        by_file.setdefault(job.get("file_path") or "", []).append(job)
+    batches: List[List[Dict]] = []
+    for jobs in by_file.values():
+        current: List[Dict] = []
+        used = 0
+        for job in jobs:
+            cost = _batch_section_tokens(job)
+            if current and (
+                len(current) >= _MAX_BATCH_ENDPOINTS or used + cost > _EFFECTIVE_CONTEXT_BUDGET
+            ):
+                batches.append(current)
+                current = []
+                used = 0
+            current.append(job)
+            used += cost
+        if current:
+            batches.append(current)
+    return batches
+
+
+def _batch_source_file(batch: List[Dict]) -> str:
+    if not batch:
+        return "unknown file"
+    return batch[0].get("file_path") or "unknown file"
+
+
+def _batch_label(job: Dict) -> str:
+    """The METHOD PATH line the model is asked to echo back as its key."""
+    method = (job.get("http_method") or "GET").upper()
+    return f"{method} {_normalize_route(job.get('route'))}"
+
+
+def _generate_batch_payload(directory_path: str, batch: List[Dict]) -> Optional[Dict]:
+    """One LLM call for a file's endpoints. Returns the model's raw payload."""
+    entries: List[Tuple[str, str]] = []
+    context_blocks: List[List[str]] = []
+    for job in batch:
+        blocks, method_definition = provide_context_codeblock(directory_path, job)
+        # The header hint is read off this one handler, so it belongs to its
+        # section rather than to the context the whole file shares.
+        header_block = _build_header_hint_block(method_definition)
+        body = method_definition
+        if header_block:
+            blocks = [block for block in blocks if block != header_block]
+            body = header_block + method_definition
+        entries.append((_batch_label(job), "".join(body)))
+        context_blocks.extend(blocks)
+    return get_batch_definition_swagger(
+        entries, context_blocks, _batch_source_file(batch)
+    )
+
+
+def _operation_from_batch(
+    payload, route: str, http_method: Optional[str]
+) -> Optional[Dict]:
+    """The operation the model returned for one requested endpoint.
+
+    The model rewrites paths (/users/:id comes back as /users/{id}), so both
+    sides are normalized before they are compared, and the result is re-keyed
+    under the extractor's route exactly as the per-endpoint path does.
+    """
+    if not isinstance(payload, dict):
+        return None
+    paths = payload.get("paths")
+    if not isinstance(paths, dict):
+        return None
+    route_key = _normalize_route(route)
+    if not route_key:
+        return None
+    method_key = (http_method or "GET").lower()
+    for model_route, path_item in paths.items():
+        if not isinstance(path_item, dict):
+            continue
+        if _normalize_route(model_route) != route_key:
+            continue
+        for name, value in path_item.items():
+            if str(name).lower() == method_key and isinstance(value, dict):
+                return {route_key: {method_key: _normalize_operation_fields(value)}}
+    return None
+
+
+def _apply_batch_payload(
+    swagger: dict, directory_path: str, batch: List[Dict], payload
+) -> Tuple[List[Dict], List[Dict]]:
+    """Merge a batch reply, falling back to per-endpoint calls when it is unusable.
+
+    An endpoint the model simply left out stays failed, so it is kept out of the
+    api_index and retried next run.
+    """
+    if not isinstance(payload, dict) or not isinstance(payload.get("paths"), dict):
+        print(
+            f"apimesh: batch reply unusable for {_batch_source_file(batch)}, "
+            "documenting its endpoints one by one"
         )
-        http_method = method_info.get("http_method") or "GET"
-        if http_method:
-            context_blocks = [[f"HTTP_METHOD: {http_method}\n"]] + context_blocks
-        handler_metadata = method_info.get("handler_selector") or method_info.get("name")
-        if handler_metadata:
-            context_blocks = [[f"HANDLER: {handler_metadata}\n"]] + context_blocks
-        swagger_for_def = get_function_definition_swagger(
-            method_definition, context_blocks, route, http_method
+        return _update_swagger_for_endpoints(swagger, directory_path, batch)
+    generated: List[Dict] = []
+    failed: List[Dict] = []
+    for job in batch:
+        route = job.get("route")
+        http_method = job.get("http_method") or "GET"
+        normalized = _operation_from_batch(payload, route, http_method)
+        if normalized is None:
+            failed.append(job)
+            print(
+                f"apimesh: skipped {http_method} {route}: "
+                "missing from the batch reply"
+            )
+            continue
+        _merge_paths(swagger, {"paths": normalized})
+        generated.append(job)
+    return generated, failed
+
+
+def _update_swagger_for_batches(
+    swagger: dict, directory_path: str, endpoint_jobs: list
+) -> Tuple[List[Dict], List[Dict]]:
+    """Every endpoint of every batch, behind the batch's own error boundary."""
+    generated: List[Dict] = []
+    failed: List[Dict] = []
+    for batch in _batch_endpoint_jobs(endpoint_jobs):
+        try:
+            payload = _generate_batch_payload(directory_path, batch)
+        except Exception as exc:
+            print(f"apimesh: batch failed for {_batch_source_file(batch)}: {exc}")
+            payload = None
+        batch_generated, batch_failed = _apply_batch_payload(
+            swagger, directory_path, batch, payload
         )
-        _merge_paths(swagger, swagger_for_def)
+        generated.extend(batch_generated)
+        failed.extend(batch_failed)
+    return generated, failed
+
+
+def _report_generation(generated: int, failed: int) -> None:
+    """Raising on a total wipeout lets the CLI fall back to the generic extractor."""
+    total = generated + failed
+    if not total:
+        return
+    print(f"generated {generated} of {total} endpoints ({failed} failed)")
+    if generated == 0:
+        raise RuntimeError("golang swagger generation produced no endpoints")
 
 
 def _maybe_incremental_update(directory_path: str, endpoint_jobs: list):
@@ -310,19 +655,23 @@ def _maybe_incremental_update(directory_path: str, endpoint_jobs: list):
     existing_index = _load_existing_api_index()
     if not existing_swagger or not isinstance(existing_index, dict):
         return None
-    base_commit = existing_swagger.get("info", {}).get("commit_reference")
+    existing_info = existing_swagger.get("info", {})
+    # Specs written before the extension rename still carry the bare key.
+    base_commit = existing_info.get("x-commit-reference") or existing_info.get("commit_reference")
     if not base_commit:
         return None
     changed_files = get_changed_files_since(base_commit, directory_path, include_uncommitted=True)
     if changed_files is None:
         return None
-    if not changed_files:
-        return existing_swagger
     endpoint_map = _group_endpoints(endpoint_jobs)
     existing_keys = set(existing_index.keys())
     new_keys = set(endpoint_map.keys())
     removed_keys = existing_keys - new_keys
     added_keys = new_keys - existing_keys
+    # An endpoint that failed last run is absent from the index, so it reads as
+    # added and still has to be generated when git reports nothing changed.
+    if not changed_files and not added_keys and not removed_keys:
+        return existing_swagger
     changed_keys = set()
     for key in existing_keys & new_keys:
         if _endpoint_has_changed(existing_index.get(key), endpoint_map.get(key), changed_files):
@@ -335,16 +684,33 @@ def _maybe_incremental_update(directory_path: str, endpoint_jobs: list):
         updated_index.pop(key, None)
         _remove_endpoint_from_swagger(existing_swagger, key)
 
+    jobs_to_update: List[Dict] = []
     for key in keys_to_update:
-        entry_map = _build_api_index(endpoint_map.get(key, []))
-        if entry_map:
-            for entry_key, entry_value in entry_map.items():
-                updated_index[entry_key] = entry_value
+        jobs_to_update.extend(endpoint_map.get(key, []))
+    generated, failed = _update_swagger_for_batches(
+        existing_swagger, directory_path, jobs_to_update
+    )
+    failed_keys = {
+        _endpoint_key(job.get("route"), job.get("http_method") or job.get("method"))
+        for job in failed
+    }
+    # A failed endpoint keeps whatever the index already held (or stays out of
+    # it) so the next run still sees it as new or stale and retries.
+    # A failed key's stale entry is dropped, not kept: once the commit
+    # reference advances, a kept entry would hide the failure forever, while
+    # an absent key reads as newly added and is retried on the next run.
+    for failed_key in failed_keys:
+        updated_index.pop(failed_key, None)
 
-    for key in keys_to_update:
-        _update_swagger_for_endpoints(existing_swagger, directory_path, endpoint_map.get(key, []))
+    for entry_key, entry_value in _build_api_index(generated).items():
+        if entry_key in failed_keys:
+            continue
+        updated_index[entry_key] = entry_value
+    _report_generation(len(generated), len(failed))
 
-    existing_swagger.setdefault("info", {})["commit_reference"] = get_git_commit_hash()
+    info = existing_swagger.setdefault("info", {})
+    info.pop("commit_reference", None)
+    info["x-commit-reference"] = get_git_commit_hash()
     _write_api_index(updated_index)
     return existing_swagger
 
@@ -689,7 +1055,7 @@ def provide_context_codeblock(directory_path: str, method_info: Dict):
     return context_code_blocks, method_definition_code_block
 
 
-def run_swagger_generation(host: str) -> Dict:
+def run_swagger_generation(host: str) -> Optional[Dict]:
     directory_path = get_repo_path()
     repo_name = get_repo_name()
     global _METADATA_DIR
@@ -702,7 +1068,7 @@ def run_swagger_generation(host: str) -> Dict:
                 file_path = os.path.join(root, filename)
                 if (
                     os.path.exists(file_path)
-                    and should_process_directory(file_path)
+                    and should_process_directory(file_path, directory_path)
                     and file_path.endswith(".go")
                 ):
                     try:
@@ -726,9 +1092,9 @@ def run_swagger_generation(host: str) -> Dict:
                 "title": repo_name,
                 "version": "1.0.0",
                 "description": "This Swagger file was generated using OpenAI GPT.",
-                "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
-                "commit_reference": get_git_commit_hash(),
-                "github_repo_url": get_github_repo_url(),
+                "x-generated-at": datetime.datetime.utcnow().isoformat() + "Z",
+                "x-commit-reference": get_git_commit_hash(),
+                "x-github-repo-url": get_github_repo_url(),
             },
             "servers": [{"url": host}],
             "paths": {},
@@ -741,41 +1107,46 @@ def run_swagger_generation(host: str) -> Dict:
                 continue
             endpoint_jobs.append(hydrated)
 
+        # Nothing was extracted: hand back None so the caller falls back instead
+        # of publishing an empty spec (or, worse, incrementally deleting one).
+        if not endpoint_jobs:
+            print(
+                "apimesh: golang parser found 0 endpoints, "
+                "falling back to generic extraction"
+            )
+            return None
+
         incremental_swagger = _maybe_incremental_update(directory_path, endpoint_jobs)
         if incremental_swagger is not None:
             return incremental_swagger
 
-        api_index = _build_api_index(endpoint_jobs)
-        _write_api_index(api_index)
-
-        if not endpoint_jobs:
-            return swagger
-
-        def _generate_swagger_fragment(method_info: Dict) -> Dict:
-            context_blocks, method_definition = provide_context_codeblock(
-                directory_path, method_info
-            )
-            http_method = method_info.get("http_method") or "GET"
-            if http_method:
-                context_blocks = [[f"HTTP_METHOD: {http_method}\\n"]] + context_blocks
-            handler_metadata = method_info.get("handler_selector") or method_info.get("name")
-            if handler_metadata:
-                context_blocks = [[f"HANDLER: {handler_metadata}\\n"]] + context_blocks
-            return get_function_definition_swagger(
-                method_definition, context_blocks, method_info["route"], http_method
-            )
-
+        generated: List[Dict] = []
+        failed: List[Dict] = []
         with ThreadPoolExecutor(max_workers=5) as executor:
-            futures = [
-                executor.submit(_generate_swagger_fragment, job)
-                for job in endpoint_jobs
-            ]
+            futures = {
+                executor.submit(_generate_batch_payload, directory_path, batch): batch
+                for batch in _batch_endpoint_jobs(endpoint_jobs)
+            }
             for future in as_completed(futures):
-                swagger_fragment = future.result()
-                for path_key, methods in swagger_fragment.get("paths", {}).items():
-                    swagger.setdefault("paths", {}).setdefault(path_key, {})
-                    for method, payload in methods.items():
-                        swagger["paths"][path_key][method] = payload
+                batch = futures[future]
+                try:
+                    payload = future.result()
+                except Exception as exc:
+                    print(
+                        f"apimesh: batch failed for {_batch_source_file(batch)}: {exc}"
+                    )
+                    payload = None
+                batch_generated, batch_failed = _apply_batch_payload(
+                    swagger, directory_path, batch, payload
+                )
+                generated.extend(batch_generated)
+                failed.extend(batch_failed)
+
+        _report_generation(len(generated), len(failed))
+
+        # Only endpoints that made it into the spec are indexed, otherwise a
+        # failure looks unchanged next run and is never retried.
+        _write_api_index(_build_api_index(generated))
 
         return swagger
     finally:
