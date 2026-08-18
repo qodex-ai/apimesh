@@ -1,9 +1,14 @@
 import json
 import re
+import time
 from typing import List, Optional
 
 from llm_client import OpenAiClient
-from prompts import ruby_on_rails_swagger_generation_prompt
+from prompts import (
+    batch_swagger_generation_prompt,
+    batch_swagger_generation_system_prompt,
+    ruby_on_rails_swagger_generation_prompt,
+)
 
 
 _SYSTEM_PROMPT = (
@@ -11,6 +16,13 @@ _SYSTEM_PROMPT = (
     "Respond with a single valid JSON object that matches the requested schema. "
     "Do not include any surrounding prose, markdown, or code fences."
 )
+
+# Seconds to wait before each retry of a failed API call (rate limits, timeouts).
+_RETRY_BACKOFF_SECONDS = (1, 4)
+
+# Framework wording handed to the shared batch prompt.
+BATCH_FRAMEWORK_LABEL = "Ruby on Rails"
+BATCH_FRAMEWORK_NOTES = "Paths use OpenAPI {param} templating."
 
 
 def _extract_json_block(raw_text: str) -> Optional[str]:
@@ -47,15 +59,12 @@ def get_function_definition_swagger(
     """
     openai_ai_client = OpenAiClient()
     function_definition_text = "".join(function_definition)
+    # The context used to be sent twice, once folded into the endpoint info and
+    # once as the authentication information, which doubled the prompt for no gain.
     context_text = "\n\n".join("".join(block) for block in context) if context else ""
-    endpoint_info_text = (
-        f"{function_definition_text}\n\n{context_text}"
-        if context_text
-        else function_definition_text
-    )
 
     prompt = ruby_on_rails_swagger_generation_prompt.format(
-        endpoint_info=endpoint_info_text,
+        endpoint_info=function_definition_text,
         endpoint_method=http_method or "GET",
         endpoint_path=route,
         authentication_information=context_text,
@@ -67,10 +76,17 @@ def get_function_definition_swagger(
     ]
 
     last_error: Optional[Exception] = None
-    for _ in range(3):
-        response = openai_ai_client.call_chat_completion(
-            messages=messages, temperature=0
-        )
+    attempts = len(_RETRY_BACKOFF_SECONDS) + 1
+    for attempt in range(attempts):
+        try:
+            response = openai_ai_client.call_chat_completion(
+                messages=messages, temperature=0
+            )
+        except Exception as exc:
+            last_error = exc
+            if attempt < len(_RETRY_BACKOFF_SECONDS):
+                time.sleep(_RETRY_BACKOFF_SECONDS[attempt])
+            continue
         swagger_json_block = _extract_json_block(response)
         if not swagger_json_block:
             last_error = ValueError("LLM response did not contain JSON payload.")
@@ -82,8 +98,48 @@ def get_function_definition_swagger(
             continue
 
     error_message = (
-        "Failed to parse Swagger JSON from LLM response after multiple attempts."
+        f"Failed to get Swagger JSON from the LLM after {attempts} attempts"
     )
     if last_error:
-        raise ValueError(error_message) from last_error
-    raise ValueError(error_message)
+        raise ValueError(f"{error_message}: {last_error}") from last_error
+    raise ValueError(f"{error_message}.")
+
+
+def get_batch_definition_swagger(
+    endpoints_list: str, shared_context: str, per_endpoint_sections: str
+) -> Optional[dict]:
+    """
+    One call covering every endpoint of a batch. Returns the parsed response, or
+    None when no reply carried a JSON payload; the caller decides whether the
+    payload is usable and when to fall back to the per endpoint calls.
+    """
+    openai_ai_client = OpenAiClient()
+    prompt = batch_swagger_generation_prompt.format(
+        framework_label=BATCH_FRAMEWORK_LABEL,
+        framework_notes=BATCH_FRAMEWORK_NOTES,
+        endpoints_list=endpoints_list,
+        shared_context=shared_context,
+        per_endpoint_sections=per_endpoint_sections,
+    )
+    messages = [
+        {"role": "system", "content": batch_swagger_generation_system_prompt},
+        {"role": "user", "content": prompt},
+    ]
+
+    for attempt in range(len(_RETRY_BACKOFF_SECONDS) + 1):
+        try:
+            response = openai_ai_client.call_chat_completion(
+                messages=messages, temperature=0
+            )
+        except Exception:
+            if attempt < len(_RETRY_BACKOFF_SECONDS):
+                time.sleep(_RETRY_BACKOFF_SECONDS[attempt])
+            continue
+        swagger_json_block = _extract_json_block(response)
+        if not swagger_json_block:
+            continue
+        try:
+            return json.loads(swagger_json_block)
+        except json.JSONDecodeError:
+            continue
+    return None

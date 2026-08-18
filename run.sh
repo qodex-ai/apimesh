@@ -14,6 +14,10 @@ OPENAI_API_KEY=""
 PROJECT_API_KEY=""
 AI_CHAT_ID=""
 
+# Flags forwarded to the Python CLI as-is. APIMESH_API_HOST and APIMESH_OPENAI_MODEL
+# need no forwarding, Python reads them straight from the environment.
+EXTRA_ARGS=()
+
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -29,9 +33,25 @@ while [[ $# -gt 0 ]]; do
       AI_CHAT_ID="$2"
       shift 2
       ;;
+    --no-html)
+      export APIMESH_SKIP_HTML=1
+      shift
+      ;;
+    --api-host)
+      EXTRA_ARGS+=(--api-host "$2")
+      shift 2
+      ;;
+    --model)
+      EXTRA_ARGS+=(--model "$2")
+      shift 2
+      ;;
+    --redetect-framework)
+      EXTRA_ARGS+=(--redetect-framework)
+      shift
+      ;;
     *)
       echo "Unknown option: $1"
-      echo "Usage: $0 [--openai-api-key KEY] [--project-api-key KEY] [--ai-chat-id ID]"
+      echo "Usage: $0 [--openai-api-key KEY] [--project-api-key KEY] [--ai-chat-id ID] [--no-html] [--api-host URL] [--model NAME] [--redetect-framework]"
       exit 1
       ;;
   esac
@@ -147,7 +167,7 @@ export APIMESH_USER_CONFIG_PATH="$CURRENT_DIR/apimesh/config.json"
 export APIMESH_USER_REPO_PATH="$CURRENT_DIR"
 export APIMESH_OUTPUT_FILEPATH="$CURRENT_DIR/apimesh/swagger.json"
 
-python3 -m apimesh.apimesh.swagger_generation_cli "$OPENAI_API_KEY" "$PROJECT_API_KEY" "$AI_CHAT_ID"
+python3 -m apimesh.apimesh.swagger_generation_cli "$OPENAI_API_KEY" "$PROJECT_API_KEY" "$AI_CHAT_ID" ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
 
 CLI_EXIT_CODE=$?
 

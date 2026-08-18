@@ -12,8 +12,9 @@ def find_python_files(directory):
     directory = Path(directory)
     python_files = []
     for py_file in directory.rglob('*.py'):
-        # Check if any parent directory is in IGNORE_DIRS
-        if not any(part in config.ignored_dirs for part in py_file.parts):
+        # Only the components below the scanned root count: an absolute path that
+        # happens to sit under /var or /tmp/build would otherwise hide the repo.
+        if not any(part in config.ignored_dirs for part in py_file.relative_to(directory).parts):
             python_files.append(py_file)
     return python_files
 

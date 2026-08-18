@@ -54,7 +54,20 @@ class FileScanner:
     @staticmethod
     def should_process_directory(dir_path: str) -> bool:
         """
-        Check if a directory should be processed or ignored
+        Check if a directory should be processed or ignored.
+
+        Only the components below the repo root are checked. Matching on the absolute
+        path would skip every file in a repo that happens to live under /var, /tmp,
+        /build and other names present in ignored_dirs.
         """
-        path_parts = dir_path.split(os.sep)
+        repo_path = get_repo_path()
+        try:
+            relative_path = os.path.relpath(os.path.abspath(dir_path), repo_path)
+        except ValueError:
+            # Different drives on Windows: nothing to compare, so do not ignore it.
+            return True
+        path_parts = [part for part in relative_path.split(os.sep) if part not in ("", os.curdir)]
+        if os.pardir in path_parts:
+            # Outside the repo root, so the repo's ignore list does not apply.
+            return True
         return not any(part in config.ignored_dirs for part in path_parts)
