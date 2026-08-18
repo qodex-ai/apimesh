@@ -724,7 +724,10 @@
 
       function displayMetadata(swaggerData) {
         // Try multiple possible locations for timestamp
+        // The bare keys are what specs generated before the OpenAPI extension
+        // rename carry, so both spellings are read here.
         let timestamp =
+          (swaggerData.info && swaggerData.info["x-generated-at"]) ||
           swaggerData.generated_at ||
           swaggerData.timestamp ||
           swaggerData.generatedAt ||
@@ -734,6 +737,7 @@
 
         // Try multiple possible locations for commit reference
         let commitRef =
+          (swaggerData.info && swaggerData.info["x-commit-reference"]) ||
           swaggerData.commit_reference ||
           swaggerData.commit ||
           swaggerData.commitReference ||
@@ -743,6 +747,7 @@
 
         // Try multiple possible locations for GitHub repo URL
         let githubRepoUrl =
+          (swaggerData.info && swaggerData.info["x-github-repo-url"]) ||
           swaggerData.github_repo_url ||
           swaggerData.githubRepoUrl ||
           (swaggerData.info && swaggerData.info.github_repo_url) ||
@@ -796,10 +801,17 @@
                 method: method.toUpperCase(),
                 path: path,
                 summary: operation.summary || "",
-                api_description: operation.api_description || "",
-                authorization_tag: operation.authorization_tag || "",
-                module_tag: operation.module_tag || "",
-                sensitive_information: operation.sensitive_information !== undefined ? operation.sensitive_information : null,
+                // Specs generated before the OpenAPI extension rename use the
+                // bare key names, so both spellings are read.
+                api_description: operation.description || operation.api_description || "",
+                authorization_tag: operation["x-authorization-tag"] || operation.authorization_tag || "",
+                module_tag: operation["x-module-tag"] || operation.module_tag || "",
+                sensitive_information:
+                  operation["x-sensitive-information"] !== undefined
+                    ? operation["x-sensitive-information"]
+                    : operation.sensitive_information !== undefined
+                      ? operation.sensitive_information
+                      : null,
               });
             }
           });
@@ -900,7 +912,9 @@
       function escapeHtml(text) {
         const div = document.createElement("div");
         div.textContent = text;
-        return div.innerHTML;
+        // textContent leaves quotes alone, and this output is also used inside
+        // attribute values (href), where an unescaped quote breaks out of the attribute.
+        return div.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;");
       }
 
       function getSelectedValue(selectElement) {

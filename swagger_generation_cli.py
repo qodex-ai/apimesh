@@ -1,3 +1,4 @@
+import argparse
 import json
 import os
 import sys
@@ -20,10 +21,17 @@ from utils import get_output_filepath
 from telemetry_posthog import PostHogTelemetry
 
 
+class NoEndpointsFound(Exception):
+    """Raised when a run produced a spec with no paths, so nothing is worth writing."""
+    pass
+
+
 class RunSwagger:
-    def __init__(self, project_api_key, openai_api_key, ai_chat_id, is_mcp):
+    def __init__(self, project_api_key, openai_api_key, ai_chat_id, is_mcp, api_host=None, openai_model=None):
         self.ai_chat_id = ai_chat_id
-        self.user_configurations = UserConfigurations(project_api_key, openai_api_key, ai_chat_id, is_mcp)
+        self.user_configurations = UserConfigurations(
+            project_api_key, openai_api_key, ai_chat_id, is_mcp, api_host=api_host, openai_model=openai_model
+        )
         self.user_config = self.user_configurations.load_user_config()
         self.framework_identifier = FrameworkIdentifier()
         self.file_scanner = FileScanner()
@@ -125,6 +133,14 @@ class RunSwagger:
                 print("Oops! looks like we encountered an issue. Please try after some time.")
                 raise
 
+            if not swagger or not swagger.get("paths"):
+                print("\n***************************************************")
+                print("No API endpoints were found in this repository.")
+                print("Nothing was written: swagger.json and the HTML viewer were not created.")
+                print(f"We detected the framework as '{framework or 'unknown'}'. If that is wrong,")
+                print("fix the \"framework\" value in apimesh/config.json and run again.")
+                raise NoEndpointsFound("no endpoints were extracted")
+
             with telemetry.stage(run_id, "render_html"):
                 output_filepath = get_output_filepath()
                 self.swagger_generator.save_swagger_json(swagger, output_filepath)
@@ -174,9 +190,58 @@ class RunSwagger:
         return
 
 
-openai_api_key = sys.argv[1] if len(sys.argv) > 1 else ""
-project_api_key = sys.argv[2] if len(sys.argv) > 2 else ""
-ai_chat_id = sys.argv[3] if len(sys.argv) > 3 else ""
-is_mcp = sys.argv[4] if len(sys.argv) > 4 else False
+def build_arg_parser():
+    """
+    The four positionals are kept exactly as they were so existing callers keep working.
+    Everything new is an optional flag.
+    """
+    parser = argparse.ArgumentParser(
+        prog="swagger_generation_cli",
+        description="Scan the repository and generate an OpenAPI spec.",
+    )
+    parser.add_argument("openai_api_key", nargs="?", default="", help="OpenAI API key, or the OPENAI_API_KEY env var")
+    parser.add_argument("project_api_key", nargs="?", default="", help="Qodex project API key")
+    parser.add_argument("ai_chat_id", nargs="?", default="", help="Qodex AI chat id")
+    parser.add_argument("is_mcp", nargs="?", default="", help="Non-empty when running under the MCP server")
+    parser.add_argument(
+        "--api-host",
+        dest="api_host",
+        default=None,
+        help="Base URL written to servers[0].url, also settable via APIMESH_API_HOST",
+    )
+    parser.add_argument(
+        "--model",
+        dest="openai_model",
+        default=None,
+        help="OpenAI model to use, also settable via APIMESH_OPENAI_MODEL",
+    )
+    parser.add_argument(
+        "--redetect-framework",
+        action="store_true",
+        help="Forget the cached framework and detect it again for this run",
+    )
+    return parser
 
-RunSwagger(project_api_key, openai_api_key, ai_chat_id, is_mcp).run(ai_chat_id)
+
+def parse_args(argv=None):
+    return build_arg_parser().parse_args(argv)
+
+
+if __name__ == "__main__":
+    args = parse_args()
+
+    if args.redetect_framework and UserConfigurations.clear_cached_framework():
+        print("Cleared the cached framework, it will be detected again for this run.")
+
+    try:
+        RunSwagger(
+            args.project_api_key,
+            args.openai_api_key,
+            args.ai_chat_id,
+            args.is_mcp,
+            api_host=args.api_host,
+            openai_model=args.openai_model,
+        ).run(args.ai_chat_id)
+    except NoEndpointsFound:
+        # Message already printed, no traceback needed for an empty result.
+        sys.exit(1)

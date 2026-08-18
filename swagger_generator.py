@@ -2,6 +2,7 @@ from llm_client import OpenAiClient
 from config import Configurations
 import prompts
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import html
 import json
 import time
 import os, re
@@ -9,6 +10,16 @@ import datetime
 from utils import get_git_commit_hash, get_github_repo_url, get_repo_path, get_repo_name, format_repo_name
 
 config = Configurations()
+
+# Operation keys older prompts asked for, mapped to their OpenAPI 3.0 compliant form.
+LEGACY_OPERATION_FIELDS = {
+    "api_description": "description",
+    "authorization_tag": "x-authorization-tag",
+    "module_tag": "x-module-tag",
+    "auth_tag": "x-auth-tag",
+    "sensitive_information": "x-sensitive-information",
+}
+
 
 class SwaggerGeneration:
     def __init__(self):
@@ -24,9 +35,9 @@ class SwaggerGeneration:
                 "title": repo_name,
                 "version": "1.0.0",
                 "description": "This Swagger file was generated using OpenAI GPT.",
-                "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
-                "commit_reference": get_git_commit_hash(),
-                "github_repo_url": get_github_repo_url()
+                "x-generated-at": datetime.datetime.utcnow().isoformat() + "Z",
+                "x-commit-reference": get_git_commit_hash(),
+                "x-github-repo-url": get_github_repo_url()
             },
             "servers": [
                 {
@@ -41,31 +52,78 @@ class SwaggerGeneration:
         completed = 0
 
         def process_endpoint(endpoint):
-            endpoint_swagger = self.generate_endpoint_swagger(endpoint, authentication_information, framework)
-            return endpoint["path"], endpoint["method"].lower(), endpoint_swagger
+            return self.generate_endpoint_swagger(endpoint, authentication_information, framework)
 
         with ThreadPoolExecutor(max_workers=8) as executor:
             future_to_endpoint = {executor.submit(process_endpoint, endpoint): endpoint
                                   for endpoint in endpoints}
 
             for future in as_completed(future_to_endpoint):
-                path, method, endpoint_swagger = future.result()
+                endpoint = future_to_endpoint[future]
+                path = endpoint.get("path", "")
+                method = str(endpoint.get("method", "")).lower()
+                try:
+                    endpoint_swagger = future.result()
+                    operation = self._extract_first_operation(endpoint_swagger)
+                    if operation is None:
+                        raise ValueError("no usable operation in the generated fragment")
 
-                if path not in swagger["paths"]:
-                    swagger["paths"][path] = {}
+                    if path not in swagger["paths"]:
+                        swagger["paths"][path] = {}
+                    swagger["paths"][path][method] = operation
 
-                key = list(endpoint_swagger['paths'].keys())[0]
-                _method_list = list(endpoint_swagger['paths'][key].keys())
-                if not _method_list:
-                    continue
-                _method = _method_list[0]
-                swagger["paths"][path][_method] = endpoint_swagger['paths'][key][_method]
+                    completed += 1
+                    end_time = time.time()
+                    print(f"completed generating swagger for {completed} endpoints in {int(end_time - start_time)} seconds",
+                          end="\r")
+                except Exception as ex:
+                    print(f"\nskipped {method.upper()} {path}: {ex}")
 
-                completed += 1
-                end_time = time.time()
-                print(f"completed generating swagger for {completed} endpoints in {int(end_time - start_time)} seconds",
-                      end="\r")
+        total = len(endpoints)
+        failed = total - completed
+        print(f"\ngenerated {completed} of {total} endpoints ({failed} failed)")
+        if total > 0 and completed == 0:
+            raise RuntimeError("Swagger generation failed for every endpoint.")
         return swagger
+
+    @staticmethod
+    def _normalize_operation_fields(operation):
+        """
+        Rename the legacy operation keys an older model reply may still carry to
+        their OpenAPI compliant form. A value already under the new name wins, so
+        a reply holding both does not end up with duplicated content.
+        """
+        if not isinstance(operation, dict):
+            return operation
+        for legacy_key, new_key in LEGACY_OPERATION_FIELDS.items():
+            if legacy_key not in operation:
+                continue
+            operation.setdefault(new_key, operation.pop(legacy_key))
+        return operation
+
+    @staticmethod
+    def _extract_first_operation(endpoint_swagger):
+        """
+        Pull the first operation body out of a model generated fragment.
+
+        The model's own path and method keys are ignored because it often rewrites them,
+        the caller re-keys the operation under the endpoint we actually asked about.
+
+        Returns:
+            The operation dict, or None if the fragment is unusable.
+        """
+        if not isinstance(endpoint_swagger, dict):
+            return None
+        paths = endpoint_swagger.get("paths")
+        if not isinstance(paths, dict) or not paths:
+            return None
+        for methods in paths.values():
+            if not isinstance(methods, dict):
+                continue
+            for operation in methods.values():
+                if isinstance(operation, dict):
+                    return SwaggerGeneration._normalize_operation_fields(operation)
+        return None
 
 
 
@@ -80,7 +138,7 @@ class SwaggerGeneration:
             {"role": "system", "content": prompts.swagger_generation_system_prompt},
             {"role": "user", "content": prompt}
         ]
-        response_content = self.openai_client.call_chat_completion(messages=messages)
+        response_content = self._call_chat_completion_with_retry(messages)
         try:
             start_index = response_content.find('{')
             end_index = response_content.rfind('}')
@@ -88,6 +146,21 @@ class SwaggerGeneration:
             return json.loads(swagger_json_block)
         except Exception as ex:
             return {"paths": {endpoint['path']: {}}}
+
+
+    def _call_chat_completion_with_retry(self, messages, retries=2):
+        """
+        Call the model, retrying transient API failures (rate limits, timeouts, 5xx).
+        A malformed response body is not retried here, the caller parses it.
+        """
+        delays = [1, 4]
+        for attempt in range(retries + 1):
+            try:
+                return self.openai_client.call_chat_completion(messages=messages)
+            except Exception:
+                if attempt == retries:
+                    raise
+                time.sleep(delays[attempt])
 
 
     @staticmethod
@@ -114,6 +187,9 @@ class SwaggerGeneration:
                 display_path = './' + display_path
         print(f"Swagger JSON saved to {display_path}.")
         # Generate HTML viewer file in the same directory
+        if os.environ.get("APIMESH_SKIP_HTML", "").lower() in ("1", "true"):
+            print("HTML viewer skipped because APIMESH_SKIP_HTML is set.")
+            return
         SwaggerGeneration.generate_html_viewer(filename)
 
     @staticmethod
@@ -148,7 +224,7 @@ class SwaggerGeneration:
                 
                 # Replace <repo_name> placeholder with formatted repo name from utils
                 repo_name = get_repo_name()
-                formatted_repo_name = format_repo_name(repo_name)
+                formatted_repo_name = html.escape(format_repo_name(repo_name))
                 html_content = html_content.replace('<repo_name>', formatted_repo_name)
                 
                 # Embed the swagger data as a JavaScript variable
