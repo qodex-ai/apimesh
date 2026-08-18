@@ -2,16 +2,17 @@
 
 ## Docker Build Workflow
 
-This workflow automatically builds and pushes Docker images to Docker Hub when tags are pushed to the repository.
+This workflow runs the test suite, then builds and pushes Docker images to Docker Hub when tags are pushed to the repository.
 
 ### How it works:
 
 1. **Trigger**: Automatically runs when you push a tag matching pattern `v*.*.*` (e.g., `v1.0.0`, `v2.1.3`)
-2. **Build**: Builds the Docker image using the Dockerfile
-3. **Tag**: Tags the image with:
+2. **Test**: Installs `requirements.txt` and `requirements-dev.txt` on Python 3.11 and runs `pytest tests/`. If the suite fails, nothing is built or pushed.
+3. **Build**: Builds the Docker image using the Dockerfile
+4. **Tag**: Tags the image with:
    - The full tag name (e.g., `v1.0.0`)
-   - `latest` (always updated to the newest tag)
-4. **Push**: Pushes all tags to Docker Hub
+   - `latest`, but only for a real version tag push
+5. **Push**: Pushes all tags to Docker Hub
 
 ### Setup Instructions:
 
@@ -39,9 +40,8 @@ This workflow automatically builds and pushes Docker images to Docker Hub when t
 - Tag format: `v1.0.0`, `v2.1.3`, etc.
 - Images will be tagged as:
   - `qodexai/apimesh:v1.0.0` (full tag)
-  - `qodexai/apimesh:latest` (always points to newest)
+  - `qodexai/apimesh:latest` (always points to newest release)
 
 ### Manual Trigger:
 
-You can also manually trigger the workflow from the Actions tab in GitHub.
-
+You can also manually trigger the workflow from the Actions tab in GitHub. A manual run publishes `qodexai/apimesh:dev` only. It never moves `:latest`, so `:latest` always points at the last released version tag.
