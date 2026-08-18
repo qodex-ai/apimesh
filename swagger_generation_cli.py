@@ -216,6 +216,11 @@ def build_arg_parser():
         help="OpenAI model to use, also settable via APIMESH_OPENAI_MODEL",
     )
     parser.add_argument(
+        "--no-html",
+        action="store_true",
+        help="Write swagger.json only, skip the HTML viewer",
+    )
+    parser.add_argument(
         "--redetect-framework",
         action="store_true",
         help="Forget the cached framework and detect it again for this run",
@@ -229,6 +234,9 @@ def parse_args(argv=None):
 
 if __name__ == "__main__":
     args = parse_args()
+
+    if args.no_html:
+        os.environ["APIMESH_SKIP_HTML"] = "1"
 
     if args.redetect_framework and UserConfigurations.clear_cached_framework():
         print("Cleared the cached framework, it will be detected again for this run.")

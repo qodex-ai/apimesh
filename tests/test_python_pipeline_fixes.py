@@ -769,3 +769,40 @@ def test_per_endpoint_prompt_is_deduped_and_budgeted_too(monkeypatch, capsys):
     assert captured["prompt"].count("# block") <= 1
     assert "... truncated" in captured["prompt"]
     assert "apimesh: context truncated for /repo/app.py" in capsys.readouterr().out
+
+
+def test_incremental_all_fail_keeps_spec_and_persists_retry_state(tmp_path, monkeypatch, capsys):
+    """An OpenAI outage during an incremental pass must not discard a valid
+    existing spec into the slow fallback; the index persists with the failed
+    keys dropped so they retry next run."""
+    written = {}
+    existing_swagger = {
+        "openapi": "3.0.0",
+        "info": {"x-commit-reference": "old"},
+        "paths": {"/orders": {"post": {"summary": "keep me"}}},
+    }
+    existing_index = {
+        "GET /users": {"files": [{"file_path": "/repo/a.py", "imports": []}]},
+        "POST /orders": {"files": [{"file_path": "/repo/b.py", "imports": []}]},
+    }
+    monkeypatch.setattr(rsg, "_load_existing_swagger", lambda: existing_swagger)
+    monkeypatch.setattr(rsg, "_load_existing_api_index", lambda: existing_index)
+    monkeypatch.setattr(rsg, "_write_api_index", lambda index: written.update(index))
+    monkeypatch.setattr(rsg, "get_changed_files_since", lambda commit, *args, **kwargs: {"/repo/a.py"})
+    monkeypatch.setattr(rsg, "get_git_commit_hash", lambda: "new")
+    monkeypatch.setattr(rsg, "_generate_batch_payload", lambda directory_path, batch: None)
+    monkeypatch.setattr(
+        rsg, "_swagger_fragment_for_endpoint",
+        lambda directory_path, method_info: None,
+    )
+    jobs = [
+        {"route": "/users", "method": "GET", "file_path": "/repo/a.py",
+         "name": "u", "start_line": 1, "end_line": 2, "type": "function"},
+        {"route": "/orders", "method": "POST", "file_path": "/repo/b.py",
+         "name": "o", "start_line": 1, "end_line": 2, "type": "function"},
+    ]
+    result = rsg._maybe_incremental_update("/repo", jobs)
+    assert result is existing_swagger
+    assert result["paths"] == {"/orders": {"post": {"summary": "keep me"}}}
+    assert "GET /users" not in written
+    assert "keeping the previous spec" in capsys.readouterr().out

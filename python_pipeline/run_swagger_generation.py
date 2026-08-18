@@ -738,7 +738,14 @@ def _maybe_incremental_update(directory_path: str, endpoint_jobs: list):
         if entry_key in failed_keys:
             continue
         updated_index[entry_key] = entry_value
-    _report_generation(len(generated), len(failed))
+
+    # The incremental pass never raises: the existing spec is still valid, and
+    # persisting the index below (failed keys dropped) is what schedules the
+    # retry. Raising here would discard both and launch the slow fallback.
+    total = len(generated) + len(failed)
+    print(f"generated {len(generated)} of {total} endpoints ({len(failed)} failed)")
+    if failed and not generated:
+        print("apimesh: every changed endpoint failed; keeping the previous spec, they will retry next run")
 
     info = existing_swagger.setdefault("info", {})
     info.pop("commit_reference", None)
