@@ -6,8 +6,14 @@ from config import Configurations
 config = Configurations()
 
 
-def _is_ignored(path: Path) -> bool:
-    return any(part in config.ignored_dirs for part in path.parts)
+def _is_ignored(path: Path, root: Path) -> bool:
+    # Only components below the scanned root count, otherwise a repo checked out
+    # under /var, /tmp or /build would be skipped entirely.
+    try:
+        relative = path.relative_to(root)
+    except ValueError:
+        relative = path
+    return any(part in config.ignored_dirs for part in relative.parts)
 
 
 def _looks_like_controller(path: Path) -> bool:
@@ -26,7 +32,7 @@ def find_ruby_files(directory: str) -> List[Path]:
     directory_path = Path(directory)
     ruby_files: List[Path] = []
     for file_path in directory_path.rglob("*.rb"):
-        if not _is_ignored(file_path):
+        if not _is_ignored(file_path, directory_path):
             ruby_files.append(file_path)
     return ruby_files
 
