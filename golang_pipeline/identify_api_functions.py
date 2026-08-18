@@ -33,8 +33,9 @@ class HandlerInfo:
     selector: Optional[str] = None
 
 
-def _node_text(source: str, node: Node) -> str:
-    return source[node.start_byte : node.end_byte]
+def _node_text(source: bytes, node: Node) -> str:
+    # tree-sitter offsets are byte offsets, so slice the bytes and decode.
+    return source[node.start_byte : node.end_byte].decode("utf-8", "replace")
 
 
 def _strip_quotes(value: Optional[str]) -> str:
@@ -329,11 +330,11 @@ def _is_call_operand_of_methods(call_node: Node, source: str) -> bool:
 
 def find_api_endpoints(file_path: Path, repo_root: str) -> List[Dict]:
     try:
-        source = file_path.read_text(encoding="utf-8")
+        source = file_path.read_bytes()
     except OSError:
         return []
 
-    tree = parser.parse(source.encode("utf-8"))
+    tree = parser.parse(source)
     functions_by_name = _collect_function_definitions(
         tree.root_node, source, file_path
     )
