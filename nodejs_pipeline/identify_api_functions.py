@@ -1,6 +1,5 @@
 from pathlib import Path
 import esprima
-import json
 import re
 from tree_sitter import Language, Parser
 import tree_sitter_typescript
@@ -17,6 +16,28 @@ OPTIONAL_CATCH_PATTERN = re.compile(r'catch\s*(\{)')
 FALLBACK_ENDPOINT_PATTERN = re.compile(
     r'(?P<object>[A-Za-z_$][\w$]*)\s*\.\s*(?P<method>GET|POST|PUT|DELETE|PATCH|OPTIONS|HEAD|ALL)\s*\(\s*(?P<route>["\'].*?["\'])?',
     re.IGNORECASE | re.DOTALL
+)
+
+# express mount detection: const router = express.Router() / Router()
+ROUTER_FACTORY_PATTERN = re.compile(
+    r'\b(?:const|let|var)\s+(?P<name>[A-Za-z_$][\w$]*)\s*(?::[^=;]+)?=\s*(?:express\s*\.\s*)?Router\s*\('
+)
+# express mount detection: app.use('/api/v1', router)
+USE_MOUNT_PATTERN = re.compile(
+    r'\.\s*use\s*\(\s*(?P<quote>[\'"`])(?P<path>[^\'"`]*)(?P=quote)\s*,\s*(?P<ident>[A-Za-z_$][\w$]*)\s*[,)]'
+)
+# express mount detection: app.use('/api/v1', require('./routes/users'))
+USE_INLINE_REQUIRE_MOUNT_PATTERN = re.compile(
+    r'\.\s*use\s*\(\s*(?P<quote>[\'"`])(?P<path>[^\'"`]*)(?P=quote)\s*,\s*require\s*\(\s*'
+    r'(?P<module_quote>[\'"`])(?P<module>[^\'"`]+)(?P=module_quote)\s*\)'
+)
+REQUIRE_ASSIGN_PATTERN = re.compile(
+    r'\b(?:const|let|var)\s+(?P<name>[A-Za-z_$][\w$]*)\s*(?::[^=;]+)?=\s*require\s*\(\s*'
+    r'(?P<quote>[\'"`])(?P<module>[^\'"`]+)(?P=quote)\s*\)'
+)
+IMPORT_ASSIGN_PATTERN = re.compile(
+    r'\bimport\s+(?P<name>[A-Za-z_$][\w$]*)\s*(?:,\s*\{[^}]*\}\s*)?from\s*'
+    r'(?P<quote>[\'"`])(?P<module>[^\'"`]+)(?P=quote)'
 )
 
 TS_LANGUAGE = Language(tree_sitter_typescript.language_typescript())
@@ -62,6 +83,7 @@ def _extract_endpoints_with_regex(source: str, file_path: Path):
             "type": "function",
             "method": method,
             "route": route,
+            "route_object": obj,
             "start_line": start_line,
             "end_line": end_line,
             "file_path": str(file_path)
@@ -77,9 +99,11 @@ def find_api_endpoints_js(file_path: Path):
 
     suffix = file_path.suffix.lower()
     if suffix in TYPESCRIPT_FILE_EXTENSIONS or suffix in TSX_FILE_EXTENSIONS:
-        return _find_api_endpoints_ts(file_path, source)
+        endpoints = _find_api_endpoints_ts(file_path, source)
+    else:
+        endpoints = _find_api_endpoints_js(file_path, source)
 
-    return _find_api_endpoints_js(file_path, source)
+    return _apply_same_file_mounts(endpoints, source)
 
 
 def _find_api_endpoints_js(file_path: Path, source: str):
@@ -107,10 +131,13 @@ def _find_api_endpoints_js(file_path: Path, source: str):
                     else:
                         route = None
 
+                    route_object = callee.object.name if callee.object.type == "Identifier" else None
+
                     endpoints.append({
                         "type": "function",
                         "method": method_name.upper(),
                         "route": route,
+                        "route_object": route_object,
                         "start_line": node.loc.start.line,
                         "end_line": node.loc.end.line,
                         "file_path": str(file_path)
@@ -187,8 +214,10 @@ def _collect_decorators(node):
             if child.type == "decorator":
                 decorators.append(child)
     _gather(node)
+    # An exported class keeps its decorators on the export_statement wrapper,
+    # not on the class_declaration itself.
     parent = getattr(node, "parent", None)
-    if parent and getattr(parent, "type", "") == "decorated_definition":
+    if parent and getattr(parent, "type", "") == "export_statement":
         _gather(parent)
     return decorators
 
@@ -227,7 +256,77 @@ def _combine_paths(prefix, path):
     if not path_part.startswith("/"):
         path_part = "/" + path_part
     combined = re.sub(r"//+", "/", prefix_part.rstrip("/") + path_part)
+    # NestJS serves @Get() on @Controller('cats') at /cats, not /cats/.
+    if len(combined) > 1:
+        combined = combined.rstrip("/")
     return combined if combined.startswith("/") else "/" + combined
+
+
+def join_mount_prefix(prefix, route):
+    """Prepend a router mount prefix to a route without producing double slashes."""
+    if not prefix or route is None:
+        return route
+    combined = _combine_paths(prefix, route)
+    if len(combined) > 1 and combined.endswith("/"):
+        combined = combined.rstrip("/")
+    return combined
+
+
+def find_mount_prefixes(source: str):
+    """Map identifier -> mount prefix for every X.use('<prefix>', identifier) call in the source."""
+    mounts = {}
+    for match in USE_MOUNT_PATTERN.finditer(source):
+        path = match.group("path")
+        if not path.startswith("/"):
+            continue
+        mounts.setdefault(match.group("ident"), path)
+    return mounts
+
+
+def find_inline_require_mounts(source: str):
+    """
+    Map module string -> mount prefix for every X.use('<prefix>', require('<module>'))
+    call in the source. The router is required inline, so there is no identifier
+    to look up in the import map.
+    """
+    mounts = {}
+    for match in USE_INLINE_REQUIRE_MOUNT_PATTERN.finditer(source):
+        path = match.group("path")
+        if not path.startswith("/"):
+            continue
+        mounts.setdefault(match.group("module"), path)
+    return mounts
+
+
+def find_module_imports(source: str):
+    """Map identifier -> module string for require() and default import assignments."""
+    imports = {}
+    for pattern in (REQUIRE_ASSIGN_PATTERN, IMPORT_ASSIGN_PATTERN):
+        for match in pattern.finditer(source):
+            imports.setdefault(match.group("name"), match.group("module"))
+    return imports
+
+
+def _find_local_router_names(source: str):
+    return {match.group("name") for match in ROUTER_FACTORY_PATTERN.finditer(source)}
+
+
+def _apply_same_file_mounts(endpoints, source: str):
+    """Prefix routes registered on a router that is both created and mounted in this file."""
+    if not endpoints:
+        return endpoints
+    local_routers = _find_local_router_names(source)
+    if not local_routers:
+        return endpoints
+    mounts = find_mount_prefixes(source)
+    for endpoint in endpoints:
+        route_object = endpoint.get("route_object")
+        if route_object not in local_routers:
+            continue
+        prefix = mounts.get(route_object)
+        if prefix:
+            endpoint["route"] = join_mount_prefix(prefix, endpoint.get("route"))
+    return endpoints
 
 
 def _looks_like_route_object(name: str) -> bool:
@@ -313,6 +412,7 @@ def _extract_endpoint_from_ts_call(node, source_bytes, file_path: Path):
         "type": "function",
         "method": method_name.upper(),
         "route": route,
+        "route_object": route_object_name,
         "start_line": node.start_point[0] + 1,
         "end_line": node.end_point[0] + 1,
         "file_path": str(file_path),
@@ -335,12 +435,24 @@ def _extract_nest_endpoints(tree, source_bytes, file_path: Path):
         if controller_prefix is None:
             continue
 
-        for child in node.named_children:
-            if child.type not in {"method_definition", "public_field_definition"}:
+        class_body = next((c for c in node.named_children if c.type == "class_body"), None)
+        if class_body is None:
+            continue
+
+        # Method decorators are siblings of the method inside class_body, preceding it.
+        pending_decorators = []
+        for child in class_body.named_children:
+            if child.type == "decorator":
+                pending_decorators.append(child)
                 continue
+            if child.type not in {"method_definition", "public_field_definition"}:
+                pending_decorators = []
+                continue
+            method_decorators = pending_decorators + _collect_decorators(child)
+            pending_decorators = []
             method_http = None
             method_path = None
-            for decorator in _collect_decorators(child):
+            for decorator in method_decorators:
                 name, arg = _parse_decorator(decorator, source_bytes)
                 if not name:
                     continue
@@ -406,10 +518,3 @@ def _extract_nest_endpoints_regex(source: str, file_path: Path):
                 "file_path": str(file_path)
             })
     return endpoints
-
-
-# Example usage
-if __name__ == "__main__":
-    test_file = Path("/Users/ankits/My-Favourite-Playlist/server.js")  # path to Node.js file
-    results = find_api_endpoints_js(test_file)
-    print(json.dumps(results, indent=2))

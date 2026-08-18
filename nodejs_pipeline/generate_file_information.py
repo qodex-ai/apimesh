@@ -237,12 +237,3 @@ def process_file(filename, base_directory=None):
         'filename': filename,
         'elements': elements
     }
-
-if __name__ == "__main__":
-    filename = "/Users/ankits/My-Favourite-Playlist/server.js"
-    base_directory = "/Users/ankits/My-Favourite-Playlist"
-    if os.path.exists(filename):
-        result = process_file(filename, base_directory)
-        print(json.dumps(result, indent=2))
-    else:
-        print(f"File {filename} not found")
