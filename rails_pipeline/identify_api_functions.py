@@ -82,11 +82,11 @@ def _update_route_map(
     route_map: Dict[str, List[Dict]], routes_file: Path
 ) -> None:
     try:
-        source = routes_file.read_text(encoding="utf-8")
+        source = routes_file.read_bytes()
     except OSError:
         return
 
-    tree = parser.parse(source.encode("utf-8"))
+    tree = parser.parse(source)
     context = RouteContext()
     routes: List[Dict] = []
 
@@ -650,11 +650,11 @@ def _extract_controller_endpoints(
         return []
 
     try:
-        source = file_path.read_text(encoding="utf-8")
+        source = file_path.read_bytes()
     except OSError:
         return []
 
-    tree = parser.parse(source.encode("utf-8"))
+    tree = parser.parse(source)
     class_methods = _collect_controller_methods(tree.root_node, source, file_path)
 
     methods_by_name = {method["name"]: method for method in class_methods}
@@ -1044,5 +1044,6 @@ def _literal_text(node: Optional[Node], source: str) -> str:
     return text
 
 
-def _node_text(source: str, node: Node) -> str:
-    return source[node.start_byte : node.end_byte]
+def _node_text(source: bytes, node: Node) -> str:
+    # tree-sitter offsets are byte offsets, so slice the bytes and decode.
+    return source[node.start_byte : node.end_byte].decode("utf-8", "replace")
