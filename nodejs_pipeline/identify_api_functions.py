@@ -1,7 +1,7 @@
 from pathlib import Path
-import esprima
 import re
 from tree_sitter import Language, Parser
+import tree_sitter_javascript
 import tree_sitter_typescript
 from nodejs_pipeline.constants import (
     TYPESCRIPT_FILE_EXTENSIONS,
@@ -12,7 +12,9 @@ from nodejs_pipeline.constants import (
 API_METHODS = {"get", "post", "put", "delete", "patch", "options", "head", "all"}
 ROUTE_OBJECT_KEYWORDS = {"app", "router", "route", "api", "controller", "server"}
 ROUTE_OBJECT_SUFFIXES = ("router", "routes", "route", "app", "server", "controller", "api")
-OPTIONAL_CATCH_PATTERN = re.compile(r'catch\s*(\{)')
+# apiClient.get(url) and userService.get(id) read as route objects by prefix or
+# keyword but are HTTP clients and business services, never route registrations.
+ROUTE_OBJECT_EXCLUDED_SUFFIXES = ("client", "service")
 FALLBACK_ENDPOINT_PATTERN = re.compile(
     r'(?P<object>[A-Za-z_$][\w$]*)\s*\.\s*(?P<method>GET|POST|PUT|DELETE|PATCH|OPTIONS|HEAD|ALL)\s*\(\s*(?P<route>["\'].*?["\'])?',
     re.IGNORECASE | re.DOTALL
@@ -40,30 +42,13 @@ IMPORT_ASSIGN_PATTERN = re.compile(
     r'(?P<quote>[\'"`])(?P<module>[^\'"`]+)(?P=quote)'
 )
 
+JS_LANGUAGE = Language(tree_sitter_javascript.language())
 TS_LANGUAGE = Language(tree_sitter_typescript.language_typescript())
 TSX_LANGUAGE = Language(tree_sitter_typescript.language_tsx())
 
 
-def _parse_with_optional_catch_fallback(source, *, loc=True):
-    """
-    Attempt to parse JavaScript source. If the parser fails because of
-    optional catch binding syntax (catch { ... }), rewrite those blocks
-    to catch (__apimesh_err) { ... } and retry once.
-    """
-    try:
-        return esprima.parseModule(source, loc=loc)
-    except Exception as first_error:
-        patched_source, replaced = OPTIONAL_CATCH_PATTERN.subn('catch (__apimesh_err) {', source)
-        if not replaced:
-            raise first_error
-        try:
-            return esprima.parseModule(patched_source, loc=loc)
-        except Exception:
-            raise first_error
-
-
 def _extract_endpoints_with_regex(source: str, file_path: Path):
-    """Fallback endpoint detector when esprima cannot parse the file."""
+    """Last-resort endpoint detector when the grammar cannot parse the file."""
     endpoints = []
     for match in FALLBACK_ENDPOINT_PATTERN.finditer(source):
         method = match.group('method').upper()
@@ -76,8 +61,7 @@ def _extract_endpoints_with_regex(source: str, file_path: Path):
         start_line = source.count('\n', 0, start) + 1
         end_line = source.count('\n', 0, end) + 1
         obj = match.group('object') or ""
-        low = obj.lower()
-        if not (low in ROUTE_OBJECT_KEYWORDS or any(low.endswith(suf) for suf in ROUTE_OBJECT_SUFFIXES) or low.startswith(('app', 'api'))):
+        if not _looks_like_route_object(obj):
             continue
         endpoints.append({
             "type": "function",
@@ -97,64 +81,9 @@ def find_api_endpoints_js(file_path: Path):
     except Exception:
         return []
 
-    suffix = file_path.suffix.lower()
-    if suffix in TYPESCRIPT_FILE_EXTENSIONS or suffix in TSX_FILE_EXTENSIONS:
-        endpoints = _find_api_endpoints_ts(file_path, source)
-    else:
-        endpoints = _find_api_endpoints_js(file_path, source)
+    endpoints = _find_api_endpoints_tree_sitter(file_path, source)
 
     return _apply_same_file_mounts(endpoints, source)
-
-
-def _find_api_endpoints_js(file_path: Path, source: str):
-    try:
-        tree = _parse_with_optional_catch_fallback(source, loc=True)
-    except Exception as e:
-        return _extract_endpoints_with_regex(source, file_path)
-
-    endpoints = []
-
-    def extract_call_expression(node, parent_obj=None):
-        """Extract API endpoints from CallExpressions like app.get('/users', handler)"""
-        if node.type == "CallExpression":
-            callee = node.callee
-
-            # Handle app.get(...) or router.post(...)
-            if callee.type == "MemberExpression" and callee.property.type == "Identifier":
-                method_name = callee.property.name.lower()
-
-                if method_name in API_METHODS and node.arguments:
-                    # Check first argument (the route string)
-                    first_arg = node.arguments[0]
-                    if first_arg.type == "Literal" and isinstance(first_arg.value, str):
-                        route = first_arg.value
-                    else:
-                        route = None
-
-                    route_object = callee.object.name if callee.object.type == "Identifier" else None
-
-                    endpoints.append({
-                        "type": "function",
-                        "method": method_name.upper(),
-                        "route": route,
-                        "route_object": route_object,
-                        "start_line": node.loc.start.line,
-                        "end_line": node.loc.end.line,
-                        "file_path": str(file_path)
-                    })
-
-        # Recurse into child nodes
-        for child_name, child in node.__dict__.items():
-            if isinstance(child, list):
-                for c in child:
-                    if hasattr(c, 'type'):
-                        extract_call_expression(c, node)
-            elif hasattr(child, 'type'):
-                extract_call_expression(child, node)
-
-    extract_call_expression(tree)
-
-    return endpoints
 
 
 def _walk_tree(root):
@@ -272,20 +201,27 @@ def join_mount_prefix(prefix, route):
     return combined
 
 
+def _record_mount(mounts: dict, key: str, path: str) -> None:
+    """One router may be mounted under several prefixes, so every key holds a list."""
+    bucket = mounts.setdefault(key, [])
+    if path not in bucket:
+        bucket.append(path)
+
+
 def find_mount_prefixes(source: str):
-    """Map identifier -> mount prefix for every X.use('<prefix>', identifier) call in the source."""
+    """Map identifier -> mount prefixes for every X.use('<prefix>', identifier) call in the source."""
     mounts = {}
     for match in USE_MOUNT_PATTERN.finditer(source):
         path = match.group("path")
         if not path.startswith("/"):
             continue
-        mounts.setdefault(match.group("ident"), path)
+        _record_mount(mounts, match.group("ident"), path)
     return mounts
 
 
 def find_inline_require_mounts(source: str):
     """
-    Map module string -> mount prefix for every X.use('<prefix>', require('<module>'))
+    Map module string -> mount prefixes for every X.use('<prefix>', require('<module>'))
     call in the source. The router is required inline, so there is no identifier
     to look up in the import map.
     """
@@ -294,7 +230,7 @@ def find_inline_require_mounts(source: str):
         path = match.group("path")
         if not path.startswith("/"):
             continue
-        mounts.setdefault(match.group("module"), path)
+        _record_mount(mounts, match.group("module"), path)
     return mounts
 
 
@@ -312,43 +248,54 @@ def _find_local_router_names(source: str):
 
 
 def _apply_same_file_mounts(endpoints, source: str):
-    """Prefix routes registered on a router that is both created and mounted in this file."""
+    """
+    Prefix routes registered on a router that is both created and mounted in
+    this file. A router mounted under several prefixes yields one endpoint per
+    mount, since each one is a real, separately reachable path.
+    """
     if not endpoints:
         return endpoints
     local_routers = _find_local_router_names(source)
     if not local_routers:
         return endpoints
     mounts = find_mount_prefixes(source)
+    mounted_endpoints = []
     for endpoint in endpoints:
         route_object = endpoint.get("route_object")
-        if route_object not in local_routers:
+        prefixes = mounts.get(route_object) if route_object in local_routers else None
+        if not prefixes:
+            mounted_endpoints.append(endpoint)
             continue
-        prefix = mounts.get(route_object)
-        if prefix:
-            endpoint["route"] = join_mount_prefix(prefix, endpoint.get("route"))
-    return endpoints
+        for prefix in prefixes:
+            mounted = dict(endpoint)
+            mounted["route"] = join_mount_prefix(prefix, endpoint.get("route"))
+            mounted_endpoints.append(mounted)
+    return mounted_endpoints
 
 
 def _looks_like_route_object(name: str) -> bool:
     low = name.lower()
+    if low.endswith(ROUTE_OBJECT_EXCLUDED_SUFFIXES):
+        return False
     return low in ROUTE_OBJECT_KEYWORDS or any(low.endswith(suf) for suf in ROUTE_OBJECT_SUFFIXES) or low.startswith(("app", "api"))
 
 
-def _select_ts_language(file_path: Path):
+def _select_language(file_path: Path):
     suffix = file_path.suffix.lower()
     if suffix in TSX_FILE_EXTENSIONS and TSX_LANGUAGE:
         return TSX_LANGUAGE
     if suffix in TYPESCRIPT_FILE_EXTENSIONS and TS_LANGUAGE:
         return TS_LANGUAGE
-    return None
+    return JS_LANGUAGE
 
 
-def _find_api_endpoints_ts(file_path: Path, source: str):
-    language = _select_ts_language(file_path)
-    if not language:
-        return _extract_endpoints_with_regex(source, file_path)
-
-    parser = Parser(language)
+def _find_api_endpoints_tree_sitter(file_path: Path, source: str):
+    """
+    Extract endpoints from a JS/TS/TSX file with the matching tree-sitter
+    grammar. The regex extractors below only run when the grammar produced
+    nothing usable, so modern syntax never costs the accuracy of a real parse.
+    """
+    parser = Parser(_select_language(file_path))
     try:
         tree = parser.parse(source.encode('utf-8'))
     except Exception:
@@ -356,33 +303,38 @@ def _find_api_endpoints_ts(file_path: Path, source: str):
 
     endpoints = []
     source_bytes = source.encode('utf-8')
+    # A name the file itself assigns express.Router() to is a router whatever it
+    # is called, so it passes the name-shape filter on the declaration instead.
+    local_routers = _find_local_router_names(source)
     seen = set()
-    for endpoint in _extract_nest_endpoints(tree, source_bytes, file_path):
+
+    def _add(endpoint):
         key = (endpoint["method"], endpoint.get("route"), endpoint.get("start_line"))
         if key not in seen:
             endpoints.append(endpoint)
             seen.add(key)
 
+    for endpoint in _extract_nest_endpoints(tree, source_bytes, file_path):
+        _add(endpoint)
+
     for node in _walk_tree(tree.root_node):
         if node.type != "call_expression":
             continue
-        endpoint = _extract_endpoint_from_ts_call(node, source_bytes, file_path)
+        endpoint = _extract_endpoint_from_call(node, source_bytes, file_path, local_routers)
         if endpoint:
-            key = (endpoint["method"], endpoint.get("route"), endpoint.get("start_line"))
-            if key not in seen:
-                endpoints.append(endpoint)
-                seen.add(key)
+            _add(endpoint)
 
     if not endpoints:
         for endpoint in _extract_nest_endpoints_regex(source, file_path):
-            key = (endpoint["method"], endpoint.get("route"), endpoint.get("start_line"))
-            if key not in seen:
-                endpoints.append(endpoint)
-                seen.add(key)
+            _add(endpoint)
+
+    if not endpoints and tree.root_node.has_error:
+        for endpoint in _extract_endpoints_with_regex(source, file_path):
+            _add(endpoint)
     return endpoints
 
 
-def _extract_endpoint_from_ts_call(node, source_bytes, file_path: Path):
+def _extract_endpoint_from_call(node, source_bytes, file_path: Path, local_routers=()):
     func_node = node.child_by_field_name("function")
     if not func_node or func_node.type != "member_expression":
         return None
@@ -394,7 +346,7 @@ def _extract_endpoint_from_ts_call(node, source_bytes, file_path: Path):
     if method_name not in API_METHODS:
         return None
     route_object_name = _node_text(object_node, source_bytes) if object_node else ""
-    if not _looks_like_route_object(route_object_name):
+    if route_object_name not in local_routers and not _looks_like_route_object(route_object_name):
         return None
 
     route = None

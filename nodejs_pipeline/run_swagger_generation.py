@@ -1,4 +1,5 @@
 import os, json, re
+import hashlib
 import shutil
 import datetime
 import time
@@ -36,6 +37,11 @@ config = Configurations()
 
 # Keys of an OpenAPI path item that hold an operation body.
 HTTP_VERB_KEYS = {"get", "post", "put", "delete", "patch", "options", "head", "trace"}
+
+# An express route parameter name: ':name'. The inline regex constraint and the
+# optional marker that may follow it are not part of the name, and the
+# constraint can nest parentheses, so it is consumed separately.
+EXPRESS_PARAM_PATTERN = re.compile(r":([A-Za-z_$][A-Za-z0-9_$]*)")
 
 # One LLM call documents at most this many endpoints of the same source file.
 MAX_ENDPOINTS_PER_BATCH = 10
@@ -220,8 +226,13 @@ def _build_api_index(directory_path: str, endpoints: list) -> dict:
             "file_path": abs_file_path,
             "imports": _dedupe_imports(imports),
         }
-        api_index.setdefault(key, {"files": []})
-        _merge_file_entry(api_index[key]["files"], entry)
+        index_entry = api_index.setdefault(key, {"files": []})
+        # The hash of the prompt this endpoint was generated from, so the next
+        # run can tell an untouched endpoint from one whose context moved.
+        context_hash = endpoint.get("context_hash")
+        if context_hash:
+            index_entry["context_hash"] = context_hash
+        _merge_file_entry(index_entry["files"], entry)
     return api_index
 
 
@@ -516,6 +527,26 @@ def _apply_context_budget(handler_sections: list, shared_blocks: list, file_labe
     return kept_blocks, sections
 
 
+def _context_hash(context_code_blocks, method_definition_code_block) -> str:
+    """
+    Fingerprint of the prompt text one endpoint carries: its capped handler body
+    followed by its deduped context blocks, in the order the prompt sends them.
+    The endpoint label and the rest of the batch are deliberately left out, so
+    the value can be recomputed for a single endpoint before the batches are
+    packed, which is what the incremental skip does.
+    """
+    body, _ = _truncate_to_tokens(_block_text(method_definition_code_block), MAX_HANDLER_TOKENS)
+    seen = set()
+    blocks = []
+    for block in context_code_blocks:
+        text = _block_text(block)
+        if not text.strip() or text in seen:
+            continue
+        seen.add(text)
+        blocks.append(text)
+    return hashlib.sha256("\n\n".join([body] + blocks).encode("utf-8")).hexdigest()
+
+
 def _collect_batch_context(directory_path: str, batch: list):
     """
     Read the context of every endpoint in the batch. An endpoint whose context
@@ -536,6 +567,9 @@ def _collect_batch_context(directory_path: str, batch: list):
             failures.append((method_info, ex))
             continue
         label = _endpoint_label(method_info)
+        method_info["context_hash"] = _context_hash(
+            context_code_blocks, method_definition_code_block
+        )
         usable_jobs.append(method_info)
         endpoint_lines.append(label)
         handler_sections.append((f"{label}:", _block_text(method_definition_code_block)))
@@ -559,6 +593,9 @@ def _generate_endpoint_fragment(directory_path: str, method_info: dict):
     """The per endpoint call, with the same dedupe and token budget as a batch."""
     context_code_blocks, method_definition_code_block = provide_context_codeblock(
         directory_path, method_info
+    )
+    method_info["context_hash"] = _context_hash(
+        context_code_blocks, method_definition_code_block
     )
     kept_blocks, sections = _apply_context_budget(
         [("", _block_text(method_definition_code_block))],
@@ -678,6 +715,52 @@ def _apply_host(swagger, host):
     return swagger
 
 
+def _context_is_unchanged(directory_path: str, existing_entry, jobs) -> bool:
+    """
+    True when the prompt this endpoint would be regenerated from is the one its
+    stored hash was taken over, so the spec already holds the answer. An entry
+    without a stored hash always regenerates, and so does one whose context
+    cannot be read.
+    """
+    stored_hash = existing_entry.get("context_hash") if isinstance(existing_entry, dict) else None
+    if not stored_hash:
+        return False
+    for method_info in jobs:
+        try:
+            context_code_blocks, method_definition_code_block = provide_context_codeblock(
+                directory_path, method_info
+            )
+        except Exception:
+            return False
+        if _context_hash(context_code_blocks, method_definition_code_block) != stored_hash:
+            return False
+    return True
+
+
+def _rebuild_unchanged_index_entries(
+    directory_path: str, keys, endpoint_map, existing_index, updated_index
+) -> None:
+    """Rebuild the index entries of the endpoints that skipped on their hash.
+
+    Their spec operation is right, but the dependency edges the old entry stores
+    can be stale: a helper that moved into a file with identical text leaves the
+    prompt text, and so the hash, untouched while the import moved with it.
+    Keeping the old entry would point the next run's dependency hop at the file
+    the helper left, and an edit to the file it moved to would never mark the
+    endpoint dirty again. The entry is taken from the current extraction, and
+    carries over the hash that matched, since nothing was regenerated.
+    """
+    for key in keys:
+        rebuilt = _build_api_index(directory_path, endpoint_map.get(key, [])).get(key)
+        if not rebuilt:
+            continue
+        existing_entry = existing_index.get(key)
+        stored = existing_entry.get("context_hash") if isinstance(existing_entry, dict) else None
+        if stored:
+            rebuilt["context_hash"] = stored
+        updated_index[key] = rebuilt
+
+
 def _maybe_incremental_update(directory_path: str, endpoint_jobs: list, host=None):
     existing_swagger = _load_existing_swagger()
     existing_index = _load_existing_api_index()
@@ -706,17 +789,42 @@ def _maybe_incremental_update(directory_path: str, endpoint_jobs: list, host=Non
             changed_keys.add(key)
 
     keys_to_update = added_keys | changed_keys
+    # Past the halfway mark the incremental pass is doing the whole run's work
+    # while carrying a spec and an index it has to patch around, so the caller
+    # regenerates from scratch instead.
+    if new_keys and len(keys_to_update) * 2 > len(new_keys):
+        print(
+            f"apimesh: {len(keys_to_update)} of {len(new_keys)} endpoints affected, "
+            "running a full regeneration"
+        )
+        return None
     updated_index = dict(existing_index)
 
     for key in removed_keys:
         updated_index.pop(key, None)
         _remove_endpoint_from_swagger(existing_swagger, key)
 
-    # Every dirty endpoint goes through the batch path in one pass: generating
-    # them key by key put the endpoints of one changed file in a call each.
+    # A file changing does not mean the prompt for every endpoint in it changed:
+    # an endpoint whose context still hashes to the stored value keeps the spec
+    # operation and the index entry it already has.
+    # Every dirty endpoint left goes through the batch path in one pass:
+    # generating them key by key put the endpoints of one changed file in a
+    # call each.
     jobs_to_update = []
+    unchanged_keys = []
     for key in keys_to_update:
-        jobs_to_update.extend(endpoint_map.get(key, []))
+        jobs = endpoint_map.get(key, [])
+        if jobs and _context_is_unchanged(directory_path, existing_index.get(key), jobs):
+            unchanged_keys.append(key)
+            continue
+        jobs_to_update.extend(jobs)
+    if unchanged_keys:
+        print(
+            f"apimesh: skipped {len(unchanged_keys)} unchanged endpoints (context hash match)"
+        )
+    _rebuild_unchanged_index_entries(
+        directory_path, unchanged_keys, endpoint_map, existing_index, updated_index
+    )
     succeeded, failed = _update_swagger_for_endpoints(
         existing_swagger, directory_path, jobs_to_update
     )
@@ -743,25 +851,77 @@ def _maybe_incremental_update(directory_path: str, endpoint_jobs: list, host=Non
     _write_api_index(updated_index)
     return _apply_host(existing_swagger, host)
 
+def _constraint_end(route: str, start: int):
+    """
+    Index just past the inline regex constraint that opens at start, counting
+    nested parentheses so '(\\d{2}(?:-\\d{2})?)' is consumed whole. None when the
+    parentheses never balance.
+    """
+    depth = 0
+    index = start
+    while index < len(route):
+        char = route[index]
+        if char == "\\":
+            # An escaped character never opens or closes the constraint.
+            index += 2
+            continue
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return index + 1
+        index += 1
+    return None
+
+
 def _normalize_route(route: str):
     if not route:
         return route
-    # Convert Express-style :param to OpenAPI {param}
-    return re.sub(r":([A-Za-z_][\w-]*)", r"{\1}", route)
+    # Convert Express-style :param to OpenAPI {param}. An express param name
+    # stops at the first non-word character, so '/:from-:to' is two params, and
+    # the optional marker and an inline regex constraint are not part of the
+    # name: '/u/:id(\\d+)?' is the same parameter as '/u/:id'. A constraint whose
+    # parentheses never balance is left exactly as written, together with the
+    # parameter it belongs to, rather than rewritten into a mangled path.
+    parts = []
+    cursor = 0
+    for match in EXPRESS_PARAM_PATTERN.finditer(route):
+        if match.start() < cursor:
+            # Inside a constraint already consumed, so not a parameter.
+            continue
+        parts.append(route[cursor : match.start()])
+        index = match.end()
+        if index < len(route) and route[index] == "(":
+            end = _constraint_end(route, index)
+            if end is None:
+                parts.append(route[match.start() : index])
+                cursor = index
+                continue
+            index = end
+        if index < len(route) and route[index] == "?":
+            index += 1
+        parts.append("{" + match.group(1) + "}")
+        cursor = index
+    parts.append(route[cursor:])
+    return "".join(parts)
 
 
 def _record_mount_prefix(prefixes: dict, module_name: str, base_directory: str, prefix: str) -> None:
     origin = get_module_origin(module_name, base_directory)
     if not origin or origin == "<node_builtin_or_external>":
         return
-    prefixes.setdefault(os.path.abspath(origin), prefix)
+    bucket = prefixes.setdefault(os.path.abspath(origin), [])
+    if prefix not in bucket:
+        bucket.append(prefix)
 
 
 def _build_mount_prefix_map(directory_path: str) -> dict:
     """
-    Map an absolute file path to the mount prefix its router is mounted under
+    Map an absolute file path to the mount prefixes its router is mounted under
     elsewhere, e.g. app.js doing app.use('/api/v1', require('./routes/users'))
-    gives routes/users.js the prefix /api/v1. One level only.
+    gives routes/users.js the prefix /api/v1. A router mounted twice keeps both
+    prefixes. One level only.
     """
     prefixes = {}
     for node_file in find_node_files(directory_path):
@@ -775,15 +935,17 @@ def _build_mount_prefix_map(directory_path: str) -> dict:
             continue
         imports = find_module_imports(source)
         base_directory = os.path.dirname(os.path.abspath(str(node_file)))
-        for identifier, prefix in mounts.items():
+        for identifier, identifier_prefixes in mounts.items():
             module_name = imports.get(identifier)
             if not module_name:
                 continue
-            _record_mount_prefix(prefixes, module_name, base_directory, prefix)
+            for prefix in identifier_prefixes:
+                _record_mount_prefix(prefixes, module_name, base_directory, prefix)
         # app.use('/api', require('./routes/users')) has no identifier to resolve,
         # the module string is right there in the mount call.
-        for module_name, prefix in inline_mounts.items():
-            _record_mount_prefix(prefixes, module_name, base_directory, prefix)
+        for module_name, module_prefixes in inline_mounts.items():
+            for prefix in module_prefixes:
+                _record_mount_prefix(prefixes, module_name, base_directory, prefix)
     return prefixes
 
 
@@ -817,10 +979,15 @@ def run_swagger_generation(host):
             py_file = Path(file)
             eps = find_api_endpoints_js(py_file)
             if eps:
-                file_prefix = mount_prefixes.get(os.path.abspath(file))
-                if file_prefix:
-                    for endpoint in eps:
-                        endpoint['route'] = join_mount_prefix(file_prefix, endpoint.get('route'))
+                file_prefixes = mount_prefixes.get(os.path.abspath(file))
+                if file_prefixes:
+                    # One endpoint per mount: a router mounted at /v1 and /v2
+                    # serves both path sets, and both belong in the spec.
+                    eps = [
+                        dict(endpoint, route=join_mount_prefix(prefix, endpoint.get('route')))
+                        for endpoint in eps
+                        for prefix in file_prefixes
+                    ]
                 all_endpoints.extend(eps)
                 all_endpoints_dict[file] = all_endpoints
         swagger = {
