@@ -42,6 +42,10 @@ class UserConfigurations:
     def save_user_config(config):
         with open(config_file, "w") as file:
             json.dump(config, file, indent=4)
+        try:
+            os.chmod(config_file, 0o600)
+        except OSError:
+            pass
 
     @staticmethod
     def _sanitize_cli_value(value):
@@ -170,10 +174,11 @@ class UserConfigurations:
             print("    Set the OPENAI_API_KEY environment variable, pass the key as the first CLI")
             print("    argument (--openai-api-key when using run.sh or docker), or run interactively.")
             sys.exit(1)
+        # Ignore protection lands before the key touches disk.
+        gitignore_path = self._ensure_config_gitignored()
         user_config["openai_api_key"] = resolved_openai_api_key
         self.save_user_config(user_config)
         print(f"  ✓ API Key: {self._mask_secret(resolved_openai_api_key)}")
-        gitignore_path = self._ensure_config_gitignored()
         if gitignore_path:
             print(f"  ✓ Key stored in {config_file} and gitignored via {gitignore_path}")
 

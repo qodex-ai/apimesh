@@ -63,6 +63,9 @@ class SwaggerGeneration:
 
             for future in as_completed(future_to_endpoint):
                 endpoint = future_to_endpoint[future]
+                if not isinstance(endpoint, dict):
+                    print(f"\nskipped malformed endpoint entry: {endpoint!r}")
+                    continue
                 path = endpoint.get("path", "")
                 method = str(endpoint.get("method", "")).lower()
                 try:

@@ -5,6 +5,7 @@ the scanned repo, the per-endpoint error boundary, fragment re-keying, and the
 guarantee that resolving an import never executes the scanned repo's code.
 """
 
+import json
 import os
 from pathlib import Path
 
@@ -806,3 +807,76 @@ def test_incremental_all_fail_keeps_spec_and_persists_retry_state(tmp_path, monk
     assert result["paths"] == {"/orders": {"post": {"summary": "keep me"}}}
     assert "GET /users" not in written
     assert "keeping the previous spec" in capsys.readouterr().out
+
+
+def test_legacy_route_spellings_are_canonicalized_on_load(tmp_path, monkeypatch):
+    """A spec and index written before routes were canonicalized must load in
+    the canonical spelling, otherwise the first run after the upgrade reads
+    every endpoint as removed and re-added and regenerates all of them."""
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    swagger_path = out_dir / "swagger.json"
+    swagger_path.write_text(
+        json.dumps(
+            {
+                "info": {"x-commit-reference": "old"},
+                "paths": {
+                    "/users/<int:pk>": {
+                        "get": {"summary": "stale"},
+                        "delete": {"summary": "only on the legacy key"},
+                    },
+                    "/users/{pk}": {"get": {"summary": "fresh"}},
+                    "/health": {"get": {"summary": "untouched"}},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (out_dir / "api_index.json").write_text(
+        json.dumps(
+            {
+                "GET /users/<int:pk>": {"files": [{"file_path": "/repo/legacy.py"}]},
+                "GET /users/{pk}": {"files": [{"file_path": "/repo/app.py"}]},
+                "POST /users/<int:pk>": {"files": []},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("APIMESH_OUTPUT_FILEPATH", str(swagger_path))
+
+    # The canonical key wins, its legacy twin only contributes the missing verb.
+    assert rsg._load_existing_swagger()["paths"] == {
+        "/users/{pk}": {
+            "get": {"summary": "fresh"},
+            "delete": {"summary": "only on the legacy key"},
+        },
+        "/health": {"get": {"summary": "untouched"}},
+    }
+
+    index = rsg._load_existing_api_index()
+    assert set(index) == {"GET /users/{pk}", "POST /users/{pk}"}
+    assert index["GET /users/{pk}"]["files"][0]["file_path"] == "/repo/app.py"
+
+
+def test_incremental_no_change_return_carries_the_new_host(monkeypatch):
+    """--api-host has to reach the spec on the incremental path too, or a run
+    that changes the host keeps publishing the previous server url."""
+    existing_swagger = {
+        "info": {"x-commit-reference": "old"},
+        "servers": [{"url": "https://old.example.com"}],
+        "paths": {"/users": {"get": {"summary": "old"}}},
+    }
+    monkeypatch.setattr(rsg, "_load_existing_swagger", lambda: existing_swagger)
+    monkeypatch.setattr(rsg, "_load_existing_api_index", lambda: {"GET /users": {"files": []}})
+    monkeypatch.setattr(rsg, "get_changed_files_since", lambda *args, **kwargs: set())
+    monkeypatch.setattr(
+        rsg,
+        "_swagger_fragment_for_endpoint",
+        lambda *args, **kwargs: pytest.fail("nothing changed, nothing may be generated"),
+    )
+
+    result = rsg._maybe_incremental_update(
+        "/repo", [_job("/users", "GET")], "https://new.example.com"
+    )
+    assert result["servers"] == [{"url": "https://new.example.com"}]
+    assert result["paths"] == {"/users": {"get": {"summary": "old"}}}
