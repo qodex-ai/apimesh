@@ -16,12 +16,14 @@ _MODULE_NAME_CACHE: Dict[str, Optional[str]] = {}
 def parse_file(filename: str):
     with open(filename, "r", encoding="utf-8") as f:
         code = f.read()
-    tree = parser.parse(code.encode("utf-8"))
+    code = code.encode("utf-8")
+    tree = parser.parse(code)
     return tree, code
 
 
-def _node_text(source: str, node) -> str:
-    return source[node.start_byte : node.end_byte]
+def _node_text(source: bytes, node) -> str:
+    # tree-sitter offsets are byte offsets, so slice the bytes and decode.
+    return source[node.start_byte : node.end_byte].decode("utf-8", "replace")
 
 
 def _strip_quotes(value: Optional[str]) -> str:
