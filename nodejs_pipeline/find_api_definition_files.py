@@ -5,9 +5,11 @@ from nodejs_pipeline.constants import SUPPORTED_NODE_FILE_EXTENSIONS
 
 config = Configurations()
 
+# '@module' and '@api' are ordinary JSDoc tags, so they selected files that
+# define no endpoint at all. Only decorator names that mark a route survive.
 API_DECORATOR_NAMES = {
     'route', 'get', 'post', 'put', 'delete', 'patch', 'options', 'head', 'all',
-    'api', 'endpoint', 'router', 'controller', 'module', 'middleware', 'rest'
+    'endpoint', 'router', 'controller', 'middleware', 'rest'
 }
 
 HTTP_METHODS = ['get', 'post', 'put', 'delete', 'patch', 'options', 'head']
