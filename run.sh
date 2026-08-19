@@ -135,7 +135,6 @@ pip3 install \
   "tree-sitter-ruby==0.23.1" \
   "tree-sitter-go==0.25.0" \
   "tree-sitter-typescript==0.23.2" \
-  "esprima==4.0.1" \
   "requests"
 echo "Dependencies installed"
 echo ""
