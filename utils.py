@@ -265,10 +265,19 @@ def get_changed_files_since(
             changed.add(os.path.abspath(os.path.join(repo_path, line)))
         return True
 
-    ok = _collect(["git", "diff", "--name-only", f"{base_commit}...HEAD"])
+    base_ok = _collect(["git", "diff", "--name-only", f"{base_commit}...HEAD"])
+    if not base_ok:
+        # A shallow or rebased checkout cannot diff against the base commit.
+        # A partial set here would stamp stale output as current, so force a
+        # full regeneration instead.
+        return None
+    ok = base_ok
     if include_uncommitted:
         ok = _collect(["git", "diff", "--name-only"]) and ok
         ok = _collect(["git", "diff", "--name-only", "--cached"]) and ok
+        # Untracked files are invisible to every diff form above, yet a brand
+        # new route file is exactly what an incremental run must notice.
+        ok = _collect(["git", "ls-files", "--others", "--exclude-standard"]) and ok
     if not ok and not changed:
         return None
     return changed

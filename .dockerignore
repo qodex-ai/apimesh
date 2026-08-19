@@ -44,7 +44,15 @@ htmlcov/
 # User config (will be generated)
 .qodexai/
 
-# Generated swagger files (users will generate their own)
+# Generated output (users will generate their own)
 swagger.json
-*.json
+api_index.json
+config.json
+apimesh/
+qodex_file_information/
+
+# Repo assets not needed in the image
+img.png
+tests/
+.github/
 

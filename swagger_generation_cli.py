@@ -1,11 +1,8 @@
 import argparse
-import json
 import os
 import sys
 import time
 import traceback
-
-import requests
 
 from user_config import UserConfigurations
 from swagger_generator import SwaggerGeneration
@@ -57,14 +54,8 @@ class RunSwagger:
             print("Fallback to old procedure")
         return swagger
 
-    def _resolve_ai_chat_id(self, ai_chat_id):
-        candidate = (ai_chat_id or "").strip()
-        if candidate and candidate.lower() != "null":
-            return candidate
-        return self.user_config.get("ai_chat_id", "null")
 
     def run(self, ai_chat_id=None):
-        resolved_ai_chat_id = self._resolve_ai_chat_id(ai_chat_id if ai_chat_id is not None else self.ai_chat_id)
         telemetry = self.telemetry
         run_id = telemetry.new_run_id()
         t0 = time.time()
@@ -143,7 +134,7 @@ class RunSwagger:
 
             with telemetry.stage(run_id, "render_html"):
                 output_filepath = get_output_filepath()
-                self.swagger_generator.save_swagger_json(swagger, output_filepath)
+                html_ok = self.swagger_generator.save_swagger_json(swagger, output_filepath)
 
             telemetry.capture("apimesh_run_completed", {
                 "run_id": run_id,
@@ -158,36 +149,7 @@ class RunSwagger:
                 "error_type": type(e).__name__,
             })
             raise
-        #self.upload_swagger_to_qodex(resolved_ai_chat_id)
-        return
-
-
-    def upload_swagger_to_qodex(self, ai_chat_id):
-        qodex_api_key = self.user_config['qodex_api_key']
-        if qodex_api_key:
-            print("Uploading swagger to Qodex.AI")
-            url = "https://api.app.qodex.ai/api/v1/collection_imports/create_with_json"
-            output_filepath = get_output_filepath()
-            with open(output_filepath, "r") as file:
-                swagger_doc = json.load(file)
-            payload = {
-                "api_key": qodex_api_key,
-                "swagger_doc": swagger_doc,
-                "ai_chat_id": ai_chat_id
-            }
-            response = requests.post(url, json=payload)
-
-            # Check the response
-            if response.status_code == 200 or response.status_code == 201:
-                print("Success:", response.json())  # Or response.text for plain text responses
-                print("Swagger successfully uploaded to Qodex AI. Please refresh your tab.")
-                print("We highly recommend you to review the apis before generating test scenarios.")
-                if str(ai_chat_id) != 'null':
-                    print("Open the following link in your browser or refresh the existing open page to continue further")
-                    print(f"https://app.qodex.ai/ai-agent?chatId={ai_chat_id}")
-            else:
-                print(f"Failed with status code {response.status_code}: {response.text}")
-        return
+        return html_ok
 
 
 def build_arg_parser():
@@ -242,7 +204,7 @@ if __name__ == "__main__":
         print("Cleared the cached framework, it will be detected again for this run.")
 
     try:
-        RunSwagger(
+        run_result = RunSwagger(
             args.project_api_key,
             args.openai_api_key,
             args.ai_chat_id,
@@ -253,3 +215,8 @@ if __name__ == "__main__":
     except NoEndpointsFound:
         # Message already printed, no traceback needed for an empty result.
         sys.exit(1)
+    else:
+        if run_result is False:
+            # The spec was written but the requested HTML viewer failed.
+            # Exit 2 tells a caller the run partially succeeded.
+            sys.exit(2)

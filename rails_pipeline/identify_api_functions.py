@@ -6,18 +6,48 @@ from tree_sitter import Language, Node, Parser
 import tree_sitter_ruby
 
 HTTP_METHODS = {"get", "post", "put", "patch", "delete"}
-REST_ACTION_ORDER = [
-    "index",
-    "create",
-    "new",
-    "show",
-    "edit",
-    "update",
-    "destroy",
-]
+
+# Hash keys a verb call carries as options, so anything else keyed to a
+# "controller#action" value is the route path itself.
+ROUTE_OPTION_KEYS = {
+    "to",
+    "via",
+    "as",
+    "on",
+    "constraints",
+    "defaults",
+    "format",
+    "path",
+    "module",
+    "only",
+    "except",
+    "controller",
+    "action",
+    "shallow",
+    "concerns",
+    "param",
+    "path_names",
+    "anchor",
+}
 
 RUBY_LANGUAGE = Language(tree_sitter_ruby.language())
 parser = Parser(RUBY_LANGUAGE)
+
+
+def is_route_file(file_path) -> bool:
+    """
+    config/routes.rb plus the split route files Rails' `draw(:name)` loads out
+    of config/routes/.
+    """
+    parts = Path(file_path).as_posix().split("/")
+    if len(parts) >= 2 and parts[-2] == "config" and parts[-1] == "routes.rb":
+        return True
+    return (
+        len(parts) >= 3
+        and parts[-3] == "config"
+        and parts[-2] == "routes"
+        and parts[-1].endswith(".rb")
+    )
 
 
 def _iter_block_children(block_node: Optional[Node]):
@@ -53,11 +83,15 @@ class RouteContext:
     path_prefix: str = ""
     controller_prefix: str = ""
     resource_stack: List[ResourceEntry] = field(default_factory=list)
+    # shallow: true is inherited by every resource nested below it.
+    shallow: bool = False
 
     def with_namespace(self, namespace: str) -> "RouteContext":
         new_prefix = _join_paths(self.path_prefix, namespace)
         new_controller = _join_controllers(self.controller_prefix, namespace)
-        return RouteContext(new_prefix, new_controller, list(self.resource_stack))
+        return RouteContext(
+            new_prefix, new_controller, list(self.resource_stack), self.shallow
+        )
 
     def with_scope(self, path: Optional[str], module: Optional[str]) -> "RouteContext":
         new_prefix = self.path_prefix
@@ -66,16 +100,24 @@ class RouteContext:
             new_prefix = _join_paths(new_prefix, path)
         if module:
             new_controller = _join_controllers(new_controller, module)
-        return RouteContext(new_prefix, new_controller, list(self.resource_stack))
+        return RouteContext(
+            new_prefix, new_controller, list(self.resource_stack), self.shallow
+        )
 
 
 def find_api_endpoints(
-    file_path: Path, repo_root: str, route_map: Dict[str, List[Dict]]
+    file_path: Path,
+    repo_root: str,
+    route_map: Dict[str, List[Dict]],
+    class_index: Optional[Dict[str, Dict]] = None,
+    dropped_routes: Optional[List[str]] = None,
 ) -> List[Dict]:
-    if file_path.as_posix().endswith("config/routes.rb"):
+    if is_route_file(file_path):
         _update_route_map(route_map, file_path)
         return []
-    return _extract_controller_endpoints(file_path, repo_root, route_map)
+    return _extract_controller_endpoints(
+        file_path, repo_root, route_map, class_index, dropped_routes
+    )
 
 
 def _update_route_map(
@@ -89,8 +131,9 @@ def _update_route_map(
     tree = parser.parse(source)
     context = RouteContext()
     routes: List[Dict] = []
+    concerns: Dict[str, Node] = {}
 
-    _walk_routes(tree.root_node, source, context, routes)
+    _walk_routes(tree.root_node, source, context, routes, concerns)
 
     grouped: Dict[str, List[Dict]] = {}
     for route in routes:
@@ -103,29 +146,35 @@ def _update_route_map(
         route_map.setdefault(controller, []).extend(entries)
 
 
-def _walk_routes(node: Node, source: str, context: RouteContext, routes: List[Dict]):
+def _walk_routes(
+    node: Node,
+    source: str,
+    context: RouteContext,
+    routes: List[Dict],
+    concerns: Dict[str, Node],
+):
     if node.type == "call":
         block_node: Optional[Node] = None
         for child in node.children:
             if child.type == "do_block":
                 block_node = child
                 break
-        _handle_command(node, block_node, source, context, routes)
+        _handle_command(node, block_node, source, context, routes, concerns)
         return
 
     if node.type == "method_add_block":
         call_node = node.child_by_field_name("call")
         block_node = node.child_by_field_name("block")
         if call_node:
-            _handle_command(call_node, block_node, source, context, routes)
+            _handle_command(call_node, block_node, source, context, routes, concerns)
         return
 
     if node.type in {"command", "command_call"}:
-        _handle_command(node, None, source, context, routes)
+        _handle_command(node, None, source, context, routes, concerns)
         return
 
     for child in node.children:
-        _walk_routes(child, source, context, routes)
+        _walk_routes(child, source, context, routes, concerns)
 
 
 def _handle_command(
@@ -134,6 +183,7 @@ def _handle_command(
     source: str,
     context: RouteContext,
     routes: List[Dict],
+    concerns: Dict[str, Node],
 ):
     method_node = call_node.child_by_field_name("method")
     if not method_node:
@@ -144,13 +194,21 @@ def _handle_command(
     args = _extract_arguments(call_node, source)
     handled = False
 
+    if method_lower == "concern":
+        # A concern only defines routes, it never emits them at the definition
+        # site: they are replayed inside every resource that asks for it.
+        concern_name = _first_symbol_or_string(args)
+        if concern_name and block_node is not None:
+            concerns[concern_name] = block_node
+        return
+
     if method_lower == "namespace":
         namespace = _first_symbol_or_string(args)
         if not namespace:
             return
         inner_context = context.with_namespace(namespace)
         if block_node:
-            _walk_routes(block_node, source, inner_context, routes)
+            _walk_routes(block_node, source, inner_context, routes, concerns)
         handled = True
         return
 
@@ -162,7 +220,7 @@ def _handle_command(
             scope_path, options.get("module")
         )
         if block_node:
-            _walk_routes(block_node, source, scoped_context, routes)
+            _walk_routes(block_node, source, scoped_context, routes, concerns)
         handled = True
         return
 
@@ -172,22 +230,28 @@ def _handle_command(
             return
         option_args = args[len(resource_names) :]
         resource_options = _extract_hash_arguments(option_args)
-        shallow = _is_truthy(resource_options.get("shallow"))
+        # shallow: true is inherited from the enclosing resource too.
+        shallow = _is_truthy(resource_options.get("shallow")) or context.shallow
         only_actions = _normalize_action_list(resource_options.get("only"))
         except_actions = _normalize_action_list(resource_options.get("except"))
+        controller_option = resource_options.get("controller")
+        concern_names = _normalize_action_list(resource_options.get("concerns")) or []
         plural = method_lower == "resources"
 
         for idx, resource_name in enumerate(resource_names):
             resource_entry = ResourceEntry(
                 name=resource_name,
-                shallow=shallow if plural else shallow,
+                shallow=shallow,
             )
             new_context = RouteContext(
                 path_prefix=context.path_prefix,
                 controller_prefix=context.controller_prefix,
                 resource_stack=list(context.resource_stack) + [resource_entry],
+                shallow=shallow,
             )
-            controller_key = _join_controllers(context.controller_prefix, resource_name)
+            controller_key = _resource_controller_key(
+                context, resource_name, controller_option
+            )
             _append_restful_routes(
                 routes,
                 new_context,
@@ -195,6 +259,16 @@ def _handle_command(
                 plural,
                 only_actions=only_actions,
                 except_actions=except_actions,
+            )
+            _replay_concerns(
+                concern_names,
+                source,
+                new_context,
+                controller_key,
+                routes,
+                plural,
+                concerns,
+                resource_entry.shallow,
             )
             if block_node and idx == 0:
                 _walk_resource_block(
@@ -204,6 +278,7 @@ def _handle_command(
                     controller_key,
                     routes,
                     plural,
+                    concerns,
                     shallow=resource_entry.shallow,
                 )
         handled = True
@@ -211,14 +286,21 @@ def _handle_command(
 
     if method_lower == "root":
         target = _extract_option(args, "to")
+        if not target:
+            # root 'home#index' carries the target as a positional argument.
+            candidate = _first_string(args) or _first_symbol(args)
+            if candidate and "#" in candidate:
+                target = candidate
         controller, action = _split_controller_action(target)
         if not controller or not action:
             return
         routes.append(
             {
                 "verb": "GET",
-                "path": "/",
-                "controller": controller,
+                # A root inside a namespace answers on the namespace's path and
+                # is served by the namespaced controller.
+                "path": _join_paths(context.path_prefix, ""),
+                "controller": _join_controllers(context.controller_prefix, controller),
                 "action": action,
             }
         )
@@ -269,7 +351,49 @@ def _handle_command(
         return
 
     if block_node and not handled:
-        _walk_routes(block_node, source, context, routes)
+        _walk_routes(block_node, source, context, routes, concerns)
+
+
+def _replay_concerns(
+    concern_names: List[str],
+    source: str,
+    context: RouteContext,
+    controller_key: str,
+    routes: List[Dict],
+    plural: bool,
+    concerns: Dict[str, Node],
+    shallow: bool,
+):
+    """
+    Emit the routes of every named concern inside the resource asking for it,
+    which is where Rails puts them. Reached from both spellings: the
+    `concerns: :commentable` option and the `concerns :commentable` call.
+    """
+    for concern_name in concern_names:
+        concern_block = concerns.get(concern_name)
+        if concern_block is None:
+            continue
+        _walk_resource_block(
+            concern_block,
+            source,
+            context,
+            controller_key,
+            routes,
+            plural,
+            concerns,
+            shallow=shallow,
+        )
+
+
+def _collect_concern_names(args: List[Dict]) -> List[str]:
+    """`concerns :commentable` and `concerns [:commentable, :taggable]`."""
+    names: List[str] = []
+    for arg in args:
+        if arg["type"] in {"symbol", "string"}:
+            names.append(arg["value"])
+        elif arg["type"] == "array":
+            names.extend(item for item in arg["value"] if isinstance(item, str))
+    return names
 
 
 def _walk_resource_block(
@@ -279,6 +403,7 @@ def _walk_resource_block(
     controller_key: str,
     routes: List[Dict],
     plural: bool,
+    concerns: Dict[str, Node],
     shallow: bool = False,
 ):
     for child in _iter_block_children(block_node):
@@ -312,6 +437,7 @@ def _walk_resource_block(
                     source,
                     context,
                     routes,
+                    concerns,
                 )
         elif child.type in {"command", "command_call", "call"}:
             block = None
@@ -337,8 +463,31 @@ def _walk_resource_block(
                     shallow,
                     plural,
                 )
-            else:
-                _handle_command(child, block, source, context, routes)
+                continue
+            if method_lower == "concerns":
+                _replay_concerns(
+                    _collect_concern_names(_extract_arguments(child, source)),
+                    source,
+                    context,
+                    controller_key,
+                    routes,
+                    plural,
+                    concerns,
+                    shallow,
+                )
+                continue
+            # A verb written straight inside the resource block hangs off the
+            # nested scope, where Rails names the parent id :<singular>_id.
+            base_path = (
+                _resource_nested_path(context, shallow=shallow)
+                if plural
+                else _resource_collection_path(context)
+            )
+            if _emit_scoped_route(
+                child, source, context, controller_key, base_path, routes
+            ):
+                continue
+            _handle_command(child, block, source, context, routes, concerns)
 
 
 def _handle_member_collection(
@@ -359,44 +508,62 @@ def _handle_member_collection(
 
     for child in _iter_block_children(block_node):
         if child.type in {"command", "command_call", "call"}:
-            method_node = child.child_by_field_name("method")
-            if not method_node:
-                continue
-            method_name = _node_text(source, method_node).strip()
-            method_lower = method_name.lower()
-            if method_lower not in HTTP_METHODS:
-                continue
-
-            args = _extract_arguments(child, source)
-            path_segment = _first_symbol_or_string(args)
-            if not path_segment:
-                continue
-
-            controller_name = controller_key
-            action_name = path_segment
-            target = _extract_option(args, "to")
-            if target:
-                target_controller, target_action = _split_controller_action(target)
-                if target_controller:
-                    normalized = target_controller.replace("::", "/").strip("/")
-                    prefix = context.controller_prefix.strip("/")
-                    if prefix and normalized.startswith(prefix):
-                        controller_name = normalized
-                    else:
-                        controller_name = _join_controllers(
-                            context.controller_prefix, normalized
-                        )
-                if target_action:
-                    action_name = target_action
-
-            routes.append(
-                {
-                    "verb": method_lower.upper(),
-                    "path": _join_paths(base_path, path_segment),
-                    "controller": controller_name,
-                    "action": action_name,
-                }
+            _emit_scoped_route(
+                child, source, context, controller_key, base_path, routes
             )
+
+
+def _emit_scoped_route(
+    call_node: Node,
+    source: str,
+    context: RouteContext,
+    controller_key: str,
+    base_path: str,
+    routes: List[Dict],
+) -> bool:
+    """
+    One verb call written inside a resource scope. The path segment hangs off
+    base_path and the enclosing resource owns the action unless `to:` names
+    another controller. Returns False when the call is not such a route.
+    """
+    method_node = call_node.child_by_field_name("method")
+    if not method_node:
+        return False
+    method_lower = _node_text(source, method_node).strip().lower()
+    if method_lower not in HTTP_METHODS:
+        return False
+
+    args = _extract_arguments(call_node, source)
+    path_segment = _first_symbol_or_string(args)
+    if not path_segment:
+        return False
+
+    controller_name = controller_key
+    action_name = path_segment
+    target = _extract_option(args, "to")
+    if target:
+        target_controller, target_action = _split_controller_action(target)
+        if target_controller:
+            normalized = target_controller.replace("::", "/").strip("/")
+            prefix = context.controller_prefix.strip("/")
+            if prefix and normalized.startswith(prefix):
+                controller_name = normalized
+            else:
+                controller_name = _join_controllers(
+                    context.controller_prefix, normalized
+                )
+        if target_action:
+            action_name = target_action
+
+    routes.append(
+        {
+            "verb": method_lower.upper(),
+            "path": _join_paths(base_path, path_segment),
+            "controller": controller_name,
+            "action": action_name,
+        }
+    )
+    return True
 
 
 def _append_restful_routes(
@@ -600,50 +767,14 @@ def _determine_allowed_actions(
     return allowed
 
 
-def _mirror_method_info(
-    action: str, methods_by_name: Dict[str, Dict]
-) -> Optional[Dict]:
-    if not methods_by_name:
-        return None
-
-    if action in methods_by_name:
-        mirrored = methods_by_name[action].copy()
-        mirrored["mirrored_from"] = action
-        return mirrored
-
-    if action in REST_ACTION_ORDER:
-        idx = REST_ACTION_ORDER.index(action)
-        max_distance = len(REST_ACTION_ORDER)
-        for distance in range(1, max_distance):
-            candidates: List[str] = []
-            left = idx - distance
-            right = idx + distance
-            if left >= 0:
-                candidates.append(REST_ACTION_ORDER[left])
-            if right < len(REST_ACTION_ORDER):
-                candidates.append(REST_ACTION_ORDER[right])
-            for candidate in candidates:
-                if candidate in methods_by_name:
-                    mirrored = methods_by_name[candidate].copy()
-                    mirrored["mirrored_from"] = candidate
-                    mirrored["name"] = action
-                    return mirrored
-
-    # Fallback to any available method definition.
-    fallback_method = next(iter(methods_by_name.values()), None)
-    if fallback_method:
-        mirrored = fallback_method.copy()
-        mirrored["mirrored_from"] = fallback_method["name"]
-        mirrored["name"] = action
-        return mirrored
-    return None
-
-
 def _extract_controller_endpoints(
-    file_path: Path, repo_root: str, route_map: Dict[str, List[Dict]]
+    file_path: Path,
+    repo_root: str,
+    route_map: Dict[str, List[Dict]],
+    class_index: Optional[Dict[str, Dict]] = None,
+    dropped_routes: Optional[List[str]] = None,
 ) -> List[Dict]:
-    controllers_root = Path(repo_root) / "app" / "controllers"
-    controller_key = _derive_controller_key(file_path, controllers_root)
+    controller_key = _derive_controller_key(file_path)
     if not controller_key:
         return []
 
@@ -657,7 +788,9 @@ def _extract_controller_endpoints(
         return []
 
     tree = parser.parse(source)
-    class_methods = _collect_controller_methods(tree.root_node, source, file_path)
+    class_methods, class_name = _collect_controller_methods(
+        tree.root_node, source, file_path
+    )
 
     methods_by_name = {method["name"]: method for method in class_methods}
     endpoint_methods: List[Dict] = []
@@ -668,10 +801,20 @@ def _extract_controller_endpoints(
         if method_info:
             method_copy = method_info.copy()
         else:
-            mirrored = _mirror_method_info(action, methods_by_name)
-            if not mirrored:
+            # The action can live in a parent controller; anything else is a
+            # route with no body to read, and a documented guess is worse than
+            # a missing endpoint.
+            inherited = _inherited_method_info(
+                class_index, class_name, action, file_path
+            )
+            if not inherited:
+                if dropped_routes is not None:
+                    dropped_routes.append(
+                        f"{route['verb']} {route['path']} "
+                        f"({controller_key}#{action})"
+                    )
                 continue
-            method_copy = mirrored
+            method_copy = inherited
         method_copy["route"] = route["path"]
         method_copy["http_method"] = route["verb"]
         endpoint_methods.append(method_copy)
@@ -682,17 +825,61 @@ def _extract_controller_endpoints(
     return [
         {
             "type": "class",
-            "name": methods_by_name[action]["class_name"]
-            if action in methods_by_name
-            else file_path.stem,
+            "name": class_name,
             "file_path": str(file_path),
             "methods": endpoint_methods,
         }
     ]
 
 
-def _collect_controller_methods(root: Node, source: str, file_path: Path) -> List[Dict]:
+def _inherited_method_info(
+    class_index: Optional[Dict[str, Dict]],
+    class_name: str,
+    action: str,
+    file_path: Path,
+) -> Optional[Dict]:
+    """
+    The action as a parent controller defines it. Walks the ancestor chain the
+    class index tracks and returns the first parent that carries the method, so
+    the parent's own body is what gets documented.
+    """
+    if not class_index or not class_name:
+        return None
+
+    entry = class_index.get(class_name)
+    visited = set()
+    while entry:
+        superclass = entry.get("superclass")
+        if not superclass or superclass in visited:
+            return None
+        visited.add(superclass)
+        parent = class_index.get(superclass)
+        if not parent:
+            return None
+        meta = (parent.get("methods") or {}).get(action)
+        parent_file = parent.get("file_path")
+        if meta and parent_file and isinstance(meta.get("start_line"), int):
+            return {
+                "type": "method",
+                "name": action,
+                "start_line": meta["start_line"],
+                "end_line": meta["end_line"],
+                "file_path": str(parent_file),
+                "class_name": class_name,
+                "inherited_from": superclass,
+            }
+        entry = parent
+    return None
+
+
+def _collect_controller_methods(root: Node, source: str, file_path: Path):
+    """
+    Returns (methods, class_name); the class name is the first class the file
+    declares, which is the controller even when the file also holds an inner
+    class.
+    """
     methods: List[Dict] = []
+    class_names: List[tuple] = []
 
     cursor = [root]
     current_class_name = None
@@ -702,6 +889,8 @@ def _collect_controller_methods(root: Node, source: str, file_path: Path) -> Lis
         if node.type == "class":
             name_node = node.child_by_field_name("name")
             current_class_name = _node_text(source, name_node) if name_node else None
+            if current_class_name:
+                class_names.append((node.start_byte, current_class_name))
             cursor.extend(list(node.children))
             continue
 
@@ -721,15 +910,25 @@ def _collect_controller_methods(root: Node, source: str, file_path: Path) -> Lis
                 }
             )
         cursor.extend(list(node.children))
-    return methods
+
+    class_name = min(class_names)[1] if class_names else file_path.stem
+    return methods, class_name
 
 
-def _derive_controller_key(file_path: Path, controllers_root: Path) -> Optional[str]:
-    try:
-        relative = file_path.relative_to(controllers_root)
-    except ValueError:
+def _derive_controller_key(file_path: Path) -> Optional[str]:
+    """
+    The route map key of a controller file: whatever follows its last
+    app/controllers segment, so an engine's controllers key off their own
+    app/controllers instead of being skipped.
+    """
+    parts = file_path.as_posix().split("/")
+    start = None
+    for index in range(len(parts) - 1):
+        if parts[index] == "app" and parts[index + 1] == "controllers":
+            start = index + 2
+    if start is None or start >= len(parts):
         return None
-    without_suffix = relative.as_posix().removesuffix(".rb")
+    without_suffix = "/".join(parts[start:]).removesuffix(".rb")
     if without_suffix.endswith("_controller"):
         without_suffix = without_suffix[: -len("_controller")]
     return without_suffix
@@ -831,7 +1030,7 @@ def _parse_array(node: Node, source: str) -> List:
 def _parse_value(node: Optional[Node], source: str):
     if node is None:
         return None
-    if node.type in {"string", "symbol", "symbol_literal", "identifier"}:
+    if node.type in {"string", "symbol", "symbol_literal", "simple_symbol", "identifier"}:
         return _literal_text(node, source)
     if node.type == "array":
         return _parse_array(node, source)
@@ -902,11 +1101,19 @@ def _extract_option(args: List[Dict], key: str):
 
 
 def _extract_path_target_from_hash(args: List[Dict]):
+    """
+    The hashrocket spelling, `get 'legacy/:id' => 'system#legacy'`, where the
+    path is the hash key. The key does not have to start with a slash, so
+    anything that is not a known route option and points at a controller#action
+    counts as one.
+    """
     for arg in args:
         if arg["type"] != "hash":
             continue
         for key, value in arg["value"].items():
-            if isinstance(key, str) and key.startswith("/"):
+            if not isinstance(key, str) or key in ROUTE_OPTION_KEYS:
+                continue
+            if key.startswith("/") or (isinstance(value, str) and "#" in value):
                 return key, value
     return None, None
 
@@ -1014,7 +1221,14 @@ def _resource_collection_path(context: RouteContext) -> str:
     return "/" + "/".join(segments)
 
 
-def _resource_member_path(context: RouteContext, shallow: Optional[bool] = None) -> str:
+def _resource_member_path(
+    context: RouteContext, shallow: Optional[bool] = None, param: str = "id"
+) -> str:
+    """
+    The member path of the innermost resource. Rails names that segment :id and
+    only the ancestors :<singular>_id, and a shallow resource drops the
+    ancestors from the path entirely.
+    """
     if not context.resource_stack:
         return _resource_collection_path(context)
 
@@ -1025,11 +1239,38 @@ def _resource_member_path(context: RouteContext, shallow: Optional[bool] = None)
 
     if is_shallow:
         base_path = _join_paths(context.path_prefix, current_entry.name)
-        return _join_paths(base_path, f":{_singular(current_entry.name)}_id")
+        return _join_paths(base_path, f":{param}")
 
     collection_path = _resource_collection_path(context)
-    param_segment = f":{_singular(current_entry.name)}_id"
-    return _join_paths(collection_path, param_segment)
+    return _join_paths(collection_path, f":{param}")
+
+
+def _resource_nested_path(context: RouteContext, shallow: Optional[bool] = None) -> str:
+    """
+    The scope a route written directly inside a resources block hangs off:
+    Rails names the parent id :<singular>_id there, not :id.
+    """
+    if not context.resource_stack:
+        return _resource_collection_path(context)
+    current_entry = context.resource_stack[-1]
+    return _resource_member_path(
+        context, shallow=shallow, param=f"{_singular(current_entry.name)}_id"
+    )
+
+
+def _resource_controller_key(
+    context: RouteContext, resource_name: str, controller_option
+) -> str:
+    """
+    resources :photos, controller: 'images' is served by images_controller.rb,
+    so the route map has to key off the option, not the resource name.
+    """
+    if isinstance(controller_option, str) and controller_option.strip():
+        target = controller_option.strip().replace("::", "/")
+        if target.startswith("/"):
+            return target.strip("/")
+        return _join_controllers(context.controller_prefix, target)
+    return _join_controllers(context.controller_prefix, resource_name)
 
 
 def _literal_text(node: Optional[Node], source: str) -> str:

@@ -19,8 +19,12 @@ import python_pipeline.definition_swagger_generator as dsg
 import python_pipeline.run_swagger_generation as rsg
 from python_pipeline.definition_swagger_generator import parse_swagger_response
 from utils import num_tokens_from_string
-from python_pipeline.find_api_definition_files import find_python_files
-from python_pipeline.generate_file_information import get_module_origin
+from python_pipeline.django_urlconf import collect_django_endpoints
+from python_pipeline.find_api_definition_files import (
+    find_api_definition_files,
+    find_python_files,
+)
+from python_pipeline.generate_file_information import get_module_origin, process_file
 from python_pipeline.identify_api_functions import (
     collect_external_prefixes,
     find_api_endpoints,
@@ -96,13 +100,13 @@ def health():
 
 def test_flask_blueprint_constructor_prefix(tmp_path):
     target = _write(tmp_path / "users.py", FLASK_BLUEPRINT)
-    assert _routes(tmp_path, target) == {("/api/v1/users", None)}
+    assert _routes(tmp_path, target) == {("/api/v1/users", "GET")}
 
 
 def test_flask_register_blueprint_prefix_wins(tmp_path):
     """Flask ignores the Blueprint prefix once register_blueprint supplies one."""
     target = _write(tmp_path / "users.py", FLASK_BLUEPRINT_REGISTERED)
-    assert _routes(tmp_path, target) == {("/v2/users", None)}
+    assert _routes(tmp_path, target) == {("/v2/users", "GET")}
 
 
 def test_flask_cross_file_register_blueprint_prefix(tmp_path):
@@ -117,7 +121,7 @@ app = Flask(__name__)
 app.register_blueprint(bp, url_prefix="/admin")
 ''',
     )
-    assert _routes(tmp_path, routes_file, [routes_file, app_file]) == {("/admin/users", None)}
+    assert _routes(tmp_path, routes_file, [routes_file, app_file]) == {("/admin/users", "GET")}
 
 
 def test_fastapi_router_prefix(tmp_path):
@@ -197,7 +201,7 @@ app.include_router(router, prefix="/api")
 @pytest.mark.parametrize(
     "source, expected",
     [
-        (FLASK_PLAIN, {("/ping", None)}),
+        (FLASK_PLAIN, {("/ping", "GET")}),
         (FASTAPI_PLAIN, {("/health", "GET")}),
     ],
 )
@@ -347,12 +351,28 @@ def test_rekey_fragment_rejects_a_path_item_with_no_http_verb():
     assert rsg._rekey_fragment(fragment, "/x", None) is None
 
 
+def _clean_jobs():
+    """Endpoints in an untouched file, so a two endpoint fixture stays under the
+    half of all endpoints that sends the run into a full regeneration."""
+    return [
+        {"route": "/health", "method": "GET", "file_path": "/repo/other.py"},
+        {"route": "/ping", "method": "GET", "file_path": "/repo/other.py"},
+    ]
+
+
+def _clean_index():
+    return {
+        "GET /health": {"files": [{"file_path": "/repo/other.py", "imports": []}]},
+        "GET /ping": {"files": [{"file_path": "/repo/other.py", "imports": []}]},
+    }
+
+
 def test_failed_endpoints_are_left_out_of_the_api_index(monkeypatch):
     """A failure must stay dirty, otherwise the next run never retries it."""
     endpoints = [
         {"route": "/users", "method": "GET", "file_path": "/repo/app.py"},
         {"route": "/orders", "method": "POST", "file_path": "/repo/app.py"},
-    ]
+    ] + _clean_jobs()
     written = {}
 
     def fake_fragment(directory_path, method_info):
@@ -368,7 +388,10 @@ def test_failed_endpoints_are_left_out_of_the_api_index(monkeypatch):
     monkeypatch.setattr(
         rsg,
         "_load_existing_api_index",
-        lambda: {"GET /users": {"files": [{"file_path": "/repo/stale.py", "imports": []}]}},
+        lambda: dict(
+            _clean_index(),
+            **{"GET /users": {"files": [{"file_path": "/repo/stale.py", "imports": []}]}},
+        ),
     )
     monkeypatch.setattr(rsg, "get_changed_files_since", lambda *args, **kwargs: {"/repo/app.py"})
     monkeypatch.setattr(rsg, "get_git_commit_hash", lambda: "new")
@@ -391,10 +414,11 @@ def test_failed_endpoint_is_retried_when_no_files_changed(monkeypatch):
     endpoints = [
         {"route": "/users", "method": "GET", "file_path": "/repo/app.py"},
         {"route": "/orders", "method": "POST", "file_path": "/repo/app.py"},
-    ]
+    ] + _clean_jobs()
     # The swagger and the index are the state the pipeline carries between runs.
     swagger = {"info": {"commit_reference": "old"}, "paths": {}}
-    index = {}
+    index = _clean_index()
+    clean_keys = set(index)
     failing = {"/users"}
 
     def fake_fragment(directory_path, method_info):
@@ -414,7 +438,7 @@ def test_failed_endpoint_is_retried_when_no_files_changed(monkeypatch):
 
     rsg._maybe_incremental_update("/repo", endpoints)
     assert swagger["paths"] == {"/orders": {"post": {"summary": "/orders"}}}
-    assert set(index) == {"POST /orders"}
+    assert set(index) == clean_keys | {"POST /orders"}
 
     failing.clear()
     monkeypatch.setattr(rsg, "get_changed_files_since", lambda *args, **kwargs: set())
@@ -424,7 +448,7 @@ def test_failed_endpoint_is_retried_when_no_files_changed(monkeypatch):
         "/orders": {"post": {"summary": "/orders"}},
         "/users": {"get": {"summary": "/users"}},
     }
-    assert set(index) == {"GET /users", "POST /orders"}
+    assert set(index) == clean_keys | {"GET /users", "POST /orders"}
 
 
 def test_generated_path_can_be_removed_incrementally():
@@ -676,7 +700,7 @@ def test_batch_falls_back_to_the_model_method_and_renames_legacy_fields():
 def test_endpoint_missing_from_the_batch_reply_fails_alone(monkeypatch, capsys):
     """A model that skips an endpoint must leave it out of the index so the
     next run retries it, without taking the other endpoint down with it."""
-    jobs = [_job("/users", "GET"), _job("/orders", "POST")]
+    jobs = [_job("/users", "GET"), _job("/orders", "POST")] + _clean_jobs()
     written = {}
     _stub_context(monkeypatch)
     monkeypatch.setattr(
@@ -691,7 +715,7 @@ def test_endpoint_missing_from_the_batch_reply_fails_alone(monkeypatch, capsys):
         "_load_existing_swagger",
         lambda: {"info": {"x-commit-reference": "old"}, "paths": {}},
     )
-    monkeypatch.setattr(rsg, "_load_existing_api_index", lambda: {})
+    monkeypatch.setattr(rsg, "_load_existing_api_index", lambda: _clean_index())
     monkeypatch.setattr(rsg, "get_changed_files_since", lambda *args, **kwargs: {"/repo/app.py"})
     monkeypatch.setattr(rsg, "get_git_commit_hash", lambda: "new")
     monkeypatch.setattr(rsg, "_write_api_index", lambda index: written.update(index))
@@ -699,7 +723,7 @@ def test_endpoint_missing_from_the_batch_reply_fails_alone(monkeypatch, capsys):
     swagger = rsg._maybe_incremental_update("/repo", jobs)
 
     assert swagger["paths"] == {"/orders": {"post": {"summary": "create"}}}
-    assert set(written) == {"POST /orders"}
+    assert set(written) == set(_clean_index()) | {"POST /orders"}
     assert "skipping /users" in capsys.readouterr().out
 
 
@@ -880,3 +904,957 @@ def test_incremental_no_change_return_carries_the_new_host(monkeypatch):
     )
     assert result["servers"] == [{"url": "https://new.example.com"}]
     assert result["paths"] == {"/users": {"get": {"summary": "old"}}}
+
+
+BATCH_REPLY = {
+    "paths": {
+        "/users": {"get": {"summary": "regenerated"}},
+        "/orders": {"post": {"summary": "regenerated"}},
+    }
+}
+
+
+def _incremental_fixture(monkeypatch):
+    """Four endpoints, two of them in the one file git reports as changed.
+
+    Half the endpoints is the most that can be dirty without the escalation
+    gate taking the run into a full regeneration, so this is the shape every
+    hash test needs.
+    """
+    _stub_context(monkeypatch)
+    jobs = [
+        _job("/users", "GET"),
+        _job("/orders", "POST"),
+        _job("/health", "GET", "/repo/other.py"),
+        _job("/ping", "GET", "/repo/other.py"),
+    ]
+    index = {
+        rsg._endpoint_key(job["route"], job["method"]): {
+            "files": [{"file_path": job["file_path"], "imports": []}]
+        }
+        for job in jobs
+    }
+    return jobs, index
+
+
+def _run_incremental(monkeypatch, jobs, index, changed_files, reply=BATCH_REPLY):
+    """One incremental pass. Returns the spec, the index written, the LLM calls."""
+    written = {}
+    calls = []
+    swagger = {
+        "info": {"x-commit-reference": "old"},
+        "paths": {
+            "/users": {"get": {"summary": "stored"}},
+            "/orders": {"post": {"summary": "stored"}},
+        },
+    }
+
+    def fake_batch(entries, blocks, source_file):
+        calls.append([label for label, _ in entries])
+        return reply
+
+    monkeypatch.setattr(rsg, "get_batch_definition_swagger", fake_batch)
+    monkeypatch.setattr(rsg, "_load_existing_swagger", lambda: swagger)
+    monkeypatch.setattr(rsg, "_load_existing_api_index", lambda: index)
+    monkeypatch.setattr(rsg, "get_changed_files_since", lambda *args, **kwargs: changed_files)
+    monkeypatch.setattr(rsg, "get_git_commit_hash", lambda: "new")
+    monkeypatch.setattr(rsg, "_write_api_index", lambda entries: written.update(entries))
+
+    result = rsg._maybe_incremental_update("/repo", jobs)
+    return result, written, calls
+
+
+def test_generation_stores_the_context_hash(monkeypatch):
+    """The index has to carry what the endpoint was generated from, or the next
+    run has nothing to compare against and documents it again."""
+    jobs = [_job("/users", "GET"), _job("/orders", "POST")]
+    _stub_context(monkeypatch, [["# shared helper\n"]])
+    monkeypatch.setattr(
+        rsg, "get_batch_definition_swagger", lambda entries, blocks, source_file: BATCH_REPLY
+    )
+
+    generated, failed = rsg._update_swagger_for_batches({"paths": {}}, "/repo", jobs)
+    index = rsg._build_api_index(generated)
+
+    assert (len(generated), len(failed)) == (2, 0)
+    assert index["GET /users"]["context_hash"] == rsg._endpoint_context_hash("/repo", jobs[0])
+    assert index["POST /orders"]["context_hash"] == rsg._endpoint_context_hash("/repo", jobs[1])
+    # The recipe covers the endpoint's own prompt text and not its label, so two
+    # endpoints a stub hands identical bodies and context to hash alike. Real
+    # endpoints are kept apart by their bodies, and a rails PUT mirroring a
+    # PATCH relies on exactly this.
+    assert index["GET /users"]["context_hash"] == index["POST /orders"]["context_hash"]
+
+
+def test_unchanged_context_hash_skips_the_llm(monkeypatch, capsys):
+    """A file git reports as changed whose endpoints read the same as last run
+    costs no LLM call at all."""
+    jobs, index = _incremental_fixture(monkeypatch)
+    for job in jobs[:2]:
+        key = rsg._endpoint_key(job["route"], job["method"])
+        index[key]["context_hash"] = rsg._endpoint_context_hash("/repo", job)
+
+    swagger, written, calls = _run_incremental(monkeypatch, jobs, index, {"/repo/app.py"})
+
+    assert calls == []
+    assert swagger["paths"] == {
+        "/users": {"get": {"summary": "stored"}},
+        "/orders": {"post": {"summary": "stored"}},
+    }
+    # The skipped endpoints keep their entries, hash included.
+    assert set(written) == set(index)
+    assert written["GET /users"]["context_hash"] == index["GET /users"]["context_hash"]
+    assert "apimesh: skipped 2 unchanged endpoints (context hash match)" in capsys.readouterr().out
+
+
+def test_changed_handler_regenerates_past_the_hash(monkeypatch, capsys):
+    """The endpoint whose context moved is the only one that reaches the model."""
+    jobs, index = _incremental_fixture(monkeypatch)
+    index["GET /users"]["context_hash"] = rsg._endpoint_context_hash("/repo", jobs[0])
+    index["POST /orders"]["context_hash"] = "sha256 of the handler before the edit"
+
+    swagger, written, calls = _run_incremental(monkeypatch, jobs, index, {"/repo/app.py"})
+
+    assert calls == [["POST /orders"]]
+    assert swagger["paths"]["/orders"] == {"post": {"summary": "regenerated"}}
+    assert swagger["paths"]["/users"] == {"get": {"summary": "stored"}}
+    assert written["POST /orders"]["context_hash"] == rsg._endpoint_context_hash("/repo", jobs[1])
+    assert "apimesh: skipped 1 unchanged endpoints (context hash match)" in capsys.readouterr().out
+
+
+def test_endpoint_without_a_stored_hash_always_regenerates(monkeypatch, capsys):
+    """An index written before hashing existed carries no hash to match."""
+    jobs, index = _incremental_fixture(monkeypatch)
+
+    _, written, calls = _run_incremental(monkeypatch, jobs, index, {"/repo/app.py"})
+
+    # One call for the file, carrying both of its endpoints (the dirty set is a
+    # set, so the order the two land in is not part of the contract).
+    assert [sorted(labels) for labels in calls] == [["GET /users", "POST /orders"]]
+    assert written["GET /users"]["context_hash"] == rsg._endpoint_context_hash("/repo", jobs[0])
+    assert "context hash match" not in capsys.readouterr().out
+
+
+def test_a_changed_dependency_file_makes_the_endpoint_dirty(monkeypatch):
+    """An edit one hop away, in a file the handler imports, still regenerates it."""
+    jobs, index = _incremental_fixture(monkeypatch)
+    index["GET /users"]["files"][0]["imports"] = [{"file_path": "/repo/helpers.py"}]
+
+    # Only the imported file was touched, every handler file is untouched.
+    _, _, calls = _run_incremental(monkeypatch, jobs, index, {"/repo/helpers.py"})
+
+    assert calls == [["GET /users"]]
+
+
+RELOCATION_APP = """from {module} import helper
+
+
+def list_orders():
+    return helper()
+"""
+
+RELOCATION_HELPER = """def helper():
+    return []
+"""
+
+RELOCATION_OTHER = """def ping():
+    return "pong"
+"""
+
+
+def _relocation_jobs(repo: Path) -> list:
+    """The handler at app.py:4-5 plus an endpoint nothing in this test touches.
+
+    Two keys is the smallest repo where one dirty endpoint stays under the
+    escalation gate.
+    """
+    return [
+        {
+            "route": "/orders",
+            "method": "GET",
+            "file_path": str(repo / "app.py"),
+            "start_line": 4,
+            "end_line": 5,
+        },
+        {
+            "route": "/ping",
+            "method": "GET",
+            "file_path": str(repo / "other.py"),
+            "start_line": 1,
+            "end_line": 2,
+        },
+    ]
+
+
+def _stage_metadata(repo: Path) -> None:
+    """The per file metadata the run writes before anything reads the index."""
+    rsg._reset_metadata_state()
+    rsg._build_metadata_cache(str(repo))
+
+
+def _relocation_pass(monkeypatch, repo: Path, out_dir: Path, changed_files, summary):
+    """One incremental pass over the repo as it is on disk right now."""
+    calls = []
+
+    def fake_batch(entries, blocks, source_file):
+        calls.append([label for label, _ in entries])
+        return {"paths": {"/orders": {"get": {"summary": summary}}}}
+
+    monkeypatch.setattr(rsg, "get_batch_definition_swagger", fake_batch)
+    monkeypatch.setattr(rsg, "get_changed_files_since", lambda *args, **kwargs: changed_files)
+    monkeypatch.setattr(rsg, "get_git_commit_hash", lambda: "head")
+    _stage_metadata(repo)
+
+    swagger = rsg._maybe_incremental_update(str(repo), _relocation_jobs(repo))
+
+    # The caller persists the spec between runs, the pipeline reads it back.
+    Path(os.environ["APIMESH_OUTPUT_FILEPATH"]).write_text(
+        json.dumps(swagger), encoding="utf-8"
+    )
+    index = json.loads((out_dir / "api_index.json").read_text(encoding="utf-8"))
+    return index, calls
+
+
+def _imported_paths(entry) -> list:
+    return [
+        imp["file_path"]
+        for file_entry in entry["files"]
+        for imp in file_entry["imports"]
+    ]
+
+
+def test_a_relocated_dependency_is_reindexed_when_the_endpoint_skips(tmp_path, monkeypatch):
+    """A helper that moves to a file with identical text keeps the prompt, and
+    so the hash, exactly as it was, so the endpoint skips. Its index entry still
+    has to follow the helper: keeping the old one points the dependency hop at
+    the file the helper left, and every later edit to the file it moved to is
+    invisible, so the endpoint is documented from stale source forever.
+    """
+    repo = tmp_path / "repo"
+    _write(repo / "app.py", RELOCATION_APP.format(module="helpers_a"))
+    _write(repo / "helpers_a.py", RELOCATION_HELPER)
+    _write(repo / "other.py", RELOCATION_OTHER)
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    (out_dir / "swagger.json").write_text(
+        json.dumps({"info": {"commit_reference": "base"}, "paths": {}}), encoding="utf-8"
+    )
+    (out_dir / "api_index.json").write_text(
+        json.dumps({"GET /ping": {"files": [{"file_path": str(repo / "other.py"), "imports": []}]}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("APIMESH_USER_REPO_PATH", str(repo))
+    monkeypatch.setenv("APIMESH_OUTPUT_FILEPATH", str(out_dir / "swagger.json"))
+
+    index, calls = _relocation_pass(monkeypatch, repo, out_dir, set(), "documented")
+
+    assert calls == [["GET /orders"]]
+    assert _imported_paths(index["GET /orders"]) == [str(repo / "helpers_a.py")]
+    stored_hash = index["GET /orders"]["context_hash"]
+
+    # The helper moves to a file that reads the same, and only the import line
+    # of the handler's own file changes with it.
+    (repo / "helpers_a.py").unlink()
+    _write(repo / "helpers_b.py", RELOCATION_HELPER)
+    _write(repo / "app.py", RELOCATION_APP.format(module="helpers_b"))
+
+    index, calls = _relocation_pass(
+        monkeypatch, repo, out_dir, {os.path.abspath(str(repo / "app.py"))}, "never asked for"
+    )
+
+    assert calls == []
+    assert index["GET /orders"]["context_hash"] == stored_hash
+    assert _imported_paths(index["GET /orders"]) == [str(repo / "helpers_b.py")]
+
+    # The edit the stale entry used to hide: the file the helper moved to.
+    _write(repo / "helpers_b.py", RELOCATION_HELPER.replace("return []", "return [1]"))
+
+    index, calls = _relocation_pass(
+        monkeypatch, repo, out_dir, {os.path.abspath(str(repo / "helpers_b.py"))}, "redocumented"
+    )
+
+    assert calls == [["GET /orders"]]
+    assert index["GET /orders"]["context_hash"] != stored_hash
+
+
+def test_escalation_gate_hands_the_run_back_for_a_full_regeneration(monkeypatch, capsys):
+    """Past half the endpoints the surgical path is the slow one."""
+    jobs, index = _incremental_fixture(monkeypatch)
+    # A third endpoint moves into the changed file, so three of four are dirty.
+    jobs[2]["file_path"] = "/repo/app.py"
+    index["GET /health"]["files"][0]["file_path"] = "/repo/app.py"
+
+    result, written, calls = _run_incremental(monkeypatch, jobs, index, {"/repo/app.py"})
+
+    assert result is None
+    assert calls == []
+    # The full run owns the spec and the index from here, nothing is half done.
+    assert written == {}
+    assert "apimesh: 3 of 4 endpoints affected, running a full regeneration" in capsys.readouterr().out
+
+
+FLASK_MULTI_METHOD = '''
+from flask import Flask
+
+app = Flask(__name__)
+
+
+@app.route("/users", methods=["GET", "POST"])
+def users():
+    return []
+'''
+
+FLASK_SAME_ROUTE_TWICE = '''
+from flask import Flask
+
+app = Flask(__name__)
+
+
+@app.route("/users", methods=["GET"])
+def list_users():
+    return []
+
+
+@app.route("/users", methods=["POST"])
+def create_user():
+    return {}
+'''
+
+
+def test_flask_methods_keyword_is_one_endpoint_per_verb(tmp_path):
+    """@app.route(..., methods=[...]) was read as a route with no method."""
+    target = _write(tmp_path / "app.py", FLASK_MULTI_METHOD)
+    assert _routes(tmp_path, target) == {("/users", "GET"), ("/users", "POST")}
+
+
+def test_two_handlers_on_one_route_keep_their_own_keys(tmp_path):
+    """Both collapsed into a single UNKNOWN index key before the verbs were read."""
+    target = _write(tmp_path / "app.py", FLASK_SAME_ROUTE_TWICE)
+    endpoints = find_api_endpoints(target)
+    keys = {rsg._endpoint_key(endpoint["route"], endpoint["method"]) for endpoint in endpoints}
+    assert keys == {"GET /users", "POST /users"}
+
+
+def test_both_verbs_of_one_route_reach_the_spec_and_the_index(tmp_path, monkeypatch):
+    target = _write(tmp_path / "app.py", FLASK_MULTI_METHOD)
+    monkeypatch.setenv("APIMESH_USER_REPO_PATH", str(tmp_path))
+    monkeypatch.setenv("APIMESH_OUTPUT_FILEPATH", str(tmp_path / "out" / "swagger.json"))
+    jobs = find_api_endpoints(target)
+    _stub_context(monkeypatch)
+    monkeypatch.setattr(
+        rsg,
+        "get_batch_definition_swagger",
+        lambda entries, blocks, source_file: {
+            "paths": {"/users": {"get": {"summary": "list"}, "post": {"summary": "create"}}}
+        },
+    )
+    swagger = {"paths": {}}
+
+    generated, failed = rsg._update_swagger_for_batches(swagger, str(tmp_path), jobs)
+
+    assert (len(generated), len(failed)) == (2, 0)
+    assert swagger["paths"]["/users"] == {
+        "get": {"summary": "list"},
+        "post": {"summary": "create"},
+    }
+    assert set(rsg._build_api_index(generated)) == {"GET /users", "POST /users"}
+
+
+DJANGO_PROJECT_URLS = '''
+from django.urls import path, include
+
+urlpatterns = [
+    path('api/', include('myapp.urls')),
+]
+'''
+
+DJANGO_APP_URLS = '''
+from django.urls import path, re_path
+from . import views
+from .views import UserDetail
+
+urlpatterns = [
+    path('users/', views.list_users),
+    path('users/<int:pk>/', UserDetail.as_view()),
+    re_path(r'^legacy/(?P<slug>[-\\w]+)/$', views.legacy),
+]
+'''
+
+DJANGO_VIEWS = '''
+from rest_framework.decorators import api_view
+from rest_framework.views import APIView
+
+
+@api_view(['GET', 'POST'])
+def list_users(request):
+    return None
+
+
+def legacy(request):
+    return None
+
+
+class UserDetail(APIView):
+    def get(self, request, pk):
+        return None
+
+    def delete(self, request, pk):
+        return None
+
+    def get_object(self, pk):
+        return None
+
+
+class ProfileView(APIView):
+    pass
+'''
+
+
+def _django_endpoints(repo_root):
+    endpoints = collect_django_endpoints(find_python_files(str(repo_root)), str(repo_root))
+    return {(endpoint["route"], endpoint["method"]) for endpoint in endpoints}
+
+
+def test_django_urlconf_extracts_the_project_routes(tmp_path):
+    """A conventional Django project has no decorator anywhere, and used to
+    extract zero endpoints."""
+    _write(tmp_path / "myproject" / "urls.py", DJANGO_PROJECT_URLS)
+    _write(tmp_path / "myapp" / "urls.py", DJANGO_APP_URLS)
+    _write(tmp_path / "myapp" / "views.py", DJANGO_VIEWS)
+
+    assert _django_endpoints(tmp_path) == {
+        ("/api/users/", "GET"),
+        ("/api/users/", "POST"),
+        ("/api/users/<int:pk>/", "GET"),
+        ("/api/users/<int:pk>/", "DELETE"),
+        ("/api/legacy/<slug>/", "GET"),
+    }
+
+
+def test_django_include_prefix_is_not_documented_twice(tmp_path):
+    """The app urls.py is walked under the prefix the project mounts it at,
+    not a second time on its own."""
+    _write(tmp_path / "myproject" / "urls.py", DJANGO_PROJECT_URLS)
+    _write(tmp_path / "myapp" / "urls.py", DJANGO_APP_URLS)
+    _write(tmp_path / "myapp" / "views.py", DJANGO_VIEWS)
+
+    routes = {route for route, _ in _django_endpoints(tmp_path)}
+    assert all(route.startswith("/api/") for route in routes)
+
+
+def test_django_class_view_helpers_are_not_endpoints(tmp_path):
+    """get_object is a helper; only the HTTP verbs a class defines are routes."""
+    _write(tmp_path / "myproject" / "urls.py", DJANGO_PROJECT_URLS)
+    _write(tmp_path / "myapp" / "urls.py", DJANGO_APP_URLS)
+    _write(tmp_path / "myapp" / "views.py", DJANGO_VIEWS)
+
+    names = {
+        endpoint["name"]
+        for endpoint in collect_django_endpoints(
+            find_python_files(str(tmp_path)), str(tmp_path)
+        )
+    }
+    assert names == {"list_users", "legacy", "UserDetail.get", "UserDetail.delete"}
+
+
+DRF_ROUTER_URLS = '''
+from django.urls import path, include
+from rest_framework.routers import DefaultRouter
+from .views import AccountViewSet, TagViewSet
+
+router = DefaultRouter()
+router.register('accounts', AccountViewSet)
+router.register('tags', TagViewSet)
+
+urlpatterns = [
+    path('api/', include(router.urls)),
+]
+'''
+
+DRF_VIEWS = '''
+from rest_framework.viewsets import ModelViewSet, ViewSet
+
+
+class AccountViewSet(ModelViewSet):
+    queryset = None
+
+
+class TagViewSet(ViewSet):
+    def list(self, request):
+        return None
+'''
+
+
+def test_drf_router_registration_maps_the_standard_actions(tmp_path):
+    _write(tmp_path / "myapp" / "urls.py", DRF_ROUTER_URLS)
+    _write(tmp_path / "myapp" / "views.py", DRF_VIEWS)
+
+    assert _django_endpoints(tmp_path) == {
+        ("/api/accounts/", "GET"),
+        ("/api/accounts/", "POST"),
+        ("/api/accounts/<pk>/", "GET"),
+        ("/api/accounts/<pk>/", "PUT"),
+        ("/api/accounts/<pk>/", "PATCH"),
+        ("/api/accounts/<pk>/", "DELETE"),
+        # The bare ViewSet only serves what it defines itself.
+        ("/api/tags/", "GET"),
+    }
+
+
+DJANGO_HELPER_URLS = '''
+from django.conf import settings
+from django.urls import path
+
+from . import views
+
+urlpatterns = []
+
+if settings.DEBUG:
+    urlpatterns += [
+        path('debug/', views.legacy),
+    ]
+
+
+def build_fixture_urls():
+    urlpatterns = [
+        path('internal/', views.legacy),
+    ]
+    return urlpatterns
+'''
+
+
+def test_a_function_local_urlpatterns_is_not_a_urlconf(tmp_path):
+    """A helper that builds its own list of patterns serves nothing, and
+    reading one as live URLconf invented endpoints out of test code. The
+    module's own urlpatterns still counts, an ``if`` block included."""
+    _write(tmp_path / "myproject" / "urls.py", DJANGO_PROJECT_URLS)
+    _write(tmp_path / "myapp" / "urls.py", DJANGO_APP_URLS)
+    _write(tmp_path / "myapp" / "views.py", DJANGO_VIEWS)
+    _write(tmp_path / "myapp" / "helpers.py", DJANGO_HELPER_URLS)
+
+    routes = {route for route, _ in _django_endpoints(tmp_path)}
+    assert "/internal/" not in routes
+    assert {"/debug/", "/api/users/"} <= routes
+
+
+DRF_OVERRIDE_URLS = '''
+from django.urls import path, include
+from rest_framework.routers import DefaultRouter
+from .views import AccountViewSet, TagViewSet
+
+router = DefaultRouter()
+router.register('accounts', AccountViewSet)
+router.register('tags', TagViewSet)
+
+urlpatterns = [
+    path('api/', include(router.urls)),
+]
+'''
+
+DRF_OVERRIDE_VIEWS = '''
+from rest_framework.viewsets import ModelViewSet, ReadOnlyModelViewSet
+
+
+class AccountViewSet(ModelViewSet):
+    def list(self, request):
+        return None
+
+
+class TagViewSet(ReadOnlyModelViewSet):
+    def retrieve(self, request, pk=None):
+        return None
+'''
+
+
+def test_an_overridden_viewset_action_keeps_the_inherited_ones(tmp_path):
+    """Overriding list does not unregister the other five the router publishes,
+    and a read-only viewset still serves exactly its two."""
+    _write(tmp_path / "myapp" / "urls.py", DRF_OVERRIDE_URLS)
+    views = _write(tmp_path / "myapp" / "views.py", DRF_OVERRIDE_VIEWS)
+
+    endpoints = collect_django_endpoints(
+        find_python_files(str(tmp_path)), str(tmp_path)
+    )
+    by_name = {endpoint["name"]: endpoint for endpoint in endpoints}
+
+    assert set(by_name) == {
+        "AccountViewSet.list",
+        "AccountViewSet.create",
+        "AccountViewSet.retrieve",
+        "AccountViewSet.update",
+        "AccountViewSet.partial_update",
+        "AccountViewSet.destroy",
+        "TagViewSet.list",
+        "TagViewSet.retrieve",
+    }
+    # The override is documented from its own body, the inherited ones from the
+    # class that carries them.
+    lines = views.read_text(encoding="utf-8").splitlines()
+    assert lines[by_name["AccountViewSet.list"]["start_line"] - 1].strip() == (
+        "def list(self, request):"
+    )
+    assert (
+        by_name["AccountViewSet.create"]["start_line"]
+        != by_name["AccountViewSet.list"]["start_line"]
+    )
+
+
+def test_a_viewset_nobody_registers_is_skipped(tmp_path):
+    """Without a router there is no route to give it, and inventing one is worse
+    than leaving it out."""
+    _write(tmp_path / "myapp" / "views.py", DRF_VIEWS)
+    assert _django_endpoints(tmp_path) == set()
+
+
+def test_drf_api_view_files_are_selected_and_extracted(tmp_path):
+    """@api_view is a bare name call, which the selector used to miss entirely."""
+    views = _write(tmp_path / "myapp" / "views.py", DJANGO_VIEWS)
+    assert str(views) in find_api_definition_files(str(tmp_path))
+    # The verbs come from the URLconf, so the decorator alone carries no route.
+    assert {endpoint["route"] for endpoint in find_api_endpoints(views)} == {None}
+
+
+DECORATED_CLASS = '''
+from fastapi import APIRouter
+
+router = APIRouter(prefix="/items")
+
+
+@router.route("/things")
+class Things:
+    def __init__(self):
+        self.cache = {}
+
+    def get(self):
+        return []
+
+    def _load(self):
+        return 1
+'''
+
+
+def _expanded_jobs(endpoints):
+    """The endpoint jobs run_swagger_generation builds out of an extraction."""
+    jobs = []
+    for endpoint in endpoints:
+        if endpoint.get("type") == "class":
+            jobs.extend(endpoint.get("methods", []))
+        else:
+            jobs.append(endpoint)
+    return jobs
+
+
+def test_only_the_http_methods_of_a_decorated_class_are_endpoints(tmp_path):
+    """__init__ and helpers were documented as endpoints of their own."""
+    target = _write(tmp_path / "app.py", DECORATED_CLASS)
+    endpoints = find_api_endpoints(target)
+
+    assert [endpoint["name"] for endpoint in endpoints] == ["Things"]
+    jobs = _expanded_jobs(endpoints)
+    assert [(job["name"], job["route"], job["method"]) for job in jobs] == [
+        ("get", "/items/things", "GET")
+    ]
+
+
+def test_a_class_method_is_not_emitted_twice(tmp_path):
+    """The parented tree was thrown away, so every method was also extracted as
+    a free function."""
+    target = _write(tmp_path / "app.py", DECORATED_CLASS)
+    endpoints = find_api_endpoints(target)
+    assert [endpoint["type"] for endpoint in endpoints] == ["class"]
+    assert len(_expanded_jobs(endpoints)) == 1
+
+
+def test_find_api_endpoints_accepts_a_string_path(tmp_path):
+    target = _write(tmp_path / "app.py", FLASK_MULTI_METHOD)
+    assert find_api_endpoints(str(target)) == find_api_endpoints(target)
+
+
+def test_routeless_and_duplicate_jobs_are_dropped(tmp_path):
+    """A route the extractor could not read is not a generation failure, and the
+    same handler found twice is one endpoint."""
+    routed = _job("/users", "GET")
+    jobs = rsg._routed_endpoints([
+        routed,
+        dict(routed),
+        {"route": None, "method": "GET", "file_path": "/repo/app.py",
+         "start_line": 1, "end_line": 2},
+    ])
+    assert jobs == [routed]
+
+
+def test_metadata_filenames_do_not_collide_on_a_shared_suffix(tmp_path, monkeypatch):
+    """strip('.py') strips a character set: apply.py and appl.py shared a file."""
+    monkeypatch.setenv("APIMESH_USER_REPO_PATH", str(tmp_path))
+    monkeypatch.setenv("APIMESH_OUTPUT_FILEPATH", str(tmp_path / "out" / "swagger.json"))
+    rsg._reset_metadata_state()
+    apply_file = _write(tmp_path / "apply.py", "value = 1\n")
+    appl_file = _write(tmp_path / "appl.py", "value = 1\n")
+
+    apply_path = rsg._metadata_cache_path(str(apply_file))
+    appl_path = rsg._metadata_cache_path(str(appl_file))
+
+    assert apply_path != appl_path
+    assert os.path.basename(apply_path).startswith("apply_")
+    assert os.path.basename(appl_path).startswith("appl_")
+
+
+HELPER_SOURCE = '''def helper(payload):
+    total = payload["a"]
+    total += payload["b"]
+    return total
+
+
+def handler():
+    return helper({"a": 1, "b": 2})
+'''
+
+
+def test_in_file_dependency_context_carries_the_whole_helper(tmp_path):
+    """The slice was [start:start], so the helper arrived as its def line alone."""
+    source = _write(tmp_path / "app.py", HELPER_SOURCE)
+    dependency = {
+        "name": "helper",
+        "function_start_line": 1,
+        "function_end_line": 4,
+        "start_line": 8,
+        "end_line": 8,
+    }
+
+    blocks = rsg.get_code_blocks([dependency], [], str(source), str(tmp_path))
+
+    assert len(blocks) == 1
+    assert "".join(blocks[0]) == HELPER_SOURCE.split("\n\n\n")[0] + "\n"
+
+
+def test_missing_metadata_skips_the_dependency(tmp_path):
+    """A module imported out of an ignored directory was never processed."""
+    imported = {"origin": str(tmp_path / "ignored" / "helpers.py"), "imported_name": "helper"}
+    assert rsg.get_code_blocks([], [imported], str(tmp_path), str(tmp_path)) == []
+
+
+def test_aliased_imports_are_matched_to_their_usages(tmp_path):
+    """Without the alias, ``import helpers as h`` was never seen to be used."""
+    _write(tmp_path / "helpers.py", "def helper():\n    return 1\n")
+    target = _write(
+        tmp_path / "app.py",
+        "import helpers as h\n\n\ndef handler():\n    return h.helper()\n",
+    )
+
+    info = process_file(str(target), str(tmp_path))
+    alias_import = next(item for item in info["imports"] if item["imported_name"] == "helpers")
+
+    assert alias_import["asname"] == "h"
+    assert alias_import["usage_lines"] == [5]
+
+
+def test_a_file_that_is_not_utf8_does_not_kill_the_metadata_pass(tmp_path):
+    latin1 = tmp_path / "legacy.py"
+    latin1.write_bytes("# caf\xe9\ndef handler():\n    return 1\n".encode("latin-1"))
+
+    info = process_file(str(latin1), str(tmp_path))
+
+    assert [element["name"] for element in info["elements"]["functions"]] == ["handler"]
+
+
+def test_one_unreadable_file_does_not_stop_the_walk(tmp_path, monkeypatch, capsys):
+    repo = tmp_path / "repo"
+    _write(repo / "broken.py", "def add(a, b):\n    return a + b\n")
+    _write(repo / "helpers.py", "def sub(a, b):\n    return a - b\n")
+    monkeypatch.setenv("APIMESH_USER_REPO_PATH", str(repo))
+    monkeypatch.setenv("APIMESH_OUTPUT_FILEPATH", str(tmp_path / "out" / "swagger.json"))
+
+    def exploding(file_path, base_directory=None):
+        if file_path.endswith("broken.py"):
+            raise UnicodeDecodeError("utf-8", b"", 0, 1, "boom")
+        return {"filename": file_path, "elements": {}, "imports": []}
+
+    monkeypatch.setattr(rsg, "process_file", exploding)
+
+    assert rsg.run_swagger_generation("http://localhost:8000") is None
+    output = capsys.readouterr().out
+    assert "skipping metadata for" in output
+    assert "found 0 endpoints" in output
+
+
+def test_a_django_repo_runs_end_to_end(tmp_path, monkeypatch):
+    """The URLconf endpoints have to survive the whole run: the metadata file
+    of the views module, the context read, the batch call and the index."""
+    repo = tmp_path / "repo"
+    _write(repo / "myproject" / "urls.py", DJANGO_PROJECT_URLS)
+    _write(repo / "myapp" / "urls.py", DJANGO_APP_URLS)
+    _write(repo / "myapp" / "views.py", DJANGO_VIEWS)
+    monkeypatch.setenv("APIMESH_USER_REPO_PATH", str(repo))
+    monkeypatch.setenv("APIMESH_OUTPUT_FILEPATH", str(tmp_path / "out" / "swagger.json"))
+    monkeypatch.setattr(rsg, "get_git_commit_hash", lambda: "commit")
+    monkeypatch.setattr(rsg, "get_github_repo_url", lambda: "https://example.com/repo")
+    def fake_batch(entries, blocks, source_file):
+        """One operation per requested label, the way the model answers."""
+        paths = {}
+        for label, _ in entries:
+            method, route = label.split(" ", 1)
+            paths.setdefault(route, {})[method.lower()] = {"summary": label}
+        return {"paths": paths}
+
+    monkeypatch.setattr(rsg, "get_batch_definition_swagger", fake_batch)
+
+    swagger = rsg.run_swagger_generation("http://localhost:8000")
+
+    assert set(swagger["paths"]) == {
+        "/api/users/",
+        "/api/users/{pk}/",
+        "/api/legacy/{slug}/",
+    }
+    assert set(swagger["paths"]["/api/users/"]) == {"get", "post"}
+    index = json.loads((tmp_path / "out" / "api_index.json").read_text(encoding="utf-8"))
+    assert "GET /api/users/{pk}/" in index
+    assert index["GET /api/users/{pk}/"]["files"][0]["file_path"].endswith("myapp/views.py")
+
+
+CACHE_APP = '''from flask import Flask
+
+app = Flask(__name__)
+
+
+@app.route("/users", methods=["GET"])
+def list_users():
+    return []
+'''
+
+
+def _cache_dir(out_dir: Path) -> Path:
+    return out_dir / "metadata_cache" / "python"
+
+
+def _cache_run(monkeypatch, repo: Path, out_dir: Path):
+    """One full run over the repo, with every LLM call answered locally."""
+    monkeypatch.setenv("APIMESH_USER_REPO_PATH", str(repo))
+    monkeypatch.setenv("APIMESH_OUTPUT_FILEPATH", str(out_dir / "swagger.json"))
+    # The incremental pass would skip the work these tests are about.
+    monkeypatch.setattr(rsg, "_maybe_incremental_update", lambda *args: None)
+    fragment = {"paths": {"/users": {"get": {"summary": "listed"}}}}
+    monkeypatch.setattr(
+        rsg, "get_batch_definition_swagger", lambda *args, **kwargs: fragment
+    )
+    monkeypatch.setattr(
+        rsg, "get_function_definition_swagger", lambda *args, **kwargs: fragment
+    )
+    return rsg.run_swagger_generation("http://localhost:8000")
+
+
+def _count_parses(monkeypatch) -> list:
+    """Every file the run actually hands to the parser."""
+    parsed = []
+    real_process_file = rsg.process_file
+
+    def _counting(file_path, directory_path):
+        parsed.append(file_path)
+        return real_process_file(file_path, directory_path)
+
+    monkeypatch.setattr(rsg, "process_file", _counting)
+    return parsed
+
+
+def test_metadata_is_cached_outside_the_scanned_repo(tmp_path, monkeypatch):
+    """The run built its metadata directory inside the repo it was reading."""
+    repo = tmp_path / "repo"
+    _write(repo / "app.py", CACHE_APP)
+    out_dir = tmp_path / "out"
+    before = sorted(path.name for path in repo.iterdir())
+
+    _cache_run(monkeypatch, repo, out_dir)
+
+    entries = sorted(path.name for path in _cache_dir(out_dir).glob("*.json"))
+    assert len(entries) == 1 and entries[0].startswith("app_")
+    assert sorted(path.name for path in repo.iterdir()) == before
+
+
+def test_a_second_run_over_unchanged_files_parses_nothing(tmp_path, monkeypatch):
+    """The cache is content addressed, so untouched files are never reparsed."""
+    repo = tmp_path / "repo"
+    _write(repo / "app.py", CACHE_APP)
+    out_dir = tmp_path / "out"
+    _cache_run(monkeypatch, repo, out_dir)
+
+    parsed = _count_parses(monkeypatch)
+    _cache_run(monkeypatch, repo, out_dir)
+
+    assert parsed == []
+
+
+def test_an_edited_file_is_reparsed_and_its_stale_entry_dropped(tmp_path, monkeypatch):
+    """A new content hash means a new entry, and the old one has to go."""
+    repo = tmp_path / "repo"
+    source = _write(repo / "app.py", CACHE_APP)
+    out_dir = tmp_path / "out"
+    _cache_run(monkeypatch, repo, out_dir)
+    stale = sorted(_cache_dir(out_dir).glob("*.json"))
+
+    _write(source, CACHE_APP.replace("return []", "return [1]"))
+    parsed = _count_parses(monkeypatch)
+    _cache_run(monkeypatch, repo, out_dir)
+
+    assert parsed == [str(source)]
+    assert not stale[0].exists()
+    assert len(list(_cache_dir(out_dir).glob("*.json"))) == 1
+
+
+def test_an_existing_qodex_directory_in_the_repo_is_left_alone(tmp_path, monkeypatch):
+    """That directory used to be rebuilt and then deleted, user files and all."""
+    repo = tmp_path / "repo"
+    _write(repo / "app.py", CACHE_APP)
+    kept = _write(repo / "qodex_file_information" / "notes.txt", "mine\n")
+    out_dir = tmp_path / "out"
+
+    _cache_run(monkeypatch, repo, out_dir)
+
+    assert kept.read_text(encoding="utf-8") == "mine\n"
+
+
+def test_a_stale_version_marker_wipes_the_cache(tmp_path, monkeypatch):
+    """Entries written by an older metadata format must not be read back."""
+    repo = tmp_path / "repo"
+    source = _write(repo / "app.py", CACHE_APP)
+    out_dir = tmp_path / "out"
+    _cache_run(monkeypatch, repo, out_dir)
+    cache_dir = _cache_dir(out_dir)
+    (cache_dir / "cache_version").write_text("0", encoding="utf-8")
+
+    parsed = _count_parses(monkeypatch)
+    _cache_run(monkeypatch, repo, out_dir)
+
+    assert parsed == [str(source)]
+    assert (cache_dir / "cache_version").read_text(
+        encoding="utf-8"
+    ) == rsg.METADATA_CACHE_VERSION
+
+
+def test_incremental_no_change_run_reports_all_unchanged(tmp_path, monkeypatch, capsys):
+    written = {}
+    existing_swagger = {
+        "openapi": "3.0.0",
+        "info": {"x-commit-reference": "same"},
+        "paths": {"/orders": {"post": {"summary": "keep"}}},
+    }
+    existing_index = {
+        "POST /orders": {
+            "files": [{"file_path": "/repo/b.py", "imports": []}],
+            "context_hash": "irrelevant",
+        }
+    }
+    monkeypatch.setattr(rsg, "_load_existing_swagger", lambda: existing_swagger)
+    monkeypatch.setattr(rsg, "_load_existing_api_index", lambda: existing_index)
+    monkeypatch.setattr(rsg, "_write_api_index", lambda index: written.update(index))
+    monkeypatch.setattr(rsg, "get_changed_files_since", lambda *a, **k: set())
+    jobs = [{"route": "/orders", "method": "POST", "file_path": "/repo/b.py",
+             "name": "o", "start_line": 1, "end_line": 2, "type": "function"}]
+    result = rsg._maybe_incremental_update("/repo", jobs)
+    assert result is existing_swagger
+    coverage = result["info"]["x-apimesh-coverage"]
+    assert coverage == {
+        "endpoints_extracted": 1,
+        "generated": 0,
+        "skipped_unchanged": 1,
+        "failed": 0,
+    }
+    assert "apimesh coverage: 0 generated, 1 unchanged, 0 failed of 1 extracted" in capsys.readouterr().out

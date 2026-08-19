@@ -706,3 +706,126 @@ def test_config_json_is_written_owner_only(user_config_file):
     _configure(user_config_file)
     mode = user_config_file.stat().st_mode & 0o777
     assert mode == 0o600
+
+
+def test_faiss_index_returns_merged_batches_and_skips_unreadable(monkeypatch, tmp_path):
+    """The batched indices are the result; re-embedding the corpus doubled the
+    spend and reintroduced the per-request token limit."""
+    import faiss_index_generator as fig
+
+    calls = []
+
+    class FakeIndex:
+        def __init__(self, texts):
+            self.texts = list(texts)
+        def merge_from(self, other):
+            self.texts.extend(other.texts)
+
+    monkeypatch.setattr(
+        fig.FAISS, "from_texts",
+        lambda texts, embeddings, metadatas=None: (calls.append(list(texts)), FakeIndex(texts))[1],
+    )
+    good = tmp_path / "a.py"
+    good.write_text("def handler(): pass\n" * 5)
+    unreadable = tmp_path / "b.py"
+    unreadable.write_bytes(b"\xff\xfe garbage \xff")
+
+    generator = fig.GenerateFaissIndex.__new__(fig.GenerateFaissIndex)
+    class C: embeddings = None
+    generator.openai_client = C()
+    index = generator.create_faiss_index([str(good), str(unreadable)], "flask")
+
+    assert isinstance(index, FakeIndex)
+    total_embedded = sum(len(batch) for batch in calls)
+    assert total_embedded == len(index.texts)  # embedded exactly once, no duplicate pass
+
+    with pytest.raises(ValueError):
+        generator.create_faiss_index([str(unreadable)], "flask")
+
+
+def test_save_swagger_json_reports_html_outcome(monkeypatch, tmp_path):
+    monkeypatch.setenv("APIMESH_USER_REPO_PATH", str(tmp_path))
+    out = tmp_path / "apimesh" / "swagger.json"
+
+    monkeypatch.setenv("APIMESH_SKIP_HTML", "1")
+    assert SwaggerGeneration.save_swagger_json(SAMPLE_SWAGGER, str(out)) is True
+
+    monkeypatch.delenv("APIMESH_SKIP_HTML", raising=False)
+    monkeypatch.setattr(SwaggerGeneration, "generate_html_viewer", staticmethod(lambda path: None))
+    assert SwaggerGeneration.save_swagger_json(SAMPLE_SWAGGER, str(out)) is False
+    monkeypatch.setattr(SwaggerGeneration, "generate_html_viewer", staticmethod(lambda path: "ok.html"))
+    assert SwaggerGeneration.save_swagger_json(SAMPLE_SWAGGER, str(out)) is True
+
+
+def test_framework_prompt_path_list_is_capped(monkeypatch, tmp_path):
+    from framework_identifier import FrameworkIdentifier, MAX_PATHS_IN_PROMPT
+
+    monkeypatch.setenv("APIMESH_USER_REPO_PATH", str(tmp_path))
+    paths = [str(tmp_path / f"src/module_{i}.py") for i in range(MAX_PATHS_IN_PROMPT + 50)]
+    listing = FrameworkIdentifier._paths_for_prompt(paths)
+    assert listing.count("\n") == MAX_PATHS_IN_PROMPT  # capped lines + truncation note
+    assert "and 50 more files not listed" in listing
+    assert str(tmp_path) not in listing  # relative, not absolute
+
+
+def test_framework_detection_raises_clearly_on_junk(monkeypatch):
+    import framework_identifier as fi
+
+    class FakeClient:
+        def call_chat_completion(self, messages, temperature=0.5):
+            return "I could not determine the framework, sorry!"
+
+    monkeypatch.setattr(fi, "OpenAiClient", lambda: FakeClient())
+    identifier = fi.FrameworkIdentifier()
+    with pytest.raises(ValueError, match="no JSON object"):
+        identifier.get_framework(["a.py"])
+
+
+def test_changed_files_include_untracked(tmp_path, monkeypatch):
+    """A brand-new uncommitted route file must count as changed, or incremental
+    runs never see newly added endpoints until they are committed."""
+    import subprocess
+
+    from utils import get_changed_files_since
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    (repo / "a.py").write_text("x = 1\n")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t",
+         "commit", "-qm", "init"],
+        check=True,
+    )
+    base = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    (repo / "new_routes.py").write_text("@app.route('/new')\ndef new(): pass\n")
+
+    changed = get_changed_files_since(base, repo_path=str(repo))
+    assert changed is not None
+    assert str(repo / "new_routes.py") in {str(Path(p)) for p in changed}
+
+
+def test_legacy_generation_reports_coverage(monkeypatch, tmp_path):
+    monkeypatch.setenv("APIMESH_USER_REPO_PATH", str(tmp_path))
+    generator = _generator()
+
+    def generate(endpoint, auth, framework):
+        if endpoint["path"] == "/broken":
+            raise RuntimeError("boom")
+        return {"paths": {endpoint["path"]: {"get": {"summary": "ok"}}}}
+
+    generator.generate_endpoint_swagger = generate
+    swagger = generator.create_swagger_json(
+        [_endpoint("/broken", "GET"), _endpoint("/healthy", "GET")],
+        "", "flask", "https://api.example.com",
+    )
+    assert swagger["info"]["x-apimesh-coverage"] == {
+        "endpoints_extracted": 2,
+        "generated": 1,
+        "skipped_unchanged": 0,
+        "failed": 1,
+    }

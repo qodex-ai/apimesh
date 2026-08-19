@@ -12,7 +12,9 @@ parser = Parser(PY_LANGUAGE)
 
 
 def parse_file(filename):
-    with open(filename, 'r', encoding='utf-8') as f:
+    # A repo holds files in every encoding there is, and one of them must not
+    # take the whole metadata pass down.
+    with open(filename, 'r', encoding='utf-8', errors='replace') as f:
         code = f.read()
     tree = parser.parse(code.encode('utf-8'))
     return tree, code
@@ -55,13 +57,14 @@ def find_import_usages(tree, imported_names):
     return usages
 
 
-def analyze_imports(filepath, base_directory=None, tree=None):
+def analyze_imports(filepath, base_directory=None, tree=None, source=None):
     imports = []
     imported_names = set()  # Track imported names for usage lookup
     try:
-        with open(filepath, "r", encoding="utf-8") as f:
-            source = f.read()
-            tree_ast = ast.parse(source, filename=filepath)
+        if source is None:
+            with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+                source = f.read()
+        tree_ast = ast.parse(source, filename=filepath)
 
         for node in ast.walk(tree_ast):
             if isinstance(node, ast.ImportFrom):
@@ -75,6 +78,9 @@ def analyze_imports(filepath, base_directory=None, tree=None):
                     imports.append({
                         'type': 'import',
                         'imported_name': alias.name,
+                        # ``import x as y`` is used as y, so without the alias
+                        # the name is never matched to a usage line.
+                        'asname': alias.asname,
                         'from_module': module,
                         'origin': origin,
                         'line': node.lineno,
@@ -89,6 +95,7 @@ def analyze_imports(filepath, base_directory=None, tree=None):
                     imports.append({
                         'type': 'import',
                         'imported_name': alias.name,
+                        'asname': alias.asname,
                         'from_module': None,
                         'origin': origin,
                         'line': node.lineno,
@@ -222,7 +229,7 @@ def process_file(filename, base_directory=None):
         base_directory = os.path.dirname(filename)
     tree, code = parse_file(filename)
     elements = get_elements(tree)
-    imports = analyze_imports(filename, base_directory, tree)
+    imports = analyze_imports(filename, base_directory, tree, source=code)
     imports = check_path_exists(imports, base_directory)
     return {
         'filename': filename,

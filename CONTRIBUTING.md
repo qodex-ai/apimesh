@@ -1,6 +1,6 @@
 # Contributing to Swagger Generator
 
-First off — thanks for taking the time to contribute! 🎉  
+First off, thanks for taking the time to contribute! 🎉  
 This document explains how to propose changes, report issues, and help improve the project.
 
 > **Project summary:** Swagger Generator analyzes a codebase and produces an OpenAPI (Swagger) JSON. You can run it via a one-liner shell script or as an MCP server. See the [README](./README.md) for setup and usage details.
@@ -20,7 +20,7 @@ Follow the responsible disclosure process in our [Security Policy](./security.md
 ## 🪪 License
 
 By contributing, you agree that your contributions will be licensed under the
-[AGPL-3.0 License](./LICENSE.md).
+[MIT License](./LICENSE).
 
 ---
 
@@ -41,18 +41,31 @@ By contributing, you agree that your contributions will be licensed under the
 
 ## 🛠️ Development Setup
 
-> The repo primarily contains Python and a couple of shell scripts. You can run the tool either via the helper script or directly as an MCP server.
-
 ### Prerequisites
-- A recent Python 3.x
+- Python 3.10 or newer (CI and the dev venv use 3.11)
 - Git + a shell (bash/zsh)
-- (Optional) [uv](https://docs.astral.sh/uv/) or a virtual environment tool
 
-### Get the code
+### Get the code and install
 ```bash
 git clone https://github.com/qodex-ai/apimesh.git
 cd apimesh
+python3.11 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt -r requirements-dev.txt
 ```
+
+### Environment variables
+
+The CLI reads four paths from the environment. `run.sh` and the Docker image set them for you; set them yourself when running the Python entry point directly.
+
+| Variable | What it points at |
+| --- | --- |
+| `APIMESH_CONFIG_PATH` | This repo's `config.yml` (ignored dirs and framework routing patterns) |
+| `APIMESH_USER_REPO_PATH` | The repository being analyzed |
+| `APIMESH_USER_CONFIG_PATH` | Per-run `config.json` in the target repo's `apimesh/` workspace |
+| `APIMESH_OUTPUT_FILEPATH` | Where `swagger.json` is written |
+
+Optional: `APIMESH_API_HOST` and `APIMESH_OPENAI_MODEL` (also available as `--api-host` and `--model`), `APIMESH_SKIP_HTML=1` to skip the HTML viewer, and `APIMESH_TELEMETRY=0` to opt out of usage telemetry.
 
 ### Running the generator (two common paths)
 
@@ -64,7 +77,7 @@ mkdir -p apimesh
 cd apimesh
 curl -sSL https://raw.githubusercontent.com/qodex-ai/apimesh/refs/heads/main/run.sh -o run.sh
 chmod +x run.sh
-./run.sh --repo-path .. --project-api-key {project_api_key} --ai-chat-id {ai_chat_id}
+./run.sh --openai-api-key {openai_api_key}
 ```
 
 > After completion you should always see `config.json`, `swagger.json`, `apimesh-docs.html`, and `run.sh` inside your repo's `apimesh/` workspace.
@@ -115,11 +128,11 @@ We aim for clear, readable Python and tidy shell scripts.
 
 Before you open a PR:
 
+- [ ] `pytest tests/` passes.
 - [ ] The change is documented (README or inline comments as needed).
 - [ ] Scripts still work (`run.sh`, `bootstrap_mcp_runner.sh` if applicable).
 - [ ] Any new flags or behavior are reflected in the README examples.
 - [ ] Code is reasonably linted/typed (if you added type hints).
-- [ ] Tests added or manual test steps documented (see below).
 - [ ] No secrets or API keys committed.
 
 Open your PR against the `main` branch and fill out the template (or describe):
@@ -131,27 +144,30 @@ Open your PR against the `main` branch and fill out the template (or describe):
 
 ## 🧪 Testing Changes
 
-This project currently relies primarily on **manual validation**. Please include a short note in your PR describing how you tested:
+Run the suite from the repo root:
 
-**Suggested manual test flow**
-1. Choose a small public repo with a few HTTP endpoints (or a simple local sample).
-2. Run the generator using your change (script or MCP path).
-3. Verify a `swagger.json` was generated.
-4. Open it in Swagger UI / an OpenAPI viewer to confirm endpoints, paths, and schemas look correct.
-5. Try edge cases your change might affect (e.g., unusual file layout, multiple languages, missing dependencies).
+```bash
+pytest tests/
+```
 
-If you add unit tests:
-- Place them under a `tests/` folder.
-- Keep tests hermetic; avoid requiring network access whenever possible.
+CI runs the same command before it builds the Docker image, so a red suite blocks the release. Keep tests hermetic: no network access and no OpenAI key, and place them under `tests/`.
+
+For changes that alter generated output, also do one end-to-end run against a small repo with a few HTTP endpoints, and confirm the resulting `swagger.json` has the paths and schemas you expect.
 
 ---
 
 ## 🧱 Project Structure (high level)
 
-- `swagger_mcp.py` — MCP server entry and core orchestration.
-- `legacy_swagger_pipeline.py`, `run.sh`, `bootstrap_mcp_runner.sh` — runner/helper scripts.
-- `ruby_dependencies.py` — language-specific helpers (example).
-- `README.md`, `CODE_OF_CONDUCT.md`, `security.md`, `LICENSE.md` — docs & policies.
+- `swagger_generation_cli.py`: CLI entry point and run orchestration.
+- `swagger_mcp.py`: MCP server entry point.
+- `python_pipeline/`, `nodejs_pipeline/`, `rails_pipeline/`, `golang_pipeline/`: per-language static analysis that extracts endpoints without an LLM.
+- `file_scanner.py`, `framework_identifier.py`, `endpoints_extractor.py`, `faiss_index_generator.py`, `swagger_generator.py`: the LLM fallback path used when a pipeline cannot handle the repo.
+- `prompts.py`: every LLM prompt used above.
+- `config.py` + `config.yml`: ignored directories and per-framework routing patterns.
+- `user_config.py`, `utils.py`, `llm_client.py`, `telemetry_posthog.py`: per-run config, path helpers, OpenAI client, usage telemetry.
+- `run.sh`, `bootstrap_mcp_runner.sh`, `Dockerfile`, `docker-entrypoint.sh`: runners and packaging.
+- `tests/`: pytest suite.
+- `README.md`, `CODE_OF_CONDUCT.md`, `security.md`, `LICENSE`: docs & policies.
 
 (Filenames can evolve; check the tree for the latest layout.)
 

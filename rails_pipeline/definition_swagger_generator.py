@@ -3,6 +3,7 @@ import re
 import time
 from typing import List, Optional
 
+import pipeline_common
 from llm_client import OpenAiClient
 from prompts import (
     batch_swagger_generation_prompt,
@@ -17,8 +18,7 @@ _SYSTEM_PROMPT = (
     "Do not include any surrounding prose, markdown, or code fences."
 )
 
-# Seconds to wait before each retry of a failed API call (rate limits, timeouts).
-_RETRY_BACKOFF_SECONDS = (1, 4)
+_RETRY_BACKOFF_SECONDS = pipeline_common.API_RETRY_DELAYS
 
 # Framework wording handed to the shared batch prompt.
 BATCH_FRAMEWORK_LABEL = "Ruby on Rails"

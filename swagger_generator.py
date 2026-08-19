@@ -90,6 +90,16 @@ class SwaggerGeneration:
         print(f"\ngenerated {completed} of {total} endpoints ({failed} failed)")
         if total > 0 and completed == 0:
             raise RuntimeError("Swagger generation failed for every endpoint.")
+        swagger["info"]["x-apimesh-coverage"] = {
+            "endpoints_extracted": total,
+            "generated": completed,
+            "skipped_unchanged": 0,
+            "failed": failed,
+        }
+        print(
+            f"apimesh coverage: {completed} generated, 0 unchanged, "
+            f"{failed} failed of {total} extracted"
+        )
         return swagger
 
     @staticmethod
@@ -194,11 +204,14 @@ class SwaggerGeneration:
             if not display_path.startswith('./'):
                 display_path = './' + display_path
         print(f"Swagger JSON saved to {display_path}.")
-        # Generate HTML viewer file in the same directory
+        # Generate HTML viewer file in the same directory.
+        # Returns True when the viewer was written or deliberately skipped, and
+        # False when it was wanted but could not be produced; the CLI turns
+        # False into exit code 2 (spec written, viewer missing).
         if os.environ.get("APIMESH_SKIP_HTML", "").lower() in ("1", "true"):
             print("HTML viewer skipped because APIMESH_SKIP_HTML is set.")
-            return
-        SwaggerGeneration.generate_html_viewer(filename)
+            return True
+        return SwaggerGeneration.generate_html_viewer(filename) is not None
 
     @staticmethod
     def generate_html_viewer(swagger_json_path):
