@@ -10,7 +10,7 @@ class OpenAiClient:
         self.openai_api_key = self.load_openai_api_key()
         self.client = OpenAI(
             api_key=self.openai_api_key)
-        self.embeddings = OpenAIEmbeddings(model="text-embedding-ada-002", openai_api_key=self.openai_api_key)
+        self.embeddings = OpenAIEmbeddings(model="text-embedding-3-small", openai_api_key=self.openai_api_key)
 
     def call_chat_completion(self, messages, temperature=0.5):
         model = self.load_openai_model()

@@ -33,7 +33,7 @@ def _run_in_background(fn, *args, **kwargs) -> None:
 
 
 def _default_user_config_path() -> Path:
-    # ApiMesh already writes apimesh/config.json in the workspace. :contentReference[oaicite:4]{index=4}
+    # ApiMesh already writes apimesh/config.json in the workspace.
     p = os.getenv("APIMESH_USER_CONFIG_PATH") or str(Path("apimesh") / "config.json")
     return Path(p)
 
@@ -75,7 +75,7 @@ DEFAULT_TELEMETRY_ENABLED = True
 class PostHogTelemetry:
     enabled: bool
     api_key: str
-    host: str = "https://us.i.posthog.com"  # or https://eu.i.posthog.com :contentReference[oaicite:5]{index=5}
+    host: str = "https://us.i.posthog.com"  # or https://eu.i.posthog.com
     cfg_path: Path = _default_user_config_path()
 
     @classmethod
@@ -96,7 +96,7 @@ class PostHogTelemetry:
         return cls(enabled=enabled and bool(api_key), api_key=api_key, host=host)
 
     def _endpoint(self) -> str:
-        # PostHog event capture endpoint is /i/v0/e/ :contentReference[oaicite:6]{index=6}
+        # PostHog event capture endpoint is /i/v0/e/
         return f"{self.host.rstrip('/')}/i/v0/e/"
 
     def new_run_id(self) -> str:

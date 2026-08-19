@@ -163,4 +163,3 @@ routing_patterns_map:
     - 'app\.useGlobalPipes\('
     - '@Module\('
 
-gpt_4o_model_name: "gpt-5.1-codex"

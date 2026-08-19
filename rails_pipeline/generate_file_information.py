@@ -13,9 +13,11 @@ parser = Parser(RUBY_LANGUAGE)
 
 
 def parse_file(filename: str):
-    with open(filename, "r", encoding="utf-8") as f:
+    # Read and parse bytes: decoding as strict utf-8 first threw away the
+    # metadata of every file that is not utf-8, and tree-sitter works on bytes
+    # anyway.
+    with open(filename, "rb") as f:
         code = f.read()
-    code = code.encode("utf-8")
     tree = parser.parse(code)
     return tree, code
 

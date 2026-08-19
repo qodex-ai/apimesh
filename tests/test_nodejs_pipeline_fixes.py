@@ -17,6 +17,7 @@ os.environ["APIMESH_CONFIG_PATH"] = str(REPO_ROOT / "config.yml")
 
 from nodejs_pipeline import run_swagger_generation as run_module
 from nodejs_pipeline.find_api_definition_files import find_api_definition_files
+from nodejs_pipeline.generate_file_information import process_file
 from nodejs_pipeline.identify_api_functions import find_api_endpoints_js, join_mount_prefix
 from nodejs_pipeline.run_swagger_generation import (
     CONTEXT_TOKEN_BUDGET,
@@ -26,6 +27,7 @@ from nodejs_pipeline.run_swagger_generation import (
     _endpoint_key,
     _maybe_incremental_update,
     _merge_paths,
+    _normalize_route,
     _remove_endpoint_from_swagger,
     run_swagger_generation,
     should_process_directory,
@@ -125,11 +127,10 @@ def test_cross_file_mount_prefix(tmp_path):
     router_file = _write(repo / "routes" / "users.js", CROSS_FILE_ROUTER)
 
     prefixes = _build_mount_prefix_map(str(repo))
-    prefix = prefixes.get(str(router_file.resolve()))
-    assert prefix == "/api/v1"
+    assert prefixes.get(str(router_file.resolve())) == ["/api/v1"]
 
     mounted = {
-        (endpoint["method"], join_mount_prefix(prefix, endpoint["route"]))
+        (endpoint["method"], join_mount_prefix("/api/v1", endpoint["route"]))
         for endpoint in find_api_endpoints_js(router_file)
     }
     assert mounted == {("GET", "/api/v1"), ("GET", "/api/v1/:id")}
@@ -151,7 +152,7 @@ def test_inline_require_mount_prefix(tmp_path):
     router_file = _write(repo / "routes" / "users.js", CROSS_FILE_ROUTER)
 
     prefixes = _build_mount_prefix_map(str(repo))
-    assert prefixes.get(str(router_file.resolve())) == "/api/v1"
+    assert prefixes.get(str(router_file.resolve())) == ["/api/v1"]
 
 
 def test_cross_file_mount_map_empty_without_mounts(tmp_path):
@@ -293,6 +294,41 @@ module.exports = router;
 
 DEFAULT_JOB_SPECS = [("GET", "/orders", 3, 3)]
 
+UNTOUCHED_JS = """const express = require('express');
+const router = express.Router();
+router.get('/health', (req, res) => res.send('ok'));
+router.get('/ping', (req, res) => res.send('ok'));
+module.exports = router;
+"""
+
+UNTOUCHED_JOB_SPECS = [("GET", "/health", 3, 3), ("GET", "/ping", 4, 4)]
+
+# Endpoints of a file git never reports as changed, staged by every incremental
+# fixture. The escalation gate hands the run back to the full path once more
+# than half the extracted endpoints are dirty, and one dirty endpoint out of one
+# is already past that.
+UNTOUCHED_INDEX = {"GET /health": {"files": []}, "GET /ping": {"files": []}}
+
+
+def _jobs(source, job_specs):
+    return [
+        {
+            "type": "function",
+            "method": method,
+            "route": route,
+            "file_path": str(source),
+            "start_line": start_line,
+            "end_line": end_line,
+        }
+        for method, route, start_line, end_line in job_specs
+    ]
+
+
+def _handler_hash(source_text, start_line, end_line, context_blocks=()):
+    """The context hash of one handler, taken off the source the fixture writes."""
+    lines = source_text.splitlines(keepends=True)
+    return run_module._context_hash(list(context_blocks), lines[start_line - 1 : end_line])
+
 
 def _incremental_fixture(
     tmp_path,
@@ -305,6 +341,7 @@ def _incremental_fixture(
     """Stage an existing swagger plus api index so the incremental path runs."""
     repo = tmp_path / "repo"
     source = _write(repo / "routes.js", source_text)
+    untouched = _write(repo / "untouched.js", UNTOUCHED_JS)
     out_dir = tmp_path / "out"
     out_dir.mkdir()
     swagger_path = out_dir / "swagger.json"
@@ -313,7 +350,9 @@ def _incremental_fixture(
         encoding="utf-8",
     )
     index_path = out_dir / "api_index.json"
-    index_path.write_text(json.dumps(existing_index), encoding="utf-8")
+    index_path.write_text(
+        json.dumps({**UNTOUCHED_INDEX, **existing_index}), encoding="utf-8"
+    )
 
     monkeypatch.setenv("APIMESH_USER_REPO_PATH", str(repo))
     monkeypatch.setenv("APIMESH_OUTPUT_FILEPATH", str(swagger_path))
@@ -321,17 +360,7 @@ def _incremental_fixture(
         run_module, "get_changed_files_since", lambda *args, **kwargs: {os.path.abspath(str(source))}
     )
     monkeypatch.setattr(run_module, "get_git_commit_hash", lambda: "head")
-    jobs = [
-        {
-            "type": "function",
-            "method": method,
-            "route": route,
-            "file_path": str(source),
-            "start_line": start_line,
-            "end_line": end_line,
-        }
-        for method, route, start_line, end_line in job_specs
-    ]
+    jobs = _jobs(source, job_specs) + _jobs(untouched, UNTOUCHED_JOB_SPECS)
     return repo, source, index_path, jobs
 
 
@@ -351,7 +380,7 @@ def test_failed_endpoint_keeps_its_index_entry_dirty(tmp_path, monkeypatch):
     # The failed key is dropped from the index entirely: kept stale entries
     # stopped retries once the commit reference advanced, an absent key reads
     # as newly added next run.
-    assert json.loads(index_path.read_text(encoding="utf-8")) == {}
+    assert json.loads(index_path.read_text(encoding="utf-8")) == UNTOUCHED_INDEX
 
 
 def test_successful_endpoint_refreshes_index_and_removals_still_apply(tmp_path, monkeypatch):
@@ -371,7 +400,11 @@ def test_successful_endpoint_refreshes_index_and_removals_still_apply(tmp_path, 
     swagger = _maybe_incremental_update(str(repo), jobs)
     assert swagger["paths"] == {"/orders": {"get": {"summary": "Orders"}}}
     assert json.loads(index_path.read_text(encoding="utf-8")) == {
-        "GET /orders": {"files": [{"file_path": os.path.abspath(str(source)), "imports": []}]}
+        **UNTOUCHED_INDEX,
+        "GET /orders": {
+            "files": [{"file_path": os.path.abspath(str(source)), "imports": []}],
+            "context_hash": _handler_hash(ROUTER_JS, 3, 3),
+        },
     }
 
 
@@ -385,7 +418,7 @@ def test_failed_endpoint_is_retried_when_no_files_changed(tmp_path, monkeypatch)
     monkeypatch.setattr(run_module, "get_function_definition_swagger", _boom)
     first = _maybe_incremental_update(str(repo), jobs)
     assert first["paths"] == {}
-    assert json.loads(index_path.read_text(encoding="utf-8")) == {}
+    assert json.loads(index_path.read_text(encoding="utf-8")) == UNTOUCHED_INDEX
 
     monkeypatch.setattr(run_module, "get_changed_files_since", lambda *args, **kwargs: set())
     monkeypatch.setattr(
@@ -397,7 +430,11 @@ def test_failed_endpoint_is_retried_when_no_files_changed(tmp_path, monkeypatch)
     second = _maybe_incremental_update(str(repo), jobs)
     assert second["paths"] == {"/orders": {"get": {"summary": "Orders"}}}
     assert json.loads(index_path.read_text(encoding="utf-8")) == {
-        "GET /orders": {"files": [{"file_path": os.path.abspath(str(source)), "imports": []}]}
+        **UNTOUCHED_INDEX,
+        "GET /orders": {
+            "files": [{"file_path": os.path.abspath(str(source)), "imports": []}],
+            "context_hash": _handler_hash(ROUTER_JS, 3, 3),
+        },
     }
 
 
@@ -419,7 +456,10 @@ def test_unchanged_repo_returns_the_existing_swagger_untouched(tmp_path, monkeyp
 
     swagger = _maybe_incremental_update(str(repo), jobs)
     assert swagger["paths"] == {"/orders": {"get": {"summary": "old"}}}
-    assert json.loads(index_path.read_text(encoding="utf-8")) == existing_index
+    assert json.loads(index_path.read_text(encoding="utf-8")) == {
+        **UNTOUCHED_INDEX,
+        **existing_index,
+    }
 
 
 def test_legacy_route_spellings_are_canonicalized_on_load(tmp_path, monkeypatch):
@@ -454,7 +494,7 @@ def test_legacy_route_spellings_are_canonicalized_on_load(tmp_path, monkeypatch)
     }
 
     index = run_module._load_existing_api_index()
-    assert set(index) == {"GET /users/{id}", "POST /users/{id}"}
+    assert set(index) == {"GET /users/{id}", "POST /users/{id}", *UNTOUCHED_INDEX}
     assert index["GET /users/{id}"]["files"][0]["file_path"] == "/repo/routes.js"
 
 
@@ -530,6 +570,7 @@ def test_incremental_dirty_endpoints_of_one_file_share_a_batch(tmp_path, monkeyp
     assert set(json.loads(index_path.read_text(encoding="utf-8"))) == {
         "GET /orders",
         "POST /orders",
+        *UNTOUCHED_INDEX,
     }
 
 
@@ -554,7 +595,300 @@ def test_incremental_batch_indexes_only_the_keys_that_generated(tmp_path, monkey
 
     assert len(batch_calls) == 1
     assert swagger["paths"] == {"/orders": {"get": {"summary": "List"}}}
-    assert set(json.loads(index_path.read_text(encoding="utf-8"))) == {"GET /orders"}
+    assert set(json.loads(index_path.read_text(encoding="utf-8"))) == {
+        "GET /orders",
+        *UNTOUCHED_INDEX,
+    }
+
+
+def test_generation_stores_the_context_hash(tmp_path, monkeypatch):
+    """The index carries the fingerprint of the prompt the endpoint came from."""
+    repo, _, index_path, jobs = _incremental_fixture(tmp_path, monkeypatch, {})
+    monkeypatch.setattr(
+        run_module,
+        "get_batch_definition_swagger",
+        lambda *args, **kwargs: {"paths": {"/orders": {"get": {"summary": "Orders"}}}},
+    )
+
+    _maybe_incremental_update(str(repo), jobs)
+
+    index = json.loads(index_path.read_text(encoding="utf-8"))
+    assert index["GET /orders"]["context_hash"] == _handler_hash(ROUTER_JS, 3, 3)
+
+
+def test_unchanged_context_hash_skips_the_endpoint(tmp_path, monkeypatch, capsys):
+    """A file can change without changing what the prompt for its endpoint says."""
+    existing_index = {
+        "GET /orders": {"files": [], "context_hash": _handler_hash(ROUTER_JS, 3, 3)}
+    }
+    repo, source, index_path, jobs = _incremental_fixture(
+        tmp_path,
+        monkeypatch,
+        existing_index,
+        existing_paths={"/orders": {"get": {"summary": "old"}}},
+    )
+    monkeypatch.setattr(
+        run_module,
+        "get_batch_definition_swagger",
+        lambda *args, **kwargs: pytest.fail("the context hash matched, nothing may be generated"),
+    )
+    monkeypatch.setattr(
+        run_module,
+        "get_function_definition_swagger",
+        lambda *args, **kwargs: pytest.fail("the context hash matched, nothing may be generated"),
+    )
+
+    swagger = _maybe_incremental_update(str(repo), jobs)
+
+    assert swagger["paths"] == {"/orders": {"get": {"summary": "old"}}}
+    # The skipped endpoint keeps its hash, and its entry is rebuilt from the
+    # current extraction instead of being carried over as it was.
+    assert json.loads(index_path.read_text(encoding="utf-8")) == {
+        **UNTOUCHED_INDEX,
+        "GET /orders": {
+            "files": [{"file_path": os.path.abspath(str(source)), "imports": []}],
+            "context_hash": _handler_hash(ROUTER_JS, 3, 3),
+        },
+    }
+    assert "apimesh: skipped 1 unchanged endpoints (context hash match)" in capsys.readouterr().out
+
+
+RELOCATION_ROUTER = """const helper = require('./{module}');
+const express = require('express');
+const router = express.Router();
+router.get('/orders', (req, res) => res.send(helper()));
+module.exports = router;
+"""
+
+RELOCATION_HELPER = """function helper() {
+  return [];
+}
+module.exports = helper;
+"""
+
+
+def _relocation_jobs(repo: Path) -> list:
+    """The handler at routes.js:4 plus the endpoints nothing in this test touches."""
+    return _jobs(repo / "routes.js", [("GET", "/orders", 4, 4)]) + _jobs(
+        repo / "untouched.js", UNTOUCHED_JOB_SPECS
+    )
+
+
+def _stage_metadata(repo: Path) -> None:
+    """The per file metadata the run writes before anything reads the index."""
+    run_module._reset_metadata_state()
+    run_module._build_metadata_cache(str(repo))
+
+
+def _relocation_pass(monkeypatch, repo: Path, out_dir: Path, changed_files, summary):
+    """One incremental pass over the repo as it is on disk right now."""
+    calls = []
+
+    def fake_batch(endpoints_list, shared_context, per_endpoint_sections):
+        calls.append(endpoints_list)
+        return {"paths": {"/orders": {"get": {"summary": summary}}}}
+
+    monkeypatch.setattr(run_module, "get_batch_definition_swagger", fake_batch)
+    monkeypatch.setattr(
+        run_module,
+        "get_function_definition_swagger",
+        lambda *args, **kwargs: pytest.fail("the batch path documents every endpoint"),
+    )
+    monkeypatch.setattr(run_module, "get_changed_files_since", lambda *args, **kwargs: changed_files)
+    monkeypatch.setattr(run_module, "get_git_commit_hash", lambda: "head")
+    _stage_metadata(repo)
+
+    swagger = _maybe_incremental_update(str(repo), _relocation_jobs(repo))
+
+    # The caller persists the spec between runs, the pipeline reads it back.
+    Path(os.environ["APIMESH_OUTPUT_FILEPATH"]).write_text(
+        json.dumps(swagger), encoding="utf-8"
+    )
+    index = json.loads((out_dir / "api_index.json").read_text(encoding="utf-8"))
+    return index, calls
+
+
+def _imported_paths(entry) -> list:
+    return [
+        imp["file_path"]
+        for file_entry in entry["files"]
+        for imp in file_entry["imports"]
+    ]
+
+
+def test_a_relocated_dependency_is_reindexed_when_the_endpoint_skips(tmp_path, monkeypatch):
+    """A helper that moves to a file with identical text keeps the prompt, and
+    so the hash, exactly as it was, so the endpoint skips. Its index entry still
+    has to follow the helper: keeping the old one points the dependency hop at
+    the file the helper left, and every later edit to the file it moved to is
+    invisible, so the endpoint is documented from stale source forever.
+    """
+    repo = tmp_path / "repo"
+    _write(repo / "routes.js", RELOCATION_ROUTER.format(module="helpers_a"))
+    _write(repo / "helpers_a.js", RELOCATION_HELPER)
+    _write(repo / "untouched.js", UNTOUCHED_JS)
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    (out_dir / "swagger.json").write_text(
+        json.dumps({"info": {"commit_reference": "base"}, "paths": {}}), encoding="utf-8"
+    )
+    (out_dir / "api_index.json").write_text(json.dumps(UNTOUCHED_INDEX), encoding="utf-8")
+    monkeypatch.setenv("APIMESH_USER_REPO_PATH", str(repo))
+    monkeypatch.setenv("APIMESH_OUTPUT_FILEPATH", str(out_dir / "swagger.json"))
+
+    index, calls = _relocation_pass(monkeypatch, repo, out_dir, set(), "documented")
+
+    assert calls == ["GET /orders"]
+    assert _imported_paths(index["GET /orders"]) == [str(repo / "helpers_a.js")]
+    stored_hash = index["GET /orders"]["context_hash"]
+
+    # The helper moves to a file that reads the same, and only the require line
+    # of the handler's own file changes with it.
+    (repo / "helpers_a.js").unlink()
+    _write(repo / "helpers_b.js", RELOCATION_HELPER)
+    _write(repo / "routes.js", RELOCATION_ROUTER.format(module="helpers_b"))
+
+    index, calls = _relocation_pass(
+        monkeypatch, repo, out_dir, {os.path.abspath(str(repo / "routes.js"))}, "never asked for"
+    )
+
+    assert calls == []
+    assert index["GET /orders"]["context_hash"] == stored_hash
+    assert _imported_paths(index["GET /orders"]) == [str(repo / "helpers_b.js")]
+
+    # The edit the stale entry used to hide: the file the helper moved to.
+    _write(repo / "helpers_b.js", RELOCATION_HELPER.replace("return [];", "return [1];"))
+
+    index, calls = _relocation_pass(
+        monkeypatch, repo, out_dir, {os.path.abspath(str(repo / "helpers_b.js"))}, "redocumented"
+    )
+
+    assert calls == ["GET /orders"]
+    assert index["GET /orders"]["context_hash"] != stored_hash
+
+
+def test_a_changed_handler_regenerates_over_its_stored_hash(tmp_path, monkeypatch):
+    """The other half of the skip: a hash that no longer matches costs a call."""
+    repo, _, index_path, jobs = _incremental_fixture(
+        tmp_path,
+        monkeypatch,
+        {"GET /orders": {"files": [], "context_hash": "hash of the handler as it was"}},
+        existing_paths={"/orders": {"get": {"summary": "old"}}},
+    )
+    batch_calls = []
+
+    def _fake_batch(endpoints_list, shared_context, per_endpoint_sections):
+        batch_calls.append(endpoints_list)
+        return {"paths": {"/orders": {"get": {"summary": "Orders"}}}}
+
+    monkeypatch.setattr(run_module, "get_batch_definition_swagger", _fake_batch)
+
+    swagger = _maybe_incremental_update(str(repo), jobs)
+
+    assert batch_calls == ["GET /orders"]
+    assert swagger["paths"] == {"/orders": {"get": {"summary": "Orders"}}}
+    index = json.loads(index_path.read_text(encoding="utf-8"))
+    assert index["GET /orders"]["context_hash"] == _handler_hash(ROUTER_JS, 3, 3)
+
+
+def test_an_endpoint_without_a_stored_hash_regenerates(tmp_path, monkeypatch):
+    """An index written before context hashes existed may not skip anything."""
+    repo, _, _, jobs = _incremental_fixture(
+        tmp_path,
+        monkeypatch,
+        {"GET /orders": {"files": []}},
+        existing_paths={"/orders": {"get": {"summary": "old"}}},
+    )
+    batch_calls = []
+
+    def _fake_batch(endpoints_list, shared_context, per_endpoint_sections):
+        batch_calls.append(endpoints_list)
+        return {"paths": {"/orders": {"get": {"summary": "Orders"}}}}
+
+    monkeypatch.setattr(run_module, "get_batch_definition_swagger", _fake_batch)
+
+    swagger = _maybe_incremental_update(str(repo), jobs)
+
+    assert batch_calls == ["GET /orders"]
+    assert swagger["paths"] == {"/orders": {"get": {"summary": "Orders"}}}
+
+
+def test_a_changed_dependency_marks_the_endpoint_dirty(tmp_path, monkeypatch):
+    """One hop out: the handler's own file is untouched, a file it imports changed."""
+    helper = tmp_path / "repo" / "helper.js"
+    existing_index = {
+        "GET /orders": {
+            "files": [
+                {
+                    "file_path": str(tmp_path / "repo" / "routes.js"),
+                    "imports": [{"file_path": str(helper), "name": "compute"}],
+                }
+            ]
+        }
+    }
+    repo, _, _, jobs = _incremental_fixture(
+        tmp_path,
+        monkeypatch,
+        existing_index,
+        existing_paths={"/orders": {"get": {"summary": "old"}}},
+    )
+    _write(helper, "module.exports = (value) => value + 1;\n")
+    monkeypatch.setattr(
+        run_module,
+        "get_changed_files_since",
+        lambda *args, **kwargs: {os.path.abspath(str(helper))},
+    )
+    batch_calls = []
+
+    def _fake_batch(endpoints_list, shared_context, per_endpoint_sections):
+        batch_calls.append(endpoints_list)
+        return {"paths": {"/orders": {"get": {"summary": "Orders"}}}}
+
+    monkeypatch.setattr(run_module, "get_batch_definition_swagger", _fake_batch)
+
+    swagger = _maybe_incremental_update(str(repo), jobs)
+
+    assert batch_calls == ["GET /orders"]
+    assert swagger["paths"] == {"/orders": {"get": {"summary": "Orders"}}}
+
+
+THREE_ROUTE_JS = """const express = require('express');
+const router = express.Router();
+router.get('/orders', (req, res) => res.send([]));
+router.post('/orders', (req, res) => res.send({}));
+router.delete('/orders', (req, res) => res.send({}));
+module.exports = router;
+"""
+
+THREE_DIRTY_JOB_SPECS = [
+    ("GET", "/orders", 3, 3),
+    ("POST", "/orders", 4, 4),
+    ("DELETE", "/orders", 5, 5),
+]
+
+
+def test_more_than_half_the_endpoints_dirty_hands_back_a_full_run(tmp_path, monkeypatch, capsys):
+    """Patching a spec endpoint by endpoint stops paying off past the halfway mark."""
+    repo, _, index_path, jobs = _incremental_fixture(
+        tmp_path,
+        monkeypatch,
+        {},
+        source_text=THREE_ROUTE_JS,
+        job_specs=THREE_DIRTY_JOB_SPECS,
+    )
+    monkeypatch.setattr(
+        run_module,
+        "get_batch_definition_swagger",
+        lambda *args, **kwargs: pytest.fail("the full run generates, not the incremental pass"),
+    )
+
+    assert _maybe_incremental_update(str(repo), jobs) is None
+    assert (
+        "apimesh: 3 of 5 endpoints affected, running a full regeneration"
+        in capsys.readouterr().out
+    )
+    # Nothing is written on the way out: the full run replaces the index.
+    assert json.loads(index_path.read_text(encoding="utf-8")) == UNTOUCHED_INDEX
 
 
 FULL_RUN_APP = """const express = require('express');
@@ -649,6 +983,8 @@ def test_batches_are_packed_to_fit_the_context_budget(tmp_path, monkeypatch):
 def test_packed_batches_keep_their_sections_inside_the_budget(tmp_path, monkeypatch):
     """The invariant the packing exists for, read off the prompt sections."""
     monkeypatch.setattr(run_module, "MAX_HANDLER_TOKENS", 4000)
+    monkeypatch.setenv("APIMESH_USER_REPO_PATH", str(tmp_path))
+    monkeypatch.setenv("APIMESH_OUTPUT_FILEPATH", str(tmp_path / "out" / "swagger.json"))
     _, jobs = _write_sized_handlers(tmp_path, [2500, 2500, 2500])
     sections_sent = []
 
@@ -719,6 +1055,8 @@ def test_one_batch_call_documents_every_endpoint_of_the_file(tmp_path, monkeypat
     }
     index = json.loads((out_dir / "api_index.json").read_text(encoding="utf-8"))
     assert set(index) == {"GET /users", "POST /orders"}
+    # A full run has to leave the hashes behind too, or the next run skips nothing.
+    assert all(entry["context_hash"] for entry in index.values())
 
 
 def test_endpoint_missing_from_the_batch_response_fails_alone(tmp_path, monkeypatch):
@@ -888,3 +1226,372 @@ def test_nestjs_undecorated_methods_are_not_endpoints(tmp_path):
     controller = _write(tmp_path / "cats.controller.ts", NEST_CONTROLLER)
     routes = {route for _, route in _routes(controller)}
     assert not any("helper" in route for route in routes)
+
+
+SPANNED_JS = """function compute(a, b) {
+  const total = a + b;
+  const scaled = total * 2;
+  return scaled;
+}
+
+class Ledger {
+  add(entry) {
+    return entry;
+  }
+}
+
+const handler = async (req, res) => {
+  res.json(compute(1, 2));
+};
+"""
+
+
+def _by_name(entries):
+    return {entry["name"]: entry for entry in entries}
+
+
+def test_metadata_records_the_full_definition_span(tmp_path):
+    """Line ranges came off the name identifier, so every symbol was one line.
+
+    A single-line range makes the context builder hand the model the signature
+    of a helper and none of its body.
+    """
+    source = _write(tmp_path / "app.js", SPANNED_JS)
+    elements = process_file(str(source), str(tmp_path))["elements"]
+
+    compute = _by_name(elements["functions"])["compute"]
+    assert (compute["start_line"], compute["end_line"]) == (1, 5)
+    assert compute["line"] == 1
+
+    ledger = _by_name(elements["classes"])["Ledger"]
+    assert (ledger["start_line"], ledger["end_line"]) == (7, 11)
+
+    handler = _by_name(elements["variables"])["handler"]
+    assert (handler["start_line"], handler["end_line"]) == (13, 15)
+
+
+PAIRED_IMPORTS_JS = """const express = require('express');
+const PORT = 3000;
+const db = require('./db');
+const TIMEOUT = 5000;
+const helper = require('./helper');
+"""
+
+
+def test_requires_pair_with_their_own_declarator(tmp_path):
+    """Sources were zipped against every declarator, not just the requiring ones.
+
+    The plain `const PORT` in between shifted the alignment, so ./db was
+    recorded as imported under the name PORT and the last require lost its name.
+    """
+    repo = tmp_path / "repo"
+    _write(repo / "db.js", "module.exports = {};\n")
+    _write(repo / "helper.js", "module.exports = {};\n")
+    source = _write(repo / "app.js", PAIRED_IMPORTS_JS)
+
+    imports = process_file(str(source), str(repo))["elements"]["imports"]
+
+    assert [(item["imported_name"], item["from_module"]) for item in imports] == [
+        ("express", "express"),
+        ("db", "./db"),
+        ("helper", "./helper"),
+    ]
+
+
+def test_relative_require_resolves_against_the_importing_file(tmp_path):
+    """'./helper' means a sibling of the requiring file, not of the repo root."""
+    repo = tmp_path / "repo"
+    sibling = _write(repo / "src" / "services" / "helper.js", "module.exports = {};\n")
+    source = _write(
+        repo / "src" / "services" / "user.js",
+        "const helper = require('./helper');\nmodule.exports = helper;\n",
+    )
+
+    imports = process_file(str(source), str(repo))["elements"]["imports"]
+
+    assert len(imports) == 1
+    assert imports[0]["origin"] == str(sibling.resolve())
+    assert imports[0]["path_exists"] is True
+
+
+MODERN_JS = """const express = require('express');
+const axios = require('axios');
+const cache = require('./cache');
+const apiClient = require('./apiClient');
+const app = express();
+
+class Settings {
+  timeout = 5000;
+}
+
+app.get('/users/:id', async (req, res) => {
+  const cached = cache.get(req.params.id);
+  const upstream = await axios.get('/remote');
+  const extra = await apiClient.get('/extra');
+  const name = req.user?.profile?.name ?? 'anonymous';
+  res.json({ name, cached, upstream, extra });
+});
+
+app.post('/users', (req, res) => res.status(201).json({}));
+
+module.exports = app;
+"""
+
+
+def test_modern_javascript_extracts_with_full_line_spans(tmp_path):
+    """Optional chaining, nullish coalescing and class fields used to break the
+    JS parser, which dropped the file to the regex extractor and its one-line,
+    route-object-guessing output."""
+    source = _write(tmp_path / "app.js", MODERN_JS)
+    endpoints = find_api_endpoints_js(source)
+    spans = {
+        (endpoint["method"], endpoint["route"]): (endpoint["start_line"], endpoint["end_line"])
+        for endpoint in endpoints
+    }
+
+    assert spans == {("GET", "/users/:id"): (11, 17), ("POST", "/users"): (19, 19)}
+
+
+def test_http_clients_and_caches_are_not_endpoints(tmp_path):
+    """axios.get, cache.get and apiClient.get are calls out, not registrations."""
+    source = _write(tmp_path / "app.js", MODERN_JS)
+    routes = {route for _, route in _routes(source)}
+
+    assert routes == {"/users/:id", "/users"}
+
+
+SHORT_ROUTER_JS = """const express = require('express');
+const r = express.Router();
+
+r.get('/widgets', (req, res) => res.send([]));
+
+module.exports = r;
+"""
+
+
+def test_a_router_with_an_unroutey_name_still_extracts(tmp_path):
+    """The name filter must not cost the routers the file declares itself."""
+    source = _write(tmp_path / "widgets.js", SHORT_ROUTER_JS)
+    assert _routes(source) == {("GET", "/widgets")}
+
+
+def test_normalize_route_handles_optional_hyphenated_and_constrained_params():
+    assert _normalize_route("/a/:id?") == "/a/{id}"
+    assert _normalize_route("/:from-:to") == "/{from}-{to}"
+    assert _normalize_route("/u/:id(\\d+)") == "/u/{id}"
+    # Idempotent: a route already in the OpenAPI spelling is left alone.
+    assert _normalize_route("/u/{id}") == "/u/{id}"
+
+
+def test_normalize_route_consumes_a_nested_constraint_whole():
+    """A constraint with its own parentheses used to leave a stray ')' behind."""
+    assert _normalize_route("/:id(\\d{2}(?:-\\d{2})?)") == "/{id}"
+    assert _normalize_route("/x/:id(\\d+)?/y") == "/x/{id}/y"
+    # An escaped paren inside the constraint does not close it.
+    assert _normalize_route("/:id(a\\)b)") == "/{id}"
+
+
+def test_normalize_route_leaves_an_unbalanced_constraint_alone():
+    """Better an express spelling than a path with half a constraint in it."""
+    assert _normalize_route("/:id(\\d{2}") == "/:id(\\d{2}"
+    assert _normalize_route("/a/:id((\\d+)/b") == "/a/:id((\\d+)/b"
+
+
+TWICE_MOUNTED_APP = """const express = require('express');
+const app = express();
+const router = express.Router();
+
+router.get('/users', (req, res) => res.send([]));
+
+app.use('/api/v1', router);
+app.use('/api/v2', router);
+
+module.exports = app;
+"""
+
+
+def test_router_mounted_twice_yields_both_prefixes(tmp_path):
+    """The mount map kept one prefix per router, so /api/v2 was never emitted."""
+    app_file = _write(tmp_path / "app.js", TWICE_MOUNTED_APP)
+    assert _routes(app_file) == {
+        ("GET", "/api/v1/users"),
+        ("GET", "/api/v2/users"),
+    }
+
+
+TWICE_MOUNTED_CROSS_FILE_APP = """const express = require('express');
+const usersRouter = require('./routes/users');
+const app = express();
+
+app.use('/v1', usersRouter);
+app.use('/v2', usersRouter);
+
+module.exports = app;
+"""
+
+
+def test_cross_file_router_mounted_twice_documents_both_path_sets(tmp_path, monkeypatch):
+    """A router required elsewhere and mounted twice reaches the spec twice."""
+    repo = tmp_path / "repo"
+    _write(repo / "app.js", TWICE_MOUNTED_CROSS_FILE_APP)
+    router_file = _write(repo / "routes" / "users.js", CROSS_FILE_ROUTER)
+    monkeypatch.setenv("APIMESH_USER_REPO_PATH", str(repo))
+    monkeypatch.setenv("APIMESH_OUTPUT_FILEPATH", str(tmp_path / "out" / "swagger.json"))
+
+    assert _build_mount_prefix_map(str(repo)).get(str(router_file.resolve())) == ["/v1", "/v2"]
+
+    monkeypatch.setattr(
+        run_module,
+        "get_batch_definition_swagger",
+        lambda *args, **kwargs: {
+            "paths": {
+                "/v1": {"get": {"summary": "List v1"}},
+                "/v1/{id}": {"get": {"summary": "One v1"}},
+                "/v2": {"get": {"summary": "List v2"}},
+                "/v2/{id}": {"get": {"summary": "One v2"}},
+            }
+        },
+    )
+
+    swagger = run_swagger_generation("http://localhost:3000")
+
+    assert set(swagger["paths"]) == {"/v1", "/v1/{id}", "/v2", "/v2/{id}"}
+
+
+JSDOC_MODULE_ONLY_JS = """/**
+ * @module utils/logger
+ */
+const format = (value) => String(value);
+
+module.exports = { format };
+"""
+
+
+def test_a_jsdoc_module_tag_alone_does_not_select_a_file(tmp_path):
+    """'module' and 'api' are ordinary JSDoc tags, not route decorators.
+
+    Keeping them in the decorator set handed the LLM files that define no
+    endpoint at all.
+    """
+    repo = tmp_path / "repo"
+    _write(repo / "utils" / "logger.js", JSDOC_MODULE_ONLY_JS)
+    router = _write(repo / "routes" / "users.js", CROSS_FILE_ROUTER)
+
+    found = find_api_definition_files(str(repo))
+    assert [Path(path).resolve() for path in found] == [router.resolve()]
+
+
+CACHE_APP = """const express = require('express');
+const app = express();
+
+app.get('/users', (req, res) => res.send([]));
+
+module.exports = app;
+"""
+
+
+def _cache_dir(out_dir: Path) -> Path:
+    return out_dir / "metadata_cache" / "nodejs"
+
+
+def _cache_run(monkeypatch, repo: Path, out_dir: Path):
+    """One full run over the repo, with every LLM call answered locally."""
+    monkeypatch.setenv("APIMESH_USER_REPO_PATH", str(repo))
+    monkeypatch.setenv("APIMESH_OUTPUT_FILEPATH", str(out_dir / "swagger.json"))
+    # The incremental pass would skip the work these tests are about.
+    monkeypatch.setattr(run_module, "_maybe_incremental_update", lambda *args: None)
+    fragment = {"paths": {"/users": {"get": {"summary": "listed"}}}}
+    monkeypatch.setattr(
+        run_module, "get_batch_definition_swagger", lambda *args, **kwargs: fragment
+    )
+    monkeypatch.setattr(
+        run_module, "get_function_definition_swagger", lambda *args, **kwargs: fragment
+    )
+    return run_swagger_generation("http://localhost:3000")
+
+
+def _count_parses(monkeypatch) -> list:
+    """Every file the run actually hands to the parser."""
+    parsed = []
+    real_process_file = run_module.process_file
+
+    def _counting(file_path, directory_path):
+        parsed.append(file_path)
+        return real_process_file(file_path, directory_path)
+
+    monkeypatch.setattr(run_module, "process_file", _counting)
+    return parsed
+
+
+def test_metadata_is_cached_outside_the_scanned_repo(tmp_path, monkeypatch):
+    """The run built its metadata directory inside the repo it was reading."""
+    repo = tmp_path / "repo"
+    _write(repo / "app.js", CACHE_APP)
+    out_dir = tmp_path / "out"
+    before = sorted(path.name for path in repo.iterdir())
+
+    _cache_run(monkeypatch, repo, out_dir)
+
+    entries = sorted(path.name for path in _cache_dir(out_dir).glob("*.json"))
+    assert len(entries) == 1 and entries[0].startswith("app_")
+    assert sorted(path.name for path in repo.iterdir()) == before
+
+
+def test_a_second_run_over_unchanged_files_parses_nothing(tmp_path, monkeypatch):
+    """The cache is content addressed, so untouched files are never reparsed."""
+    repo = tmp_path / "repo"
+    _write(repo / "app.js", CACHE_APP)
+    out_dir = tmp_path / "out"
+    _cache_run(monkeypatch, repo, out_dir)
+
+    parsed = _count_parses(monkeypatch)
+    _cache_run(monkeypatch, repo, out_dir)
+
+    assert parsed == []
+
+
+def test_an_edited_file_is_reparsed_and_its_stale_entry_dropped(tmp_path, monkeypatch):
+    """A new content hash means a new entry, and the old one has to go."""
+    repo = tmp_path / "repo"
+    source = _write(repo / "app.js", CACHE_APP)
+    out_dir = tmp_path / "out"
+    _cache_run(monkeypatch, repo, out_dir)
+    stale = sorted(_cache_dir(out_dir).glob("*.json"))
+
+    _write(source, CACHE_APP.replace("res.send([])", "res.send([1])"))
+    parsed = _count_parses(monkeypatch)
+    _cache_run(monkeypatch, repo, out_dir)
+
+    assert parsed == [str(source)]
+    assert not stale[0].exists()
+    assert len(list(_cache_dir(out_dir).glob("*.json"))) == 1
+
+
+def test_an_existing_qodex_directory_in_the_repo_is_left_alone(tmp_path, monkeypatch):
+    """That directory used to be rebuilt and then deleted, user files and all."""
+    repo = tmp_path / "repo"
+    _write(repo / "app.js", CACHE_APP)
+    kept = _write(repo / "qodex_file_information" / "notes.txt", "mine\n")
+    out_dir = tmp_path / "out"
+
+    _cache_run(monkeypatch, repo, out_dir)
+
+    assert kept.read_text(encoding="utf-8") == "mine\n"
+
+
+def test_a_stale_version_marker_wipes_the_cache(tmp_path, monkeypatch):
+    """Entries written by an older metadata format must not be read back."""
+    repo = tmp_path / "repo"
+    source = _write(repo / "app.js", CACHE_APP)
+    out_dir = tmp_path / "out"
+    _cache_run(monkeypatch, repo, out_dir)
+    cache_dir = _cache_dir(out_dir)
+    (cache_dir / "cache_version").write_text("0", encoding="utf-8")
+
+    parsed = _count_parses(monkeypatch)
+    _cache_run(monkeypatch, repo, out_dir)
+
+    assert parsed == [str(source)]
+    assert (cache_dir / "cache_version").read_text(
+        encoding="utf-8"
+    ) == run_module.METADATA_CACHE_VERSION

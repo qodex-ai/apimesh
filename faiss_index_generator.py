@@ -37,12 +37,20 @@ class GenerateFaissIndex:
         texts = []
         metadata = []
 
-        for file in file_paths:
-            with open(file, 'r', encoding='utf-8') as file:
-                file_content = file.read()
+        for file_path in file_paths:
+            try:
+                with open(file_path, 'r', encoding='utf-8') as handle:
+                    file_content = handle.read()
+            except (OSError, UnicodeDecodeError) as ex:
+                print(f"apimesh: skipping unreadable file {file_path}: {ex}")
+                continue
             chunks = text_splitter.split_text(file_content)
             texts.extend(chunks)
-            metadata.extend([{'file_path': str(file)}] * len(chunks))
+            metadata.extend([{'file_path': str(file_path)}] * len(chunks))
+
+        if not texts:
+            raise ValueError("No readable source text found to build the search index from.")
+
         all_indices = []
         batch = []
         batch_meta = []
@@ -66,11 +74,13 @@ class GenerateFaissIndex:
             index = FAISS.from_texts(batch, self.openai_client.embeddings, metadatas=batch_meta)
             all_indices.append(index)
 
-        # Merge all indices
+        # Merge all indices. Returning the merged batches is the whole point of
+        # batching: re-embedding the full corpus here would double the spend and
+        # reintroduce the per-request token limit the batches avoid.
         final_index = all_indices[0]
         for idx in all_indices[1:]:
             final_index.merge_from(idx)
-        return FAISS.from_texts(texts, self.openai_client.embeddings, metadatas=metadata)
+        return final_index
 
     @staticmethod
     def get_authentication_related_information(faiss_vector_db):

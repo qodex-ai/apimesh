@@ -35,6 +35,11 @@ def _strip_quotes(value: Optional[str]) -> str:
     return value
 
 
+def reset_module_cache() -> None:
+    """The same checkout path can hold a different go.mod on the next run."""
+    _MODULE_NAME_CACHE.clear()
+
+
 def _get_module_name(base_directory: str) -> Optional[str]:
     cached = _MODULE_NAME_CACHE.get(base_directory)
     if cached is not None:
@@ -174,16 +179,13 @@ def _collect_imports(root, source: str, base_directory: Optional[str]) -> List[D
     stack = [root]
     while stack:
         node = stack.pop()
-        if node.type == "import_declaration":
-            for child in node.named_children:
-                if child.type != "import_spec":
-                    continue
-                path_node = child.child_by_field_name("path")
-                if not path_node:
-                    continue
-                raw_path = _node_text(source, path_node)
-                path_value = _strip_quotes(raw_path)
-                alias_node = child.child_by_field_name("name")
+        # A grouped import block nests its specs one level deeper, under an
+        # import_spec_list, so the specs are matched wherever they sit.
+        if node.type == "import_spec":
+            path_node = node.child_by_field_name("path")
+            if path_node:
+                path_value = _strip_quotes(_node_text(source, path_node))
+                alias_node = node.child_by_field_name("name")
                 alias = _node_text(source, alias_node) if alias_node else None
                 imported_name = alias or (path_value.split("/")[-1] if path_value else None)
                 origin = _resolve_import_origin(path_value, base_directory)
@@ -194,13 +196,47 @@ def _collect_imports(root, source: str, base_directory: Optional[str]) -> List[D
                         "alias": alias,
                         "from_module": path_value,
                         "origin": origin,
-                        "line": child.start_point[0] + 1,
+                        "line": node.start_point[0] + 1,
                         "path_exists": bool(origin and os.path.exists(origin)),
                         "usage_lines": [],
+                        "usages": [],
                     }
                 )
         stack.extend(list(node.children))
     return imports
+
+
+def _annotate_import_symbols(root, source: str, imports: List[Dict]) -> None:
+    """Record which symbol each import is used for, keyed by the package alias.
+
+    A Go import names a package, so ``handlers.CreateUser`` is the only place
+    the function name appears. Without it the pipeline compares the package
+    name against function names and resolves nothing across packages.
+    """
+    alias_map = {}
+    for item in imports:
+        alias_key = item.get("alias") or item.get("imported_name")
+        if alias_key and alias_key not in {"_", "."}:
+            alias_map[alias_key] = item
+    if not alias_map:
+        return
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        if node.type == "selector_expression":
+            operand = node.child_by_field_name("operand")
+            field = node.child_by_field_name("field")
+            if operand is not None and operand.type == "identifier" and field is not None:
+                import_entry = alias_map.get(_node_text(source, operand))
+                if import_entry is not None:
+                    usage = {
+                        "name": _node_text(source, field),
+                        "line": node.start_point[0] + 1,
+                    }
+                    usages = import_entry.setdefault("usages", [])
+                    if usage not in usages:
+                        usages.append(usage)
+        stack.extend(list(node.children))
 
 
 def _annotate_import_usages(tree, source: str, imports: List[Dict]) -> None:
@@ -253,6 +289,7 @@ def get_elements(tree, source: str, base_directory: str) -> Dict:
     elements["types"] = _collect_types(tree.root_node, source, "")
     imports = _collect_imports(tree.root_node, source, base_directory)
     _annotate_import_usages(tree, source, imports)
+    _annotate_import_symbols(tree.root_node, source, imports)
     return elements, imports
 
 

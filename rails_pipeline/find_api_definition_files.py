@@ -2,6 +2,7 @@ from pathlib import Path
 from typing import List
 
 from config import Configurations
+from rails_pipeline.identify_api_functions import is_route_file
 
 config = Configurations()
 
@@ -25,7 +26,7 @@ def _looks_like_controller(path: Path) -> bool:
 
 
 def _looks_like_route_file(path: Path) -> bool:
-    return path.as_posix().endswith("config/routes.rb")
+    return is_route_file(path)
 
 
 def find_ruby_files(directory: str) -> List[Path]:
@@ -48,7 +49,7 @@ def find_api_definition_files(directory: str) -> List[str]:
         if _looks_like_controller(ruby_file):
             api_files.append(str(ruby_file))
 
-    api_files.sort(
-        key=lambda path: 0 if path.endswith("config/routes.rb") else 1
-    )
+    # Every route file is parsed before the first controller, so the route map
+    # is complete by the time a controller is matched against it.
+    api_files.sort(key=lambda path: 0 if is_route_file(path) else 1)
     return api_files

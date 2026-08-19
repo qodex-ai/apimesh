@@ -10,9 +10,10 @@ CLONE_DIR="$APIMESH_DIR/apimesh"
 CURRENT_DIR="$(pwd)"
 
 # Default values for optional parameters
-OPENAI_API_KEY=""
-PROJECT_API_KEY=""
-AI_CHAT_ID=""
+# Inherited environment values are defaults; flags below override them.
+OPENAI_API_KEY="${OPENAI_API_KEY:-}"
+PROJECT_API_KEY="${PROJECT_API_KEY:-}"
+AI_CHAT_ID="${AI_CHAT_ID:-}"
 
 # Flags forwarded to the Python CLI as-is. APIMESH_API_HOST and APIMESH_OPENAI_MODEL
 # need no forwarding, Python reads them straight from the environment.

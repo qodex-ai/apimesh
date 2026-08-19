@@ -36,13 +36,18 @@ def _parse_with_language(code: str, language: Language):
     parser = Parser(language)
     return parser.parse(code.encode('utf-8'))
 
-def get_module_origin(module_name, base_directory):
+def get_module_origin(module_name, base_directory, file_directory=None):
     """
     Resolve JS import/require origin similar to Node.js module resolution.
+
+    A relative specifier is resolved against the directory of the file that
+    wrote it, which is what node does. base_directory stays the repo root so
+    bare package names keep resolving through its node_modules.
     """
     # Relative import
     if module_name.startswith("."):
-        path = os.path.normpath(os.path.join(base_directory, module_name))
+        anchor = file_directory or base_directory
+        path = os.path.normpath(os.path.join(anchor, module_name))
         search_exts = [
             ".ts",
             ".tsx",
@@ -90,7 +95,28 @@ def find_import_usages(tree, imported_names, language):
                 usages[name].append(line)
     return usages
 
-def get_elements(tree, code, base_directory, language):
+def _symbol_entry(kind, name_node, definition_node=None):
+    """
+    One metadata record. The name identifier gives the symbol its name and its
+    declaration line; the enclosing definition node gives the span, so the
+    context builder reads the whole body instead of a single line.
+    """
+    span_node = definition_node if definition_node is not None else name_node
+    return {
+        'type': kind,
+        'name': name_node.text.decode(),
+        'line': name_node.start_point[0] + 1,
+        'start_line': span_node.start_point[0] + 1,
+        'end_line': span_node.end_point[0] + 1
+    }
+
+
+def _first(match, capture_name):
+    nodes = match.get(capture_name)
+    return nodes[0] if nodes else None
+
+
+def get_elements(tree, code, base_directory, language, file_directory=None):
     """
     Extract classes, functions, variables, function calls, imports.
     """
@@ -127,7 +153,7 @@ def get_elements(tree, code, base_directory, language):
     """)
 
     cursor = QueryCursor(query)
-    captures = cursor.captures(tree.root_node)
+    matches = cursor.matches(tree.root_node)
 
     elements = {
         'classes': [],
@@ -138,63 +164,45 @@ def get_elements(tree, code, base_directory, language):
     }
 
     imported_names = set()
+    # (source node, name node) per import, paired inside the match that produced
+    # them. Zipping the two capture lists positionally mispaired every import
+    # that sat next to a plain variable declaration.
+    import_pairs = []
 
     # Collect symbols
-    for node in captures.get("func-name", []):
-        elements['functions'].append({
-            'type': 'function',
-            'name': node.text.decode(),
-            'line': node.start_point[0] + 1,
-            'start_line': node.start_point[0] + 1,
-            'end_line': node.end_point[0]+1
-        })
-
-    for node in captures.get("class-name", []):
-        elements['classes'].append({
-            'type': 'class',
-            'name': node.text.decode(),
-            'line': node.start_point[0] + 1,
-            'start_line': node.start_point[0] + 1,
-            'end_line': node.end_point[0]+1
-        })
-
-    for node in captures.get("var-name", []):
-        elements['variables'].append({
-            'type': 'variable',
-            'name': node.text.decode(),
-            'line': node.start_point[0] + 1,
-            'start_line': node.start_point[0] + 1,
-            'end_line': node.end_point[0]+1
-        })
-
-    for node in captures.get("called-func", []):
-        elements['function_calls'].append({
-            'type': 'function_call',
-            'name': node.text.decode(),
-            'line': node.start_point[0] + 1,
-            'start_line': node.start_point[0] + 1,
-            'end_line': node.end_point[0]+1
-        })
-
-    for node in captures.get("method-name", []):
-        elements['function_calls'].append({
-            'type': 'method_call',
-            'name': node.text.decode(),
-            'line': node.start_point[0] + 1,
-            'start_line': node.start_point[0] + 1,
-            'end_line': node.end_point[0]+1
-        })
+    for _, match in matches:
+        if "func-name" in match:
+            elements['functions'].append(
+                _symbol_entry('function', _first(match, "func-name"), _first(match, "function"))
+            )
+        if "class-name" in match:
+            elements['classes'].append(
+                _symbol_entry('class', _first(match, "class-name"), _first(match, "class"))
+            )
+        if "var-name" in match and "variable" in match:
+            elements['variables'].append(
+                _symbol_entry('variable', _first(match, "var-name"), _first(match, "variable"))
+            )
+        if "called-func" in match:
+            elements['function_calls'].append(
+                _symbol_entry('function_call', _first(match, "called-func"))
+            )
+        if "method-name" in match:
+            elements['function_calls'].append(
+                _symbol_entry('method_call', _first(match, "method-name"))
+            )
+        if "import-source" in match:
+            import_pairs.append((_first(match, "import-source"), _first(match, "imported-symbol")))
+        elif "require-source" in match:
+            import_pairs.append((_first(match, "require-source"), _first(match, "var-name")))
 
     # Handle imports
-    sources = captures.get("import-source", []) + captures.get("require-source", [])
-    imported_symbols = captures.get("imported-symbol", []) + captures.get("var-name", [])  # align require names
-
-    for i, source_node in enumerate(sources):
+    for source_node, name_node in import_pairs:
         module_name = source_node.text.decode().strip('"\'')
-        origin = get_module_origin(module_name, base_directory)
+        origin = get_module_origin(module_name, base_directory, file_directory)
         imported_name = None
-        if i < len(imported_symbols):
-            imported_name = imported_symbols[i].text.decode()
+        if name_node is not None:
+            imported_name = name_node.text.decode()
             imported_names.add(imported_name)
 
         elements['imports'].append({
@@ -222,14 +230,16 @@ def process_file(filename, base_directory=None):
         base_directory = os.path.dirname(filename)
 
     tree, code, language = parse_file(filename)
+    # './helper' means a sibling of this file, not of the repo root.
+    file_directory = os.path.dirname(os.path.abspath(filename))
     try:
-        elements = get_elements(tree, code, base_directory, language)
+        elements = get_elements(tree, code, base_directory, language, file_directory)
     except Exception as ex:
         suffix = Path(filename).suffix.lower()
         if suffix in TYPESCRIPT_FILE_EXTENSIONS or suffix in TSX_FILE_EXTENSIONS:
             # Fallback: try parsing with JS grammar to salvage metadata for TS/TSX files that break the TS query
             fallback_tree = _parse_with_language(code, JS_LANGUAGE)
-            elements = get_elements(fallback_tree, code, base_directory, JS_LANGUAGE)
+            elements = get_elements(fallback_tree, code, base_directory, JS_LANGUAGE, file_directory)
         else:
             raise
 

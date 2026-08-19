@@ -1,27 +1,27 @@
 import json
 import os
 import re
-import shutil
-import tempfile
 import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+import pipeline_common
 from config import Configurations
 from golang_pipeline.definition_swagger_generator import (
-    CONTEXT_TOKEN_BUDGET,
+    HANDLER_TOKEN_BUDGET,
     get_batch_definition_swagger,
     get_function_definition_swagger,
     section_token_cost,
 )
-
-# Headroom for the separators joined between sections and blocks, so the
-# budget holds for the final assembled prompt, not just the parts.
-_EFFECTIVE_CONTEXT_BUDGET = CONTEXT_TOKEN_BUDGET - 64
 from golang_pipeline.find_api_definition_files import find_api_definition_files
-from golang_pipeline.generate_file_information import process_file
-from golang_pipeline.identify_api_functions import find_api_endpoints
+from golang_pipeline.generate_file_information import process_file, reset_module_cache
+from golang_pipeline.identify_api_functions import (
+    find_api_endpoints,
+    extraction_drops,
+    log_extraction_drops,
+    reset_extraction_drops,
+)
 from utils import (
     get_git_commit_hash,
     get_github_repo_url,
@@ -33,37 +33,21 @@ from utils import (
 
 config = Configurations()
 
+_EFFECTIVE_CONTEXT_BUDGET = pipeline_common.EFFECTIVE_CONTEXT_BUDGET
+
 _FUNCTION_INDEX_CACHE: Dict[str, List[Dict[str, object]]] = {}
 _FUNCTION_INDEX_CACHE_ROOT: Optional[str] = None
 _FILE_CONTENT_CACHE: Dict[str, List[str]] = {}
-_METADATA_DIR: Optional[str] = None
+# File path -> content hash, and file path -> the cache entry holding its
+# metadata. Both are per run: two runs in one process are two checkouts.
+_CONTENT_HASHES: Dict[str, Optional[str]] = {}
+_METADATA_ENTRIES: Dict[str, str] = {}
 _HEADER_PATTERN = re.compile(
     r"""\.Get(?:String|Header)\(\s*["']([^"']+)["']\s*\)|
         Header\.Get\(\s*["']([^"']+)["']\s*\)""",
     re.VERBOSE,
 )
 _ROUTE_PARAM_PATTERN = re.compile(r":([A-Za-z_][A-Za-z0-9_]*)")
-# One LLM call documents a whole file. Past ten endpoints the shared context
-# budget leaves too little room per endpoint, so a file is chunked.
-_MAX_BATCH_ENDPOINTS = 10
-_HTTP_OPERATIONS = {
-    "get",
-    "post",
-    "put",
-    "delete",
-    "patch",
-    "options",
-    "head",
-    "trace",
-}
-# Operation keys older prompts asked for, mapped to their OpenAPI 3.0 compliant form.
-_LEGACY_OPERATION_FIELDS = {
-    "api_description": "description",
-    "authorization_tag": "x-authorization-tag",
-    "module_tag": "x-module-tag",
-    "auth_tag": "x-auth-tag",
-    "sensitive_information": "x-sensitive-information",
-}
 
 
 def should_process_directory(dir_path: str, repo_root: str) -> bool:
@@ -74,23 +58,72 @@ def should_process_directory(dir_path: str, repo_root: str) -> bool:
 
 
 def _api_index_output_path() -> str:
-    output_dir = os.path.dirname(get_output_filepath())
-    os.makedirs(output_dir, exist_ok=True)
-    return os.path.join(output_dir, "api_index.json")
+    return pipeline_common.api_index_output_path(get_output_filepath())
+
+
+# Per file metadata is cached under the output directory, never inside the
+# scanned repo: a run must not create or delete anything in the user's tree.
+METADATA_CACHE_PIPELINE = "golang"
+
+# Bumped when the shape of a metadata entry changes. A missing or stale marker
+# wipes this pipeline's cache before anything reads it.
+METADATA_CACHE_VERSION = "1"
+
+
+def _metadata_cache_dir() -> str:
+    return pipeline_common.metadata_cache_dir(
+        get_output_filepath(), METADATA_CACHE_PIPELINE
+    )
+
+
+def _content_hash(file_path: str) -> Optional[str]:
+    return pipeline_common.content_hash(file_path, _CONTENT_HASHES)
+
+
+def _metadata_cache_filename(file_path: str, content_hash: str) -> str:
+    return pipeline_common.metadata_cache_filename(file_path, content_hash)
+
+
+def _metadata_cache_path(file_path: str) -> Optional[str]:
+    """Where this file's metadata sits for the content it holds right now."""
+    return pipeline_common.metadata_cache_path(
+        file_path, _metadata_cache_dir, _content_hash(file_path)
+    )
+
+
+def _prepare_metadata_cache() -> str:
+    return pipeline_common.prepare_metadata_cache(
+        _metadata_cache_dir(), METADATA_CACHE_VERSION
+    )
+
+
+def _cache_file_metadata(file_path: str, directory_path: str) -> None:
+    pipeline_common.cache_file_metadata(
+        file_path,
+        directory_path,
+        _metadata_cache_path,
+        process_file,
+        _METADATA_ENTRIES,
+    )
+
+
+def _build_metadata_cache(directory_path: str) -> None:
+    """One cache entry per go file below the repo root."""
+    pipeline_common.build_metadata_cache(
+        directory_path,
+        _prepare_metadata_cache,
+        should_process_directory,
+        lambda file_path: file_path.endswith(".go"),
+        _cache_file_metadata,
+    )
+
+
+def _prune_metadata_cache() -> None:
+    pipeline_common.prune_metadata_cache(_metadata_cache_dir(), _METADATA_ENTRIES)
 
 
 def _load_file_metadata(file_path: str):
-    metadata_dir = _METADATA_DIR
-    if not metadata_dir:
-        return None
-    json_file = os.path.join(metadata_dir, _sanitize_json_filename(file_path))
-    if not os.path.exists(json_file):
-        return None
-    try:
-        with open(json_file, "r", encoding="utf-8") as handle:
-            return json.load(handle)
-    except Exception:
-        return None
+    return pipeline_common.load_file_metadata(_metadata_cache_path(file_path))
 
 
 def _normalize_route(route) -> str:
@@ -108,326 +141,110 @@ def _normalize_route(route) -> str:
     return normalized
 
 
-def _first_operation(path_item) -> Optional[Dict]:
-    """
-    The operation body of a path item. A path item legally carries members that
-    are not operations ("parameters", vendor extensions), so only an HTTP verb
-    with a dict body counts. A path item without one contributes no operation,
-    which is what keeps a vendor-extension-only fragment out of the spec.
-    """
-    if not isinstance(path_item, dict):
-        return None
-    for name, value in path_item.items():
-        if str(name).lower() in _HTTP_OPERATIONS and isinstance(value, dict):
-            return value
-    return None
-
-
-def _normalize_operation_fields(operation: Dict) -> Dict:
-    """
-    Rename the legacy operation keys an older model reply may still carry to
-    their OpenAPI compliant form. A value already under the new name wins, so a
-    reply holding both does not end up with duplicated content.
-    """
-    if not isinstance(operation, dict):
-        return operation
-    for legacy_key, new_key in _LEGACY_OPERATION_FIELDS.items():
-        if legacy_key not in operation:
-            continue
-        operation.setdefault(new_key, operation.pop(legacy_key))
-    return operation
-
-
 def _endpoint_key(route, method):
-    method_value = (method or "UNKNOWN").upper()
-    route_value = _normalize_route(route)
-    return f"{method_value} {route_value}".strip()
+    return pipeline_common.endpoint_key(route, method, _normalize_route)
 
 
-def _normalize_in_file_dependencies(deps, route, file_path):
-    imports = []
-    for dep in deps:
-        start_line = dep.get("function_start_line") or dep.get("start_line")
-        end_line = dep.get("function_end_line") or dep.get("end_line")
-        name = dep.get("name")
-        if not name or not isinstance(start_line, int) or not isinstance(end_line, int):
-            continue
-        imports.append(
-            {
-                "type": "function",
-                "name": name,
-                "start_line": start_line,
-                "end_line": end_line,
-                "route": route,
-                "file_path": file_path,
-            }
-        )
-    return imports
+def _job_method(endpoint):
+    return endpoint.get("http_method") or endpoint.get("method")
+
+
+def _imported_symbol_names(import_item) -> List[str]:
+    """The symbols the handler actually used from this package.
+
+    A Go import names a package, not a symbol, so comparing the import against
+    function names never matched and cross-package context was always empty.
+    The call sites carry the name (``handlers.CreateUser``), and that is what
+    is looked up in the package directory.
+    """
+    used = [name for name in import_item.get("used_names") or [] if name]
+    if used:
+        return used
+    imported_name = import_item.get("imported_name")
+    if not imported_name:
+        return []
+    names = [imported_name]
+    if "." in imported_name:
+        names.append(imported_name.split(".")[-1])
+    return names
 
 
 def _resolve_imported_definitions(import_item, route):
     origin = import_item.get("origin")
-    imported_name = import_item.get("imported_name")
-    if not origin or not imported_name:
+    if not origin:
         return []
-    candidates = []
+    name_candidates = _imported_symbol_names(import_item)
+    if not name_candidates:
+        return []
     origin_paths = []
     if os.path.isdir(origin):
-        for name in os.listdir(origin):
+        for name in sorted(os.listdir(origin)):
             if name.endswith(".go"):
                 origin_paths.append(os.path.join(origin, name))
     else:
         origin_paths.append(origin)
 
-    name_candidates = [imported_name]
-    if "." in imported_name:
-        name_candidates.append(imported_name.split(".")[-1])
-
+    found: Dict[str, Dict] = {}
     for origin_path in origin_paths:
+        if len(found) == len(name_candidates):
+            break
         metadata = _load_file_metadata(origin_path)
         if not metadata:
             continue
         elements = metadata.get("elements", {})
         for key in ("functions", "types"):
             for item in elements.get(key, []):
-                if item.get("name") not in name_candidates:
+                name = item.get("name")
+                if name not in name_candidates or name in found:
                     continue
                 start_line = item.get("start_line")
                 end_line = item.get("end_line")
                 if not isinstance(start_line, int) or not isinstance(end_line, int):
                     continue
-                candidates.append(
-                    {
-                        "type": item.get("type") or key[:-1],
-                        "name": item.get("name"),
-                        "start_line": start_line,
-                        "end_line": end_line,
-                        "route": route,
-                        "file_path": origin_path,
-                    }
-                )
-                break
-            if candidates:
-                break
-        if candidates:
-            break
-    return candidates
+                found[name] = {
+                    "type": item.get("type") or key[:-1],
+                    "name": name,
+                    "start_line": start_line,
+                    "end_line": end_line,
+                    "route": route,
+                    "file_path": origin_path,
+                }
+    return list(found.values())
 
 
-def _dedupe_imports(imports):
-    seen = set()
-    unique = []
-    for item in imports:
-        key = (
-            item.get("file_path"),
-            item.get("name"),
-            item.get("start_line"),
-            item.get("end_line"),
-        )
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(item)
-    return unique
-
-
-def _merge_file_entry(files, entry):
-    for existing in files:
-        if existing.get("file_path") == entry.get("file_path"):
-            merged = existing.get("imports", []) + entry.get("imports", [])
-            existing["imports"] = _dedupe_imports(merged)
-            return
-    files.append(entry)
+def _endpoint_imports(endpoint, abs_file_path, route):
+    return pipeline_common.endpoint_imports(
+        endpoint,
+        abs_file_path,
+        route,
+        _load_file_metadata,
+        get_dependencies,
+        _resolve_imported_definitions,
+    )
 
 
 def _build_api_index(endpoints: list) -> dict:
-    api_index = {}
-    for endpoint in endpoints:
-        route = endpoint.get("route")
-        method = endpoint.get("http_method") or endpoint.get("method")
-        key = _endpoint_key(route, method)
-        file_path = endpoint.get("file_path")
-        if not file_path:
-            continue
-        abs_file_path = os.path.abspath(file_path)
-        imports = []
-        start_line = endpoint.get("start_line")
-        end_line = endpoint.get("end_line")
-        if isinstance(start_line, int) and isinstance(end_line, int):
-            metadata = _load_file_metadata(abs_file_path)
-            if metadata:
-                in_file, imported = get_dependencies(
-                    metadata, start_line, end_line, abs_file_path
-                )
-                imports.extend(_normalize_in_file_dependencies(in_file, route, abs_file_path))
-                for item in imported:
-                    imports.extend(_resolve_imported_definitions(item, route))
-        entry = {
-            "file_path": abs_file_path,
-            "imports": _dedupe_imports(imports),
-        }
-        api_index.setdefault(key, {"files": []})
-        _merge_file_entry(api_index[key]["files"], entry)
-    return api_index
+    return pipeline_common.build_api_index(
+        endpoints, _endpoint_key, _job_method, _endpoint_imports
+    )
 
 
 def _write_api_index(api_index: dict) -> None:
-    output_path = _api_index_output_path()
-    try:
-        with open(output_path, "w", encoding="utf-8") as handle:
-            json.dump(api_index, handle, indent=2)
-    except Exception:
-        return
+    pipeline_common.write_api_index(api_index, _api_index_output_path())
 
 
 def _load_existing_swagger():
-    swagger_path = get_output_filepath()
-    if not os.path.exists(swagger_path):
-        return None
-    try:
-        with open(swagger_path, "r", encoding="utf-8") as handle:
-            return _migrate_legacy_spec(json.load(handle))
-    except Exception:
-        return None
-
-_LEGACY_INFO_FIELDS = {
-    "generated_at": "x-generated-at",
-    "commit_reference": "x-commit-reference",
-    "github_repo_url": "x-github-repo-url",
-}
-
-
-def _migrate_legacy_spec(swagger):
-    """Upgrade a pre-x-extension spec in place so incremental runs never write
-    the legacy spellings back out. New keys win when both exist."""
-    if not isinstance(swagger, dict):
-        return swagger
-    info = swagger.get("info")
-    if isinstance(info, dict):
-        for old_key, new_key in _LEGACY_INFO_FIELDS.items():
-            if old_key in info:
-                value = info.pop(old_key)
-                info.setdefault(new_key, value)
-    paths = swagger.get("paths")
-    if isinstance(paths, dict):
-        for path_item in paths.values():
-            if not isinstance(path_item, dict):
-                continue
-            for operation in path_item.values():
-                if isinstance(operation, dict):
-                    _normalize_operation_fields(operation)
-        swagger["paths"] = _canonicalize_path_keys(paths)
-    return swagger
-
-
-def _canonicalize_path_keys(paths: Dict) -> Dict:
-    """Re-key a spec written before routes were canonicalized.
-
-    A stored /users/:id reads as removed next to the /users/{id} the extractor
-    now emits, which regenerates the whole spec on the first run after the
-    upgrade. A key already in the canonical spelling wins; its legacy-spelled
-    twin only fills the verbs the canonical one is missing.
-    """
-    canonical: Dict = {}
-    legacy: List = []
-    for path_key, path_item in paths.items():
-        normalized = _normalize_route(path_key) or path_key
-        if normalized == path_key:
-            canonical[path_key] = path_item
-        else:
-            legacy.append((normalized, path_item))
-    for normalized, path_item in legacy:
-        existing = canonical.get(normalized)
-        if existing is None:
-            canonical[normalized] = path_item
-        elif isinstance(existing, dict) and isinstance(path_item, dict):
-            for operation_name, operation in path_item.items():
-                existing.setdefault(operation_name, operation)
-    return canonical
+    return pipeline_common.load_existing_swagger(get_output_filepath(), _normalize_route)
 
 
 def _load_existing_api_index():
-    api_index_path = _api_index_output_path()
-    if not os.path.exists(api_index_path):
-        return None
-    try:
-        with open(api_index_path, "r", encoding="utf-8") as handle:
-            return _canonicalize_index_keys(json.load(handle))
-    except Exception:
-        return None
-
-
-def _canonicalize_index_keys(api_index):
-    """Same upgrade for the api_index: an index written before routes were
-    canonicalized holds the router's spelling, which reads as removed while the
-    freshly extracted key reads as added. The canonical key wins."""
-    if not isinstance(api_index, dict):
-        return api_index
-    canonical: Dict = {}
-    legacy: List = []
-    for key, entry in api_index.items():
-        method, route = _split_endpoint_key(key)
-        normalized = _endpoint_key(route, method) if route else key
-        if normalized == key:
-            canonical[key] = entry
-        else:
-            legacy.append((normalized, entry))
-    for normalized, entry in legacy:
-        canonical.setdefault(normalized, entry)
-    return canonical
-
-
-def _group_endpoints(endpoints: list) -> dict:
-    grouped = {}
-    for endpoint in endpoints:
-        key = _endpoint_key(endpoint.get("route"), endpoint.get("http_method") or endpoint.get("method"))
-        grouped.setdefault(key, []).append(endpoint)
-    return grouped
-
-
-def _endpoint_has_changed(existing_entry, endpoints_for_key, changed_files: set) -> bool:
-    if existing_entry:
-        for file_entry in existing_entry.get("files", []):
-            file_path = file_entry.get("file_path")
-            if file_path and os.path.abspath(file_path) in changed_files:
-                return True
-            for imp in file_entry.get("imports", []):
-                imp_path = imp.get("file_path")
-                if imp_path and os.path.abspath(imp_path) in changed_files:
-                    return True
-    for endpoint in endpoints_for_key or []:
-        file_path = endpoint.get("file_path")
-        if file_path and os.path.abspath(file_path) in changed_files:
-            return True
-    return False
-
-
-def _split_endpoint_key(key: str):
-    if not key:
-        return "UNKNOWN", ""
-    parts = key.split(" ", 1)
-    if len(parts) == 1:
-        return parts[0], ""
-    return parts[0], parts[1]
+    return pipeline_common.load_existing_api_index(
+        _api_index_output_path(), _endpoint_key
+    )
 
 
 def _remove_endpoint_from_swagger(swagger: dict, key: str) -> None:
-    method, route = _split_endpoint_key(key)
-    # An index written before routes were canonicalized still holds :id keys.
-    route = _normalize_route(route)
-    if not route:
-        return
-    paths = swagger.get("paths", {})
-    if route not in paths:
-        return
-    if method == "UNKNOWN":
-        paths.pop(route, None)
-        return
-    method_lower = method.lower()
-    if method_lower in paths.get(route, {}):
-        del paths[route][method_lower]
-        if not paths[route]:
-            del paths[route]
+    pipeline_common.remove_endpoint_from_swagger(swagger, key, _normalize_route)
 
 
 def _normalize_swagger_fragment(
@@ -439,32 +256,19 @@ def _normalize_swagger_fragment(
     which would diverge from the api_index keys and make incremental removal
     impossible, so only the first operation body is kept and re-keyed.
     """
-    if not isinstance(fragment, dict):
-        return None
-    paths = fragment.get("paths")
-    if not isinstance(paths, dict) or not paths:
-        return None
     route_key = _normalize_route(route)
     if not route_key:
         return None
-    for path_item in paths.values():
-        operation = _first_operation(path_item)
-        if operation is None:
-            continue
-        return {
-            route_key: {
-                (http_method or "GET").lower(): _normalize_operation_fields(operation)
-            }
+    _, operation = pipeline_common.first_operation(fragment)
+    if operation is None:
+        return None
+    return {
+        route_key: {
+            (http_method or "GET").lower(): pipeline_common.normalize_operation_fields(
+                operation
+            )
         }
-    return None
-
-
-def _merge_paths(target: Dict, source: Dict) -> None:
-    for path_key, methods in source.get("paths", {}).items():
-        target.setdefault("paths", {})
-        target["paths"].setdefault(path_key, {})
-        for method, payload in methods.items():
-            target["paths"][path_key][method] = payload
+    }
 
 
 def _generate_swagger_fragment(directory_path: str, method_info: Dict) -> Dict:
@@ -504,6 +308,12 @@ def _swagger_fragment_for_endpoint(directory_path: str, method_info: Dict) -> Op
             "response had no usable swagger paths"
         )
         return None
+    # The fallback stores the batch-shaped hash, not the hash of its own prompt:
+    # the next run recomputes the batch shape, and a hash it can never match
+    # would make this endpoint regenerate forever.
+    context_hash = _endpoint_context_hash(directory_path, method_info)
+    if context_hash:
+        method_info["context_hash"] = context_hash
     return normalized
 
 
@@ -522,7 +332,7 @@ def _update_swagger_for_endpoints(
         if normalized is None:
             failed.append(method_info)
             continue
-        _merge_paths(swagger, {"paths": normalized})
+        pipeline_common.merge_paths(swagger, {"paths": normalized})
         generated.append(method_info)
     return generated, failed
 
@@ -551,25 +361,16 @@ def _batch_endpoint_jobs(endpoint_jobs: List[Dict]) -> List[List[Dict]]:
     section would push its sections past the budget. Ten endpoints stays the
     secondary limit.
     """
-    by_file: Dict[str, List[Dict]] = {}
-    for job in endpoint_jobs:
-        by_file.setdefault(job.get("file_path") or "", []).append(job)
     batches: List[List[Dict]] = []
-    for jobs in by_file.values():
-        current: List[Dict] = []
-        used = 0
-        for job in jobs:
-            cost = _batch_section_tokens(job)
-            if current and (
-                len(current) >= _MAX_BATCH_ENDPOINTS or used + cost > _EFFECTIVE_CONTEXT_BUDGET
-            ):
-                batches.append(current)
-                current = []
-                used = 0
-            current.append(job)
-            used += cost
-        if current:
-            batches.append(current)
+    for jobs in pipeline_common.group_jobs_by_file(endpoint_jobs).values():
+        batches.extend(
+            pipeline_common.pack_batches(
+                jobs,
+                _batch_section_tokens,
+                pipeline_common.MAX_ENDPOINTS_PER_BATCH,
+                _EFFECTIVE_CONTEXT_BUDGET,
+            )
+        )
     return batches
 
 
@@ -585,20 +386,43 @@ def _batch_label(job: Dict) -> str:
     return f"{method} {_normalize_route(job.get('route'))}"
 
 
+def _batch_entry(directory_path: str, job: Dict) -> Tuple[str, List[str], List[List[str]]]:
+    """One endpoint's prompt material: its label, its handler body, its context."""
+    blocks, method_definition = provide_context_codeblock(directory_path, job)
+    # The header hint is read off this one handler, so it belongs to its
+    # section rather than to the context the whole file shares.
+    header_block = _build_header_hint_block(method_definition)
+    body = method_definition
+    if header_block:
+        blocks = [block for block in blocks if block != header_block]
+        body = header_block + method_definition
+    return _batch_label(job), body, blocks
+
+
+def _context_hash(context_blocks, method_definition) -> str:
+    """The one context hash recipe every pipeline shares."""
+    return pipeline_common.context_hash(
+        context_blocks, method_definition, HANDLER_TOKEN_BUDGET
+    )
+
+
+def _endpoint_context_hash(directory_path: str, job: Dict) -> Optional[str]:
+    """This endpoint's context hash, or None when its source cannot be read."""
+    try:
+        _, body, blocks = _batch_entry(directory_path, job)
+    except Exception:
+        return None
+    return _context_hash(blocks, body)
+
+
 def _generate_batch_payload(directory_path: str, batch: List[Dict]) -> Optional[Dict]:
     """One LLM call for a file's endpoints. Returns the model's raw payload."""
     entries: List[Tuple[str, str]] = []
     context_blocks: List[List[str]] = []
     for job in batch:
-        blocks, method_definition = provide_context_codeblock(directory_path, job)
-        # The header hint is read off this one handler, so it belongs to its
-        # section rather than to the context the whole file shares.
-        header_block = _build_header_hint_block(method_definition)
-        body = method_definition
-        if header_block:
-            blocks = [block for block in blocks if block != header_block]
-            body = header_block + method_definition
-        entries.append((_batch_label(job), "".join(body)))
+        label, body, blocks = _batch_entry(directory_path, job)
+        job["context_hash"] = _context_hash(blocks, body)
+        entries.append((label, "".join(body)))
         context_blocks.extend(blocks)
     return get_batch_definition_swagger(
         entries, context_blocks, _batch_source_file(batch)
@@ -630,7 +454,11 @@ def _operation_from_batch(
             continue
         for name, value in path_item.items():
             if str(name).lower() == method_key and isinstance(value, dict):
-                return {route_key: {method_key: _normalize_operation_fields(value)}}
+                return {
+                    route_key: {
+                        method_key: pipeline_common.normalize_operation_fields(value)
+                    }
+                }
     return None
 
 
@@ -661,7 +489,7 @@ def _apply_batch_payload(
                 "missing from the batch reply"
             )
             continue
-        _merge_paths(swagger, {"paths": normalized})
+        pipeline_common.merge_paths(swagger, {"paths": normalized})
         generated.append(job)
     return generated, failed
 
@@ -696,12 +524,28 @@ def _report_generation(generated: int, failed: int) -> None:
         raise RuntimeError("golang swagger generation produced no endpoints")
 
 
-def _apply_host(swagger, host):
-    """The host this run was given wins over the one the stored spec carries,
-    otherwise --api-host is silently ignored on every incremental run."""
-    if swagger is not None and host:
-        swagger["servers"] = [{"url": host}]
-    return swagger
+def _unchanged_context_keys(
+    directory_path: str, keys, endpoint_map: Dict, existing_index: Dict
+) -> set:
+    """The dirty keys whose prompt text is what they were generated from.
+
+    Their stored spec operation and index entry are already correct, so they
+    cost no LLM call. This is what makes the dependency hop cheap: an edit in
+    an imported file that never reaches the endpoint's own context lands here.
+    """
+    unchanged = set()
+    for key in keys:
+        stored = pipeline_common.stored_context_hash(existing_index.get(key))
+        if not stored:
+            continue
+        jobs = endpoint_map.get(key) or []
+        # One hash is stored per key, so a key several jobs share has nothing
+        # to compare against and is regenerated.
+        if len(jobs) != 1:
+            continue
+        if _endpoint_context_hash(directory_path, jobs[0]) == stored:
+            unchanged.add(key)
+    return unchanged
 
 
 def _maybe_incremental_update(
@@ -711,34 +555,59 @@ def _maybe_incremental_update(
     existing_index = _load_existing_api_index()
     if not existing_swagger or not isinstance(existing_index, dict):
         return None
-    existing_info = existing_swagger.get("info", {})
-    # Specs written before the extension rename still carry the bare key.
-    base_commit = existing_info.get("x-commit-reference") or existing_info.get("commit_reference")
+    base_commit = pipeline_common.base_commit_of(existing_swagger)
     if not base_commit:
         return None
     changed_files = get_changed_files_since(base_commit, directory_path, include_uncommitted=True)
     if changed_files is None:
         return None
-    endpoint_map = _group_endpoints(endpoint_jobs)
+    endpoint_map = pipeline_common.group_endpoints(
+        endpoint_jobs, _endpoint_key, _job_method
+    )
     existing_keys = set(existing_index.keys())
     new_keys = set(endpoint_map.keys())
     removed_keys = existing_keys - new_keys
     added_keys = new_keys - existing_keys
     # An endpoint that failed last run is absent from the index, so it reads as
     # added and still has to be generated when git reports nothing changed.
-    if not changed_files and not added_keys and not removed_keys:
-        return _apply_host(existing_swagger, host)
+    if (
+        not changed_files
+        and not added_keys
+        and not removed_keys
+        and pipeline_common.index_paths_exist(existing_index)
+    ):
+        pipeline_common.record_coverage(existing_swagger, len(endpoint_jobs), 0, len(endpoint_jobs), 0)
+        return pipeline_common.apply_host(existing_swagger, host)
     changed_keys = set()
     for key in existing_keys & new_keys:
-        if _endpoint_has_changed(existing_index.get(key), endpoint_map.get(key), changed_files):
+        if pipeline_common.endpoint_has_changed(
+            existing_index.get(key), endpoint_map.get(key), changed_files
+        ):
             changed_keys.add(key)
 
     keys_to_update = added_keys | changed_keys
+    if pipeline_common.should_regenerate_fully(keys_to_update, new_keys):
+        return None
+
+    unchanged_keys = _unchanged_context_keys(
+        directory_path, keys_to_update, endpoint_map, existing_index
+    )
+    if unchanged_keys:
+        keys_to_update -= unchanged_keys
+        print(
+            f"apimesh: skipped {len(unchanged_keys)} unchanged endpoints "
+            "(context hash match)"
+        )
+
     updated_index = dict(existing_index)
 
     for key in removed_keys:
         updated_index.pop(key, None)
         _remove_endpoint_from_swagger(existing_swagger, key)
+
+    pipeline_common.rebuild_unchanged_index_entries(
+        unchanged_keys, endpoint_map, existing_index, updated_index, _build_api_index
+    )
 
     jobs_to_update: List[Dict] = []
     for key in keys_to_update:
@@ -746,40 +615,48 @@ def _maybe_incremental_update(
     generated, failed = _update_swagger_for_batches(
         existing_swagger, directory_path, jobs_to_update
     )
-    failed_keys = {
-        _endpoint_key(job.get("route"), job.get("http_method") or job.get("method"))
-        for job in failed
-    }
+    failed_keys = {_endpoint_key(job.get("route"), _job_method(job)) for job in failed}
     # A failed endpoint keeps whatever the index already held (or stays out of
     # it) so the next run still sees it as new or stale and retries.
-    # A failed key's stale entry is dropped, not kept: once the commit
-    # reference advances, a kept entry would hide the failure forever, while
-    # an absent key reads as newly added and is retried on the next run.
-    for failed_key in failed_keys:
-        updated_index.pop(failed_key, None)
-
-    for entry_key, entry_value in _build_api_index(generated).items():
-        if entry_key in failed_keys:
-            continue
-        updated_index[entry_key] = entry_value
+    pipeline_common.apply_generated_index_entries(
+        updated_index, _build_api_index(generated), failed_keys
+    )
 
     # The incremental pass never raises: the existing spec is still valid, and
     # persisting the index below (failed keys dropped) is what schedules the
     # retry. Raising here would discard both and launch the slow fallback.
     total = len(generated) + len(failed)
-    print(f"generated {len(generated)} of {total} endpoints ({len(failed)} failed)")
+    if total:
+        print(f"generated {len(generated)} of {total} endpoints ({len(failed)} failed)")
     if failed and not generated:
         print("apimesh: every changed endpoint failed; keeping the previous spec, they will retry next run")
 
-    info = existing_swagger.setdefault("info", {})
-    info.pop("commit_reference", None)
-    info["x-commit-reference"] = get_git_commit_hash()
+    pipeline_common.stamp_commit_reference(existing_swagger, get_git_commit_hash())
     _write_api_index(updated_index)
-    return _apply_host(existing_swagger, host)
+    pipeline_common.record_coverage(
+        existing_swagger,
+        len(endpoint_jobs),
+        len(generated),
+        max(len(endpoint_jobs) - len(generated) - len(failed), 0),
+        len(failed),
+    )
+    return pipeline_common.apply_host(existing_swagger, host)
 
 
-def _sanitize_json_filename(file_path: str) -> str:
-    return f"{file_path.replace(os.sep, '_q_')}.json"
+def _reset_caches() -> None:
+    """Drop everything held between runs.
+
+    Two runs in one process see two checkouts, so a cached file body or
+    function position from the first would be read as the second's.
+    """
+    global _FUNCTION_INDEX_CACHE
+    global _FUNCTION_INDEX_CACHE_ROOT
+    _FUNCTION_INDEX_CACHE = {}
+    _FUNCTION_INDEX_CACHE_ROOT = None
+    _FILE_CONTENT_CACHE.clear()
+    _CONTENT_HASHES.clear()
+    _METADATA_ENTRIES.clear()
+    reset_module_cache()
 
 
 def _ensure_function_index(directory_path: str) -> Dict[str, List[Dict[str, object]]]:
@@ -791,15 +668,12 @@ def _ensure_function_index(directory_path: str) -> Dict[str, List[Dict[str, obje
 
     _FUNCTION_INDEX_CACHE = {}
     _FUNCTION_INDEX_CACHE_ROOT = directory_path
-    metadata_dir = _METADATA_DIR
-    if not metadata_dir or not os.path.exists(metadata_dir):
-        return _FUNCTION_INDEX_CACHE
 
-    for entry in os.scandir(metadata_dir):
-        if not entry.is_file() or not entry.name.endswith(".json"):
-            continue
+    # Only the entries this run touched: the cache also holds entries for
+    # content that is no longer anywhere in the repo.
+    for cache_path in _METADATA_ENTRIES.values():
         try:
-            with open(entry.path, "r", encoding="utf-8") as handle:
+            with open(cache_path, "r", encoding="utf-8") as handle:
                 data = json.load(handle)
         except (OSError, json.JSONDecodeError):
             continue
@@ -822,9 +696,43 @@ def _ensure_function_index(directory_path: str) -> Dict[str, List[Dict[str, obje
                     "file_path": file_name,
                     "start_line": start_line,
                     "end_line": end_line,
+                    "receiver_type": _receiver_type_name(func.get("receiver")),
                 }
             )
     return _FUNCTION_INDEX_CACHE
+
+
+def _receiver_type_name(receiver: Optional[str]) -> Optional[str]:
+    """The type a method hangs off: ``(s *UserService)`` is UserService."""
+    if not receiver:
+        return None
+    text = receiver.strip().strip("()").strip()
+    if not text:
+        return None
+    return text.split()[-1].lstrip("*").split("[")[0] or None
+
+
+def _imported_package_dir(route_file: Optional[str], alias: Optional[str]) -> Optional[str]:
+    """Where the package an alias names lives, read off the route file's imports.
+
+    ``handlers.ListUsers`` says which package the handler is in, and without
+    that a repo with two ``ListUsers`` hands the model whichever one the
+    metadata scan reached first.
+    """
+    if not route_file or not alias:
+        return None
+    metadata = _load_file_metadata(route_file) or _load_file_metadata(
+        os.path.abspath(route_file)
+    )
+    if not metadata:
+        return None
+    for item in metadata.get("imports", []):
+        if (item.get("alias") or item.get("imported_name")) != alias:
+            continue
+        origin = item.get("origin")
+        if origin and os.path.isdir(origin):
+            return origin
+    return None
 
 
 def _find_function_definition(
@@ -832,14 +740,33 @@ def _find_function_definition(
     function_name: str,
     preferred_file: Optional[str] = None,
     route_file: Optional[str] = None,
+    preferred_dir: Optional[str] = None,
+    receiver_type: Optional[str] = None,
 ) -> Optional[Dict[str, object]]:
     index = _ensure_function_index(directory_path)
     entries = index.get(function_name, [])
     if not entries:
         return None
+    if receiver_type:
+        # Two types can both have a List. The call site said which one this
+        # route registered, so the others are not candidates at all.
+        matching = [
+            entry for entry in entries if entry.get("receiver_type") == receiver_type
+        ]
+        if not matching:
+            # Falling back to another receiver's method would document the
+            # wrong handler body; dropping the route is the honest outcome.
+            return None
+        entries = matching
     if preferred_file:
         for entry in entries:
             if entry.get("file_path") == preferred_file:
+                return entry
+    if preferred_dir:
+        target = os.path.abspath(preferred_dir)
+        for entry in entries:
+            file_path = entry.get("file_path")
+            if file_path and os.path.dirname(os.path.abspath(file_path)) == target:
                 return entry
     if route_file:
         route_path = Path(route_file)
@@ -878,8 +805,15 @@ def _hydrate_method_info(
         return None
 
     preferred_file = method_info.get("file_path")
+    selector = method_info.get("handler_selector") or ""
+    alias = selector.split(".")[0] if "." in selector else None
     definition = _find_function_definition(
-        directory_path, handler_name, preferred_file, method_info.get("route_file")
+        directory_path,
+        handler_name,
+        preferred_file,
+        method_info.get("route_file"),
+        _imported_package_dir(method_info.get("route_file"), alias),
+        receiver_type=method_info.get("handler_receiver_type"),
     )
     if not definition:
         return None
@@ -928,12 +862,24 @@ def get_dependencies(
     imported_functions: List[Dict] = []
     for item in data.get("imports", []):
         usage_lines = item.get("usage_lines", [])
-        if not usage_lines:
+        if not any(
+            isinstance(usage, int) and start_line <= usage <= end_line
+            for usage in usage_lines
+        ):
             continue
-        for usage in usage_lines:
-            if start_line <= usage <= end_line:
-                imported_functions.append(item)
-                break
+        entry = dict(item)
+        # Only the symbols this handler reached for, so a package used for one
+        # helper does not drag its whole surface into the prompt.
+        entry["used_names"] = sorted(
+            {
+                usage.get("name")
+                for usage in item.get("usages", [])
+                if usage.get("name")
+                and isinstance(usage.get("line"), int)
+                and start_line <= usage["line"] <= end_line
+            }
+        )
+        imported_functions.append(entry)
     return in_file_dependency_functions, imported_functions
 
 
@@ -954,26 +900,26 @@ def get_code_blocks(
         if segment:
             code_blocks.append(segment)
 
-    metadata_dir = _METADATA_DIR
-    if not metadata_dir:
-        return code_blocks
     for imp in imported_functions:
         origin = imp.get("origin")
         if not origin:
             continue
+        wanted = set(_imported_symbol_names(imp))
+        if not wanted:
+            continue
         if os.path.isdir(origin):
             candidates = [
                 os.path.join(origin, name)
-                for name in os.listdir(origin)
+                for name in sorted(os.listdir(origin))
                 if name.endswith(".go")
             ]
         else:
             candidates = [origin] if origin.endswith(".go") else []
         for candidate in candidates:
-            json_file = os.path.join(
-                metadata_dir, _sanitize_json_filename(candidate)
-            )
-            if not os.path.exists(json_file):
+            if not wanted:
+                break
+            json_file = _metadata_cache_path(candidate)
+            if not json_file or not os.path.exists(json_file):
                 continue
             try:
                 with open(json_file, "r", encoding="utf-8") as handle:
@@ -982,14 +928,15 @@ def get_code_blocks(
                 continue
             elements = data.get("elements", {})
             for func in elements.get("functions", []):
-                if func.get("name") == imp.get("imported_name"):
-                    origin_lines = _read_file_lines(candidate) or []
-                    snippet = origin_lines[
-                        func.get("start_line", 1) - 1 : func.get("end_line", 1)
-                    ]
-                    if snippet:
-                        code_blocks.append(snippet)
-                    break
+                if func.get("name") not in wanted:
+                    continue
+                wanted.discard(func.get("name"))
+                origin_lines = _read_file_lines(candidate) or []
+                snippet = origin_lines[
+                    func.get("start_line", 1) - 1 : func.get("end_line", 1)
+                ]
+                if snippet:
+                    code_blocks.append(snippet)
     return code_blocks
 
 
@@ -1019,9 +966,6 @@ def _build_header_hint_block(method_lines: List[str]) -> Optional[List[str]]:
 def _load_types_from_origin(
     origin: str, alias: Optional[str], per_alias_limit: int
 ) -> List[List[str]]:
-    metadata_dir = _METADATA_DIR
-    if not metadata_dir:
-        return []
     file_candidates: List[str] = []
     if os.path.isdir(origin):
         for entry in os.scandir(origin):
@@ -1032,8 +976,8 @@ def _load_types_from_origin(
     blocks: List[List[str]] = []
     collected = 0
     for candidate in file_candidates:
-        json_file = os.path.join(metadata_dir, _sanitize_json_filename(candidate))
-        if not os.path.exists(json_file):
+        json_file = _metadata_cache_path(candidate)
+        if not json_file or not os.path.exists(json_file):
             continue
         try:
             with open(json_file, "r", encoding="utf-8") as handle:
@@ -1092,15 +1036,10 @@ def provide_context_codeblock(directory_path: str, method_info: Dict):
     end_line = method_info.get("end_line", start_line)
     method_definition_code_block = lines[start_line - 1 : end_line]
 
-    metadata_dir = _METADATA_DIR
-    data = {"elements": {"functions": [], "function_calls": []}, "imports": []}
-    if metadata_dir:
-        json_file = os.path.join(metadata_dir, _sanitize_json_filename(file_name))
-        try:
-            with open(json_file, "r", encoding="utf-8") as handle:
-                data = json.load(handle)
-        except (OSError, json.JSONDecodeError):
-            data = {"elements": {"functions": [], "function_calls": []}, "imports": []}
+    data = _load_file_metadata(file_name) or {
+        "elements": {"functions": [], "function_calls": []},
+        "imports": [],
+    }
 
     in_file_dependency_functions, imported_functions = get_dependencies(
         data, start_line, end_line, file_name
@@ -1118,36 +1057,38 @@ def provide_context_codeblock(directory_path: str, method_info: Dict):
     return context_code_blocks, method_definition_code_block
 
 
+def _dedupe_endpoint_jobs(endpoint_jobs: List[Dict]) -> List[Dict]:
+    """One job per route and method.
+
+    The same route registered twice, or reached through two group aliases,
+    used to cost two LLM calls and write the second answer over the first.
+    """
+    seen = set()
+    unique: List[Dict] = []
+    for job in endpoint_jobs:
+        key = _endpoint_key(job.get("route"), _job_method(job))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(job)
+    return unique
+
+
 def run_swagger_generation(host: str) -> Optional[Dict]:
+    _reset_caches()
     directory_path = get_repo_path()
     repo_name = get_repo_name()
-    global _METADATA_DIR
-    metadata_dir = tempfile.mkdtemp(prefix="qodex_go_file_info_")
-    _METADATA_DIR = metadata_dir
+    # Built before the try: a walk that dies leaves an incomplete picture of
+    # which entries are still live, and pruning against it would be wrong.
+    _build_metadata_cache(directory_path)
 
     try:
-        for root, _, files in os.walk(directory_path):
-            for filename in files:
-                file_path = os.path.join(root, filename)
-                if (
-                    os.path.exists(file_path)
-                    and should_process_directory(file_path, directory_path)
-                    and file_path.endswith(".go")
-                ):
-                    try:
-                        file_info = process_file(file_path, directory_path)
-                    except Exception:
-                        continue
-                    json_file_name = os.path.join(
-                        metadata_dir, _sanitize_json_filename(file_path)
-                    )
-                    with open(json_file_name, "w", encoding="utf-8") as handle:
-                        json.dump(file_info, handle, indent=4)
-
         api_files = find_api_definition_files(directory_path)
         endpoints: List[Dict] = []
+        reset_extraction_drops()
         for file in api_files:
             endpoints.extend(find_api_endpoints(Path(file), directory_path))
+        log_extraction_drops()
 
         swagger = {
             "openapi": "3.0.0",
@@ -1169,6 +1110,7 @@ def run_swagger_generation(host: str) -> Optional[Dict]:
             if not hydrated:
                 continue
             endpoint_jobs.append(hydrated)
+        endpoint_jobs = _dedupe_endpoint_jobs(endpoint_jobs)
 
         # Nothing was extracted: hand back None so the caller falls back instead
         # of publishing an empty spec (or, worse, incrementally deleting one).
@@ -1210,9 +1152,13 @@ def run_swagger_generation(host: str) -> Optional[Dict]:
         # Only endpoints that made it into the spec are indexed, otherwise a
         # failure looks unchanged next run and is never retried.
         _write_api_index(_build_api_index(generated))
+        pipeline_common.record_coverage(
+            swagger, len(endpoint_jobs), len(generated), 0, len(failed),
+            dropped=sum(extraction_drops().values()),
+        )
 
         return swagger
     finally:
-        if metadata_dir and os.path.exists(metadata_dir):
-            shutil.rmtree(metadata_dir, ignore_errors=True)
-        _METADATA_DIR = None
+        # The cache outlives the run; only entries for content that is gone are
+        # dropped, so the next run parses just what changed.
+        _prune_metadata_cache()
