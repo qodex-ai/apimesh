@@ -2087,6 +2087,118 @@ def test_a_nested_class_methods_module_is_not_an_action(tmp_path, monkeypatch):
     assert dropped == ["GET /signals/purge (signals#purge)"]
 
 
+SINGLETON_CONCERN = """module Destroyable
+  extend ActiveSupport::Concern
+
+  def self.destroy
+    Signal.destroy_all
+  end
+
+  class << self
+    def purge
+      Signal.purge_all
+    end
+  end
+end
+"""
+
+SINGLETON_CONCERN_CONTROLLER = """class SignalsController < ApplicationController
+  include Destroyable
+
+  def index
+    render json: []
+  end
+end
+"""
+
+SINGLETON_ROUTES = """Rails.application.routes.draw do
+  delete '/signals/destroy', to: 'signals#destroy'
+  get '/signals/purge', to: 'signals#purge'
+  resources :signals, only: [:index]
+end
+"""
+
+
+def test_a_class_method_on_a_concern_is_not_an_action(tmp_path, monkeypatch):
+    """`Destroyable.destroy` is a class method, and Rails routes to instance
+    methods, so the route has no body to document and drops."""
+    repo_root = tmp_path / "singleton_app"
+    _write(repo_root / "config" / "routes.rb", SINGLETON_ROUTES)
+    concern = _write(
+        repo_root / "app" / "controllers" / "concerns" / "destroyable.rb",
+        SINGLETON_CONCERN,
+    )
+    controller = _write(
+        repo_root / "app" / "controllers" / "signals_controller.rb",
+        SINGLETON_CONCERN_CONTROLLER,
+    )
+    class_index = _build_class_index(monkeypatch, repo_root, tmp_path / "out")
+
+    assert class_index["Destroyable"]["methods"] == {}
+
+    route_map: dict = {}
+    find_api_endpoints(repo_root / "config" / "routes.rb", str(repo_root), route_map)
+    dropped: list = []
+    endpoints = find_api_endpoints(
+        controller, str(repo_root), route_map, class_index, dropped
+    )
+
+    methods = {method["route"]: method for method in endpoints[0]["methods"]}
+    assert set(methods) == {"/signals"}
+    assert sorted(dropped) == [
+        "DELETE /signals/destroy (signals#destroy)",
+        "GET /signals/purge (signals#purge)",
+    ]
+
+    # Dropped from the action maps, still in the metadata the prompts read.
+    functions = process_file(str(concern), str(repo_root))["elements"]["functions"]
+    assert {item["name"]: item["kind"] for item in functions} == {
+        "destroy": "singleton",
+        "purge": "singleton",
+    }
+
+
+SINGLETON_CONTROLLER = """class SignalsController < ApplicationController
+  def index
+    render json: []
+  end
+
+  class << self
+    def destroy
+      Signal.destroy_all
+    end
+  end
+end
+"""
+
+SINGLETON_CONTROLLER_ROUTES = """Rails.application.routes.draw do
+  delete '/signals/destroy', to: 'signals#destroy'
+  resources :signals, only: [:index]
+end
+"""
+
+
+def test_a_class_method_on_the_controller_itself_is_not_an_action(tmp_path, monkeypatch):
+    """The same rule inside the controller file: `class << self` holds no action."""
+    repo_root = tmp_path / "singleton_controller_app"
+    _write(repo_root / "config" / "routes.rb", SINGLETON_CONTROLLER_ROUTES)
+    controller = _write(
+        repo_root / "app" / "controllers" / "signals_controller.rb", SINGLETON_CONTROLLER
+    )
+    class_index = _build_class_index(monkeypatch, repo_root, tmp_path / "out")
+
+    route_map: dict = {}
+    find_api_endpoints(repo_root / "config" / "routes.rb", str(repo_root), route_map)
+    dropped: list = []
+    endpoints = find_api_endpoints(
+        controller, str(repo_root), route_map, class_index, dropped
+    )
+
+    methods = {method["route"]: method for method in endpoints[0]["methods"]}
+    assert set(methods) == {"/signals"}
+    assert dropped == ["DELETE /signals/destroy (signals#destroy)"]
+
+
 HELPER_CONTROLLER = """class HelperWidgetsController < ApplicationController
   def show
     set_widget

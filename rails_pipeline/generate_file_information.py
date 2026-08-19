@@ -94,6 +94,25 @@ def _gather_module_info(node, source: str) -> Dict:
     }
 
 
+def _is_singleton_method(node) -> bool:
+    """
+    Whether a `def` defines a method on the class itself rather than on its
+    instances. `def self.destroy` is a node type of its own; a plain `def`
+    written inside `class << self` is an ordinary method node that happens to
+    sit in a singleton scope, and only its ancestors say so.
+    """
+    if node.type == "singleton_method":
+        return True
+    parent = node.parent
+    while parent is not None:
+        if parent.type == "singleton_class":
+            return True
+        if parent.type in {"class", "module"} and parent.is_named:
+            return False
+        parent = parent.parent
+    return False
+
+
 def _gather_method_info(node, source: str) -> Dict:
     name_node = node.child_by_field_name("name")
     name = _node_text(source, name_node) if name_node else "<anonymous>"
@@ -102,6 +121,9 @@ def _gather_method_info(node, source: str) -> Dict:
         "name": name,
         "start_line": node.start_point[0] + 1,
         "end_line": node.end_point[0] + 1,
+        # Rails routes to instance methods only, so the kind is what keeps a
+        # class method out of the action maps while the metadata still has it.
+        "kind": "singleton" if _is_singleton_method(node) else "instance",
     }
 
 

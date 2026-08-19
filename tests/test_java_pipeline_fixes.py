@@ -460,6 +460,141 @@ def test_the_implementation_mapping_wins_over_the_interface_one(tmp_path):
     }
 
 
+V1_API_INTERFACE = """package com.acme.api;
+
+@RequestMapping("/api/v1")
+public interface V1Api {
+
+    @GetMapping("/users/{id}")
+    User get(String id);
+
+    @PostMapping("/users")
+    User create(User user);
+}
+"""
+
+V2_API_INTERFACE = """package com.acme.api;
+
+public interface V2Api extends V1Api {
+}
+"""
+
+V2_IMPLEMENTATION = """package com.acme.web;
+
+import com.acme.api.V2Api;
+
+@RestController
+public class UserController implements V2Api {
+
+    @Override
+    public User get(String id) {
+        return null;
+    }
+
+    @Override
+    public User create(User user) {
+        return user;
+    }
+}
+"""
+
+
+def test_an_interface_inherits_the_mappings_of_the_one_it_extends(tmp_path):
+    """Spring searches the parent interfaces too, so a controller claiming only
+    V2Api still serves everything V1Api declares."""
+    endpoints = _scan_set_endpoints(
+        tmp_path,
+        {
+            "api/V1Api.java": V1_API_INTERFACE,
+            "api/V2Api.java": V2_API_INTERFACE,
+            "web/UserController.java": V2_IMPLEMENTATION,
+        },
+    )
+
+    assert {(item["method"], item["route"]) for item in endpoints} == {
+        ("GET", "/api/v1/users/{id}"),
+        ("POST", "/api/v1/users"),
+    }
+    assert len(endpoints) == 2
+    assert {item["file_path"] for item in endpoints} == {
+        str(tmp_path / "repo" / "web" / "UserController.java")
+    }
+    # Reached through the chain, so V1Api counts as implemented and nothing is
+    # reported as a mapping that never landed on a body.
+    assert extraction_drops() == {"assumed_get": 0, "unresolved": 0}
+
+
+NESTED_CONTRACTS = """package com.acme.api;
+
+public interface Contracts {
+
+    @RequestMapping("/api/v1")
+    interface UserApi {
+
+        @GetMapping("/users/{id}")
+        User get(String id);
+    }
+
+    @RequestMapping("/api/v1")
+    interface OrderApi {
+
+        @GetMapping("/orders")
+        String list();
+    }
+}
+"""
+
+IMPORTING_NESTED_IMPLEMENTATION = """package com.acme.web;
+
+import com.acme.api.Contracts;
+
+@RestController
+public class UserController implements Contracts.UserApi {
+
+    @Override
+    public User get(String id) {
+        return null;
+    }
+}
+"""
+
+SAME_PACKAGE_NESTED_IMPLEMENTATION = """package com.acme.api;
+
+@RestController
+public class OrderController implements Contracts.OrderApi {
+
+    @Override
+    public String list() {
+        return "[]";
+    }
+}
+"""
+
+
+def test_a_nested_contract_interface_resolves_through_its_outer_type(tmp_path):
+    """`Contracts.UserApi` is com.acme.api.Contracts.UserApi. Indexed as though
+    it sat at the top level, it matched no implements clause and every mapping
+    it declares was thrown away."""
+    endpoints = _scan_set_endpoints(
+        tmp_path,
+        {
+            "api/Contracts.java": NESTED_CONTRACTS,
+            "web/UserController.java": IMPORTING_NESTED_IMPLEMENTATION,
+            "api/OrderController.java": SAME_PACKAGE_NESTED_IMPLEMENTATION,
+        },
+    )
+
+    # Resolved through the import in one file, through the package in the other.
+    assert {
+        (item["method"], item["route"], Path(item["file_path"]).name)
+        for item in endpoints
+    } == {
+        ("GET", "/api/v1/users/{id}", "UserController.java"),
+        ("GET", "/api/v1/orders", "OrderController.java"),
+    }
+    assert extraction_drops() == {"assumed_get": 0, "unresolved": 0}
+
+
 def test_a_mapped_interface_nobody_implements_emits_nothing(tmp_path, capsys):
     """There is no body to document, and inventing one from the signature would
     publish routes no bean serves."""
@@ -997,12 +1132,14 @@ def test_a_repo_without_endpoints_falls_back(tmp_path, monkeypatch, capsys):
     )
 
 
-def _incremental_pass(monkeypatch, repo: Path, out_dir: Path, changed_files):
+def _incremental_pass(monkeypatch, repo: Path, out_dir: Path, changed_files, entries_seen=None):
     """One incremental pass over the repo as it is on disk right now."""
     calls = []
 
     def fake_batch(entries, blocks, source_file):
         calls.append(sorted(label for label, _ in entries))
+        if entries_seen is not None:
+            entries_seen.extend(entries)
         return _echo_batch(entries, blocks, source_file)
 
     monkeypatch.setattr(rsg, "get_batch_definition_swagger", fake_batch)
@@ -1121,6 +1258,82 @@ def test_an_unchanged_endpoint_costs_no_llm_call_and_a_dependency_edit_does(
         "generated": 2,
         "skipped_unchanged": 2,
         "failed": 0,
+    }
+
+
+JSON_ORDERS_CONTROLLER = """package com.acme.web;
+
+@RestController
+@RequestMapping("/api/v1")
+public class OrderController {
+
+    @PostMapping(value = "/orders", consumes = "application/json")
+    public void createFromJson(@RequestBody Order order) {}
+
+    @GetMapping("/orders")
+    public String list() {
+        return "[]";
+    }
+}
+"""
+
+XML_ORDERS_CONTROLLER = """package com.acme.web;
+
+@RestController
+@RequestMapping("/api/v1")
+public class XmlOrderController {
+
+    @PostMapping(value = "/orders", consumes = "application/xml")
+    public void createFromXml(@RequestBody OrderXml order) {}
+}
+"""
+
+
+def test_a_variant_arriving_from_another_file_dirties_the_endpoint(
+    tmp_path, monkeypatch
+):
+    """The xml handler of POST /orders is added in a file the endpoint never
+    mentioned. Only the json handler's file was watched, so the endpoint read as
+    clean and its operation stayed missing the whole xml request body."""
+    repo = tmp_path / "repo"
+    _write(repo / "src/main/java/com/acme/web/OrderController.java", JSON_ORDERS_CONTROLLER)
+    _write(repo / "src/main/java/com/acme/web/StatusController.java", STATUS_CONTROLLER)
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    _prepare_run(monkeypatch, repo, out_dir)
+
+    _, index, calls = _incremental_pass(monkeypatch, repo, out_dir, set())
+
+    assert len(calls) == 2
+    assert set(index) == {
+        "POST /api/v1/orders",
+        "GET /api/v1/orders",
+        "GET /health",
+        "GET /ready",
+    }
+    stored_hash = index["POST /api/v1/orders"]["context_hash"]
+
+    xml = _write(
+        repo / "src/main/java/com/acme/web/XmlOrderController.java",
+        XML_ORDERS_CONTROLLER,
+    )
+
+    entries: list = []
+    _, index, calls = _incremental_pass(
+        monkeypatch, repo, out_dir, {str(xml)}, entries_seen=entries
+    )
+
+    assert calls == [["POST /api/v1/orders"]]
+    assert index["POST /api/v1/orders"]["context_hash"] != stored_hash
+    # Both bodies reach the prompt, each under the condition that picks it.
+    body = dict(entries)["POST /api/v1/orders"]
+    assert "// Mapping conditions: consumes=application/json" in body
+    assert "// Mapping conditions: consumes=application/xml" in body
+    assert "createFromJson" in body and "createFromXml" in body
+    # And the xml file is now an edge of its own, so the next edit to it lands.
+    assert {item["file_path"] for item in index["POST /api/v1/orders"]["files"]} == {
+        str(repo / "src/main/java/com/acme/web/OrderController.java"),
+        str(xml),
     }
 
 

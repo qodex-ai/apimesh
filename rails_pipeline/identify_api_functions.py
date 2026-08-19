@@ -981,11 +981,26 @@ def _ancestor_method_info(
     }
 
 
+def _in_singleton_scope(node: Node) -> bool:
+    """Whether a plain `def` sits inside a `class << self` block."""
+    parent = node.parent
+    while parent is not None:
+        if parent.type == "singleton_class":
+            return True
+        if parent.type in {"class", "module"} and parent.is_named:
+            return False
+        parent = parent.parent
+    return False
+
+
 def _collect_controller_methods(root: Node, source: str, file_path: Path):
     """
     Returns (methods, class_name); the class name is the first class the file
     declares, which is the controller even when the file also holds an inner
     class.
+
+    Only instance methods: Rails routes to those alone, so a `singleton_method`
+    node and a `def` under `class << self` are both left out.
     """
     methods: List[Dict] = []
     class_names: List[tuple] = []
@@ -1003,7 +1018,7 @@ def _collect_controller_methods(root: Node, source: str, file_path: Path):
             cursor.extend(list(node.children))
             continue
 
-        if node.type == "method":
+        if node.type == "method" and not _in_singleton_scope(node):
             name_node = node.child_by_field_name("name")
             if not name_node:
                 continue

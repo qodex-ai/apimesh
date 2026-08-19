@@ -1040,6 +1040,10 @@ def _contained_method_map(
     else. Taking every `def` inside the span handed a concern the methods of its
     own nested `module ClassMethods`, and a route named after one of them was
     documented as an action Rails answers 404 on.
+
+    A class method is the same kind of mistake: `def self.destroy` and anything
+    under `class << self` are never actions, so they stay out of the map the
+    ancestry walk resolves a route through.
     """
     method_map: Dict[str, Dict[str, int]] = {}
     if not isinstance(start_line, int) or not isinstance(end_line, int):
@@ -1050,6 +1054,7 @@ def _contained_method_map(
         func_end = func.get("end_line")
         if (
             not method_name
+            or func.get("kind") == "singleton"
             or not isinstance(func_start, int)
             or not isinstance(func_end, int)
             or not start_line <= func_start <= end_line
