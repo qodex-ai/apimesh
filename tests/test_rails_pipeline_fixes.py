@@ -1884,10 +1884,207 @@ def test_one_class_yields_exactly_one_class_entry(tmp_path):
     assert [item["name"] for item in controller_elements["classes"]] == [
         "SignalsController"
     ]
-    assert controller_elements["classes"][0]["includes"] == ["Trackable"]
+    assert controller_elements["classes"][0]["includes"] == [["Trackable"]]
 
     concern_elements = process_file(str(concern), str(tmp_path))["elements"]
     assert [item["name"] for item in concern_elements["modules"]] == ["Trackable"]
+
+
+FIRST_TOUCH_CONCERN = """module FirstTouch
+  def track
+    render json: { from: "first" }
+  end
+end
+"""
+
+SECOND_TOUCH_CONCERN = """module SecondTouch
+  def track
+    render json: { from: "second" }
+  end
+end
+"""
+
+ONE_STATEMENT_CONTROLLER = """class SignalsController < ApplicationController
+  include FirstTouch, SecondTouch
+
+  def index
+    render json: []
+  end
+end
+"""
+
+TWO_STATEMENT_CONTROLLER = """class SignalsController < ApplicationController
+  include FirstTouch
+  include SecondTouch
+
+  def index
+    render json: []
+  end
+end
+"""
+
+
+def _stage_include_app(monkeypatch, tmp_path, controller_source: str):
+    """A controller including both concerns, and the class index for the run."""
+    repo_root = tmp_path / "include_app"
+    _write(repo_root / "config" / "routes.rb", CONCERN_ACTION_ROUTES)
+    first = _write(
+        repo_root / "app" / "controllers" / "concerns" / "first_touch.rb",
+        FIRST_TOUCH_CONCERN,
+    )
+    second = _write(
+        repo_root / "app" / "controllers" / "concerns" / "second_touch.rb",
+        SECOND_TOUCH_CONCERN,
+    )
+    controller = _write(
+        repo_root / "app" / "controllers" / "signals_controller.rb", controller_source
+    )
+    class_index = _build_class_index(monkeypatch, repo_root, tmp_path / "out")
+
+    route_map: dict = {}
+    find_api_endpoints(repo_root / "config" / "routes.rb", str(repo_root), route_map)
+    dropped: list = []
+    endpoints = find_api_endpoints(
+        controller, str(repo_root), route_map, class_index, dropped
+    )
+    methods = {method["route"]: method for method in endpoints[0]["methods"]}
+    return first, second, methods, dropped
+
+
+def test_the_first_argument_of_one_include_statement_wins(tmp_path, monkeypatch):
+    """`include FirstTouch, SecondTouch` puts FirstTouch nearest the class."""
+    first, _second, methods, dropped = _stage_include_app(
+        monkeypatch, tmp_path, ONE_STATEMENT_CONTROLLER
+    )
+
+    assert dropped == []
+    track = methods["/signals/track"]
+    assert track["inherited_from"] == "FirstTouch"
+    assert track["file_path"] == str(first)
+
+
+def test_the_later_include_statement_wins(tmp_path, monkeypatch):
+    """Included one statement at a time, the most recent module sits nearest."""
+    _first, second, methods, dropped = _stage_include_app(
+        monkeypatch, tmp_path, TWO_STATEMENT_CONTROLLER
+    )
+
+    assert dropped == []
+    track = methods["/signals/track"]
+    assert track["inherited_from"] == "SecondTouch"
+    assert track["file_path"] == str(second)
+
+
+AUDITABLE_CONCERN = """module Auditable
+  def track
+    render json: { audited: true }
+  end
+end
+"""
+
+NESTING_CONCERN = """module Trackable
+  extend ActiveSupport::Concern
+
+  include Auditable
+end
+"""
+
+
+def test_a_module_included_by_an_included_module_resolves(tmp_path, monkeypatch):
+    """Trackable holds no action of its own; the module it includes does."""
+    repo_root = tmp_path / "nested_include_app"
+    _write(repo_root / "config" / "routes.rb", CONCERN_ACTION_ROUTES)
+    auditable = _write(
+        repo_root / "app" / "controllers" / "concerns" / "auditable.rb",
+        AUDITABLE_CONCERN,
+    )
+    _write(
+        repo_root / "app" / "controllers" / "concerns" / "trackable.rb",
+        NESTING_CONCERN,
+    )
+    controller = _write(
+        repo_root / "app" / "controllers" / "signals_controller.rb", CONCERN_CONTROLLER
+    )
+    class_index = _build_class_index(monkeypatch, repo_root, tmp_path / "out")
+
+    route_map: dict = {}
+    find_api_endpoints(repo_root / "config" / "routes.rb", str(repo_root), route_map)
+    dropped: list = []
+    endpoints = find_api_endpoints(
+        controller, str(repo_root), route_map, class_index, dropped
+    )
+
+    methods = {method["route"]: method for method in endpoints[0]["methods"]}
+    assert dropped == []
+    track = methods["/signals/track"]
+    assert track["inherited_from"] == "Auditable"
+    assert track["file_path"] == str(auditable)
+
+    # The same chain records the edges, so editing Auditable dirties the endpoint.
+    edge_files = {
+        item["file_path"]
+        for item in run_module._ancestor_definition_imports(
+            "SignalsController", "/signals/track"
+        )
+    }
+    assert os.path.abspath(str(auditable)) in edge_files
+
+
+CLASS_METHODS_CONCERN = """module Purgeable
+  extend ActiveSupport::Concern
+
+  module ClassMethods
+    def purge
+      where(purged: true)
+    end
+  end
+end
+"""
+
+CLASS_METHODS_CONTROLLER = """class SignalsController < ApplicationController
+  include Purgeable
+
+  def index
+    render json: []
+  end
+end
+"""
+
+CLASS_METHODS_ROUTES = """Rails.application.routes.draw do
+  get '/signals/purge', to: 'signals#purge'
+  resources :signals, only: [:index]
+end
+"""
+
+
+def test_a_nested_class_methods_module_is_not_an_action(tmp_path, monkeypatch):
+    """`Purgeable::ClassMethods#purge` is not an action Rails would route to."""
+    repo_root = tmp_path / "class_methods_app"
+    _write(repo_root / "config" / "routes.rb", CLASS_METHODS_ROUTES)
+    _write(
+        repo_root / "app" / "controllers" / "concerns" / "purgeable.rb",
+        CLASS_METHODS_CONCERN,
+    )
+    controller = _write(
+        repo_root / "app" / "controllers" / "signals_controller.rb",
+        CLASS_METHODS_CONTROLLER,
+    )
+    class_index = _build_class_index(monkeypatch, repo_root, tmp_path / "out")
+
+    # The method belongs to the nested module alone, never to its enclosing one.
+    assert class_index["Purgeable"]["methods"] == {}
+    assert set(class_index["ClassMethods"]["methods"]) == {"purge"}
+
+    route_map: dict = {}
+    find_api_endpoints(repo_root / "config" / "routes.rb", str(repo_root), route_map)
+    dropped: list = []
+    endpoints = find_api_endpoints(
+        controller, str(repo_root), route_map, class_index, dropped
+    )
+
+    methods = {method["route"]: method for method in endpoints[0]["methods"]}
+    assert set(methods) == {"/signals"}
+    assert dropped == ["GET /signals/purge (signals#purge)"]
 
 
 HELPER_CONTROLLER = """class HelperWidgetsController < ApplicationController
