@@ -7,6 +7,8 @@ produce a wrong or empty spec, among them:
   bare paths;
 * the verb of a @RequestMapping, which lives in an attribute rather than in the
   annotation's name, and which fans out when several are listed;
+* the mappings an interface declares for the controller that implements it,
+  which is how an API first codebase writes every one of its routes;
 * ignore matching over the relative path, so a repo checked out below /build
   still discovers its .java files;
 * the context hash, which is what keeps an untouched endpoint off the model.
@@ -28,6 +30,7 @@ from java_pipeline.identify_api_functions import (
     find_api_endpoints,
     log_extraction_drops,
     reset_extraction_drops,
+    reset_type_index,
 )
 from java_pipeline.run_swagger_generation import _normalize_swagger_fragment
 
@@ -41,7 +44,21 @@ def _write(path: Path, source: str) -> Path:
 def _endpoints(tmp_path: Path, source: str) -> list:
     java_file = _write(tmp_path / "UserController.java", source)
     reset_extraction_drops()
+    reset_type_index()
     return find_api_endpoints(java_file, str(tmp_path))
+
+
+def _scan_set_endpoints(tmp_path: Path, files: dict) -> list:
+    """Extraction over a whole repo, which is what resolves an implements clause."""
+    repo = tmp_path / "repo"
+    for relative, source in files.items():
+        _write(repo / relative, source)
+    reset_extraction_drops()
+    reset_type_index()
+    endpoints = []
+    for path in find_api_definition_files(str(repo)):
+        endpoints.extend(find_api_endpoints(Path(path), str(repo)))
+    return endpoints
 
 
 def _routes(tmp_path: Path, source: str) -> set:
@@ -301,6 +318,277 @@ public class Outer {
 def test_only_the_annotated_class_contributes_endpoints(tmp_path):
     """A nested controller is a controller; its enclosing class is not."""
     assert _routes(tmp_path, NESTED_CONTROLLER) == {("GET", "/routed")}
+
+
+USER_API_INTERFACE = """package com.acme.api;
+
+@RequestMapping("/api/v1")
+public interface UserApi {
+
+    @GetMapping("/users/{id}")
+    User get(String id);
+
+    @PostMapping("/users")
+    User create(User user);
+}
+"""
+
+UNANNOTATED_IMPLEMENTATION = """package com.acme.web;
+
+import com.acme.api.UserApi;
+
+@RestController
+public class UserController implements UserApi {
+
+    @Override
+    public User get(String id) {
+        return null;
+    }
+
+    @Override
+    public User create(User user) {
+        return user;
+    }
+}
+"""
+
+
+def test_an_interface_declares_the_mappings_its_implementation_serves(tmp_path):
+    """The API first pattern: the contract carries the annotations, the
+    controller carries the body. The endpoints belong to the body."""
+    endpoints = _scan_set_endpoints(
+        tmp_path,
+        {
+            "api/UserApi.java": USER_API_INTERFACE,
+            "web/UserController.java": UNANNOTATED_IMPLEMENTATION,
+        },
+    )
+
+    assert {(item["method"], item["route"]) for item in endpoints} == {
+        ("GET", "/api/v1/users/{id}"),
+        ("POST", "/api/v1/users"),
+    }
+    # Once each, and owned by the implementation: its file, its line span.
+    assert len(endpoints) == 2
+    assert {item["file_path"] for item in endpoints} == {
+        str(tmp_path / "repo" / "web" / "UserController.java")
+    }
+    get = next(item for item in endpoints if item["method"] == "GET")
+    lines = UNANNOTATED_IMPLEMENTATION.splitlines()[
+        get["start_line"] - 1 : get["end_line"]
+    ]
+    assert lines[0].strip() == "@Override"
+    assert lines[-1].strip() == "}"
+
+
+DUPLICATING_IMPLEMENTATION = """package com.acme.web;
+
+import com.acme.api.UserApi;
+
+@RestController
+@RequestMapping("/api/v1")
+public class UserController implements UserApi {
+
+    @Override
+    @GetMapping("/users/{id}")
+    public User get(String id) {
+        return null;
+    }
+
+    @Override
+    @PostMapping("/users")
+    public User create(User user) {
+        return user;
+    }
+}
+"""
+
+
+def test_annotations_repeated_on_the_implementation_are_not_a_second_endpoint(tmp_path):
+    """The interface and the class say the same thing, and the route is served
+    once, so it is documented once."""
+    endpoints = _scan_set_endpoints(
+        tmp_path,
+        {
+            "api/UserApi.java": USER_API_INTERFACE,
+            "web/UserController.java": DUPLICATING_IMPLEMENTATION,
+        },
+    )
+
+    assert len(endpoints) == 2
+    assert {(item["method"], item["route"]) for item in endpoints} == {
+        ("GET", "/api/v1/users/{id}"),
+        ("POST", "/api/v1/users"),
+    }
+
+
+OVERRIDING_IMPLEMENTATION = """package com.acme.web;
+
+import com.acme.api.UserApi;
+
+@RestController
+public class UserController implements UserApi {
+
+    @Override
+    @GetMapping("/people/{id}")
+    public User get(String id) {
+        return null;
+    }
+
+    @Override
+    public User create(User user) {
+        return user;
+    }
+}
+"""
+
+
+def test_the_implementation_mapping_wins_over_the_interface_one(tmp_path):
+    """Spring routes what the bean class declares, and the class prefix still
+    comes from the interface because the class declares none."""
+    endpoints = _scan_set_endpoints(
+        tmp_path,
+        {
+            "api/UserApi.java": USER_API_INTERFACE,
+            "web/UserController.java": OVERRIDING_IMPLEMENTATION,
+        },
+    )
+
+    assert {(item["method"], item["route"]) for item in endpoints} == {
+        ("GET", "/api/v1/people/{id}"),
+        ("POST", "/api/v1/users"),
+    }
+
+
+def test_a_mapped_interface_nobody_implements_emits_nothing(tmp_path, capsys):
+    """There is no body to document, and inventing one from the signature would
+    publish routes no bean serves."""
+    endpoints = _scan_set_endpoints(tmp_path, {"api/UserApi.java": USER_API_INTERFACE})
+
+    assert endpoints == []
+    assert extraction_drops() == {"assumed_get": 0, "unresolved": 2}
+
+    log_extraction_drops()
+    assert "skipped 2 mappings" in capsys.readouterr().out
+
+
+NEGOTIATED_CONTROLLER = """package com.acme.web;
+
+@RestController
+@RequestMapping("/api/v1")
+public class OrderController {
+
+    @PostMapping(value = "/orders", consumes = "application/json")
+    public void createFromJson(@RequestBody Order order) {}
+
+    @PostMapping(value = "/orders", consumes = "application/xml")
+    public void createFromXml(@RequestBody OrderXml order) {}
+}
+"""
+
+
+def test_content_negotiation_variants_become_one_endpoint_carrying_both_bodies(
+    tmp_path, monkeypatch
+):
+    """Two handlers, one operation. Dropping the second used to lose the xml
+    request body entirely, so both bodies are documented together, each under
+    the condition that picks it."""
+    repo = tmp_path / "repo"
+    controller = _write(repo / "web" / "OrderController.java", NEGOTIATED_CONTROLLER)
+    _prepare_run(monkeypatch, repo, tmp_path / "out")
+    reset_extraction_drops()
+    reset_type_index()
+
+    jobs = rsg._dedupe_endpoint_jobs(find_api_endpoints(controller, str(repo)))
+
+    assert len(jobs) == 1
+    _, body = rsg.provide_context_codeblock(str(repo), jobs[0])
+    prompt_body = "".join(body)
+    assert "// Mapping conditions: consumes=application/json" in prompt_body
+    assert "// Mapping conditions: consumes=application/xml" in prompt_body
+    assert "createFromJson" in prompt_body
+    assert "createFromXml" in prompt_body
+
+
+def test_two_handlers_that_differ_by_nothing_stay_one_job():
+    """Nothing tells them apart, so the second is the same endpoint registered
+    twice and costs no second call."""
+    jobs = rsg._dedupe_endpoint_jobs([_job("/orders", "POST"), _job("/orders", "POST")])
+
+    assert len(jobs) == 1
+    assert "variants" not in jobs[0]
+
+
+CLASS_LEVEL_PRODUCES = """package com.acme.web;
+
+@RestController
+@RequestMapping(value = "/api/v1", produces = "application/json")
+public class ReportController {
+
+    @GetMapping("/reports")
+    public String reports() {
+        return "[]";
+    }
+}
+"""
+
+
+def test_class_level_conditions_reach_the_endpoint_and_the_prompt(tmp_path, monkeypatch):
+    """The media type the whole controller answers in is part of the operation,
+    and it is only written once, on the class."""
+    repo = tmp_path / "repo"
+    controller = _write(repo / "web" / "ReportController.java", CLASS_LEVEL_PRODUCES)
+    _prepare_run(monkeypatch, repo, tmp_path / "out")
+    reset_extraction_drops()
+    reset_type_index()
+
+    endpoints = find_api_endpoints(controller, str(repo))
+
+    assert [item.get("conditions") for item in endpoints] == [
+        {"produces": ["application/json"]}
+    ]
+    _, body = rsg.provide_context_codeblock(str(repo), endpoints[0])
+    assert "// Mapping conditions: produces=application/json" in "".join(body)
+
+
+NESTED_DTO = """package com.acme;
+
+public class Dto {
+
+    public static class UserRequest {
+        public String id;
+    }
+}
+"""
+
+NESTED_IMPORT_CONTROLLER = """package com.acme.web;
+
+import com.acme.Dto.UserRequest;
+
+@RestController
+public class NestedController {
+
+    @PostMapping("/users")
+    public void create(@RequestBody UserRequest request) {}
+}
+"""
+
+
+def test_a_nested_type_import_resolves_to_the_file_of_its_outer_type(tmp_path):
+    """com.acme.Dto.UserRequest is declared inside com/acme/Dto.java; there is
+    no Dto/UserRequest.java, and looking for one recorded no edge at all."""
+    repo = tmp_path / "repo"
+    dto = _write(repo / "src/main/java/com/acme/Dto.java", NESTED_DTO)
+    controller = _write(
+        repo / "src/main/java/com/acme/web/NestedController.java",
+        NESTED_IMPORT_CONTROLLER,
+    )
+
+    info = process_file(str(controller), str(repo))
+
+    nested = {item["imported_name"]: item for item in info["imports"]}["UserRequest"]
+    assert nested["origin"] == str(dto)
+    assert nested["path_exists"] is True
 
 
 CONTROLLER_WITH_IMPORTS = """package com.acme.web;

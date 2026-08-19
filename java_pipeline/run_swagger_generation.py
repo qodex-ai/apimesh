@@ -17,8 +17,10 @@ from java_pipeline.generate_file_information import process_file, reset_source_i
 from java_pipeline.identify_api_functions import (
     find_api_endpoints,
     extraction_drops,
+    index_scanned_types,
     log_extraction_drops,
     reset_extraction_drops,
+    reset_type_index,
 )
 from utils import (
     get_git_commit_hash,
@@ -144,6 +146,25 @@ def _job_method(endpoint):
     return endpoint.get("method") or endpoint.get("http_method")
 
 
+# The mapping conditions the prompt reports, in the order it reports them.
+_CONDITION_ORDER = ("consumes", "produces", "params", "headers")
+
+
+def _job_variants(job: Dict) -> List[Dict]:
+    """The handlers one job documents: itself, plus the variants merged onto it."""
+    return [job] + list(job.get("variants") or [])
+
+
+def _conditions_note(job: Dict) -> str:
+    """The one line telling the model what narrows this mapping."""
+    conditions = job.get("conditions") or {}
+    return ", ".join(
+        f"{name}={', '.join(conditions[name])}"
+        for name in _CONDITION_ORDER
+        if conditions.get(name)
+    )
+
+
 def _imported_symbol_names(import_item) -> List[str]:
     """The types the handler actually reached for through this import.
 
@@ -217,9 +238,25 @@ def _endpoint_imports(endpoint, abs_file_path, route):
     )
 
 
+def _indexed_endpoints(endpoints: list) -> list:
+    """Every merged variant, so an edit to any of their files dirties the key."""
+    indexed = []
+    for job in endpoints:
+        context_hash = job.get("context_hash")
+        for variant in _job_variants(job):
+            if variant is job:
+                indexed.append(job)
+                continue
+            entry = dict(variant)
+            if context_hash:
+                entry["context_hash"] = context_hash
+            indexed.append(entry)
+    return indexed
+
+
 def _build_api_index(endpoints: list) -> dict:
     return pipeline_common.build_api_index(
-        endpoints, _endpoint_key, _job_method, _endpoint_imports
+        _indexed_endpoints(endpoints), _endpoint_key, _job_method, _endpoint_imports
     )
 
 
@@ -330,12 +367,29 @@ def _update_swagger_for_endpoints(
     return generated, failed
 
 
-def _handler_lines(job: Dict) -> List[str]:
-    """The handler's own source lines, read for pricing its batch section."""
+def _variant_lines(job: Dict) -> List[str]:
+    """One handler's own source lines."""
     lines = _read_file_lines(job.get("file_path") or "") or []
     start_line = job.get("start_line") or 1
     end_line = job.get("end_line") or start_line
     return lines[start_line - 1 : end_line]
+
+
+def _handler_lines(job: Dict) -> List[str]:
+    """The handler source this job's prompt section carries.
+
+    A job that merged content negotiation variants carries all of their bodies,
+    each under the condition that picks it, so the model documents them as the
+    one operation Spring serves them as.
+    """
+    variants = _job_variants(job)
+    lines: List[str] = []
+    for variant in variants:
+        note = _conditions_note(variant)
+        if note or len(variants) > 1:
+            lines.append(f"// Mapping conditions: {note or 'none'}\n")
+        lines.extend(_variant_lines(variant))
+    return lines
 
 
 def _batch_section_tokens(job: Dict) -> int:
@@ -636,6 +690,7 @@ def _reset_caches() -> None:
     _CONTENT_HASHES.clear()
     _METADATA_ENTRIES.clear()
     reset_source_index()
+    reset_type_index()
 
 
 def _read_file_lines(file_path: str) -> Optional[List[str]]:
@@ -723,43 +778,70 @@ def get_code_blocks(
 
 
 def provide_context_codeblock(directory_path: str, method_info: Dict):
-    file_name = method_info["file_path"]
-    lines = _read_file_lines(file_name) or []
-    start_line = method_info.get("start_line", 1)
-    end_line = method_info.get("end_line", start_line)
-    method_definition_code_block = lines[start_line - 1 : end_line]
+    method_definition_code_block = _handler_lines(method_info)
 
-    data = _load_file_metadata(file_name) or {
-        "elements": {"functions": [], "function_calls": []},
-        "imports": [],
-    }
-
-    in_file_dependency_functions, imported_functions = get_dependencies(
-        data, start_line, end_line, file_name
-    )
-    context_code_blocks = get_code_blocks(
-        in_file_dependency_functions, imported_functions, file_name, directory_path
-    )
+    context_code_blocks: List[List[str]] = []
+    # Every merged variant contributes its own dependencies; the duplicates two
+    # variants of one handler share are dropped when the context is fitted.
+    for variant in _job_variants(method_info):
+        file_name = variant["file_path"]
+        start_line = variant.get("start_line", 1)
+        end_line = variant.get("end_line", start_line)
+        data = _load_file_metadata(file_name) or {
+            "elements": {"functions": [], "function_calls": []},
+            "imports": [],
+        }
+        in_file_dependency_functions, imported_functions = get_dependencies(
+            data, start_line, end_line, file_name
+        )
+        context_code_blocks.extend(
+            get_code_blocks(
+                in_file_dependency_functions,
+                imported_functions,
+                file_name,
+                directory_path,
+            )
+        )
     return context_code_blocks, method_definition_code_block
 
 
+def _condition_signature(job: Dict) -> Tuple:
+    """What tells two handlers on one route and verb apart."""
+    conditions = job.get("conditions") or {}
+    return tuple(
+        (name, tuple(conditions.get(name) or ()))
+        for name in _CONDITION_ORDER
+        if conditions.get(name)
+    )
+
+
 def _dedupe_endpoint_jobs(endpoint_jobs: List[Dict]) -> List[Dict]:
-    """One job per route and method.
+    """One job per route and method, content negotiation variants merged.
 
     The same route registered twice, or reached through two class prefixes that
     collapse to one path, used to cost two LLM calls and write the second
-    answer over the first.
+    answer over the first. Two handlers that differ by consumes, produces,
+    params or headers are not that: they are one OpenAPI operation, so they are
+    documented together and the job carries every one of their bodies.
     """
-    seen = set()
+    kept_by_key: Dict[str, Dict] = {}
     unique: List[Dict] = []
     for job in endpoint_jobs:
         if not job.get("route"):
             continue
         key = _endpoint_key(job.get("route"), _job_method(job))
-        if key in seen:
+        kept = kept_by_key.get(key)
+        if kept is None:
+            kept_by_key[key] = job
+            unique.append(job)
             continue
-        seen.add(key)
-        unique.append(job)
+        signature = _condition_signature(job)
+        if any(
+            _condition_signature(variant) == signature
+            for variant in _job_variants(kept)
+        ):
+            continue
+        kept.setdefault("variants", []).append(job)
     return unique
 
 
@@ -775,6 +857,9 @@ def run_swagger_generation(host: str) -> Optional[Dict]:
         api_files = find_api_definition_files(directory_path)
         endpoints: List[Dict] = []
         reset_extraction_drops()
+        # The interfaces the controllers implement are resolved across the whole
+        # scan set, so the index is built before any file is extracted.
+        index_scanned_types(api_files, directory_path)
         for file in api_files:
             endpoints.extend(find_api_endpoints(Path(file), directory_path))
         log_extraction_drops()

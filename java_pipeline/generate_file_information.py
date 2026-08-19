@@ -77,14 +77,20 @@ def _resolve_type_origin(segments: List[str], base_directory: Optional[str]) -> 
 
     A java file sits under its package path, so the import is a path suffix:
     any scanned file ending in com/acme/service/UserService.java is the one.
+    A nested type writes its outer type into that path, so
+    com.acme.Dto.UserRequest is declared in com/acme/Dto.java: the longest
+    prefix that is a file is the origin, and where inside it the nested type
+    sits does not change which file the edge points at.
     """
     if not base_directory or not segments:
         return None
     by_basename, _ = _source_index(base_directory)
-    suffix = os.sep + os.path.join(*segments) + ".java"
-    for candidate in by_basename.get(f"{segments[-1]}.java", []):
-        if candidate.endswith(suffix):
-            return os.path.normpath(candidate)
+    for end in range(len(segments), 0, -1):
+        prefix = segments[:end]
+        suffix = os.sep + os.path.join(*prefix) + ".java"
+        for candidate in by_basename.get(f"{prefix[-1]}.java", []):
+            if candidate.endswith(suffix):
+                return os.path.normpath(candidate)
     return None
 
 
