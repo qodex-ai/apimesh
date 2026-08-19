@@ -102,6 +102,7 @@ pip3 install \
   "tree-sitter-ruby==0.23.1" \
   "tree-sitter-go==0.25.0" \
   "tree-sitter-typescript==0.23.2" \
+  "tree-sitter-java==0.23.5" \
   "requests"
 
 # --- repo setup (clone/update specific branch) ---

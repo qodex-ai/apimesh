@@ -14,6 +14,7 @@ from nodejs_pipeline.run_swagger_generation import run_swagger_generation as nod
 from python_pipeline.run_swagger_generation import run_swagger_generation as python_swagger_generator
 from rails_pipeline.run_swagger_generation import run_swagger_generation as ruby_on_rails_swagger_generator
 from golang_pipeline.run_swagger_generation import run_swagger_generation as golang_swagger_generator
+from java_pipeline.run_swagger_generation import run_swagger_generation as java_swagger_generator
 from utils import get_output_filepath
 from telemetry_posthog import PostHogTelemetry
 
@@ -49,6 +50,8 @@ class RunSwagger:
                 swagger = ruby_on_rails_swagger_generator(self.user_config['api_host'])
             elif framework == "golang":
                 swagger = golang_swagger_generator(self.user_config['api_host'])
+            elif framework == "spring":
+                swagger = java_swagger_generator(self.user_config['api_host'])
         except Exception as ex:
             traceback.print_exc()
             print("Fallback to old procedure")
