@@ -570,7 +570,12 @@ def _maybe_incremental_update(
     added_keys = new_keys - existing_keys
     # An endpoint that failed last run is absent from the index, so it reads as
     # added and still has to be generated when git reports nothing changed.
-    if not changed_files and not added_keys and not removed_keys:
+    if (
+        not changed_files
+        and not added_keys
+        and not removed_keys
+        and pipeline_common.index_paths_exist(existing_index)
+    ):
         pipeline_common.record_coverage(existing_swagger, len(endpoint_jobs), 0, len(endpoint_jobs), 0)
         return pipeline_common.apply_host(existing_swagger, host)
     changed_keys = set()
@@ -748,8 +753,11 @@ def _find_function_definition(
         matching = [
             entry for entry in entries if entry.get("receiver_type") == receiver_type
         ]
-        if matching:
-            entries = matching
+        if not matching:
+            # Falling back to another receiver's method would document the
+            # wrong handler body; dropping the route is the honest outcome.
+            return None
+        entries = matching
     if preferred_file:
         for entry in entries:
             if entry.get("file_path") == preferred_file:
