@@ -29,6 +29,7 @@ from rails_pipeline.find_api_definition_files import (
     find_api_definition_files,
 )
 from rails_pipeline.identify_api_functions import (
+    ancestor_chain,
     collect_route_concerns,
     find_api_endpoints,
     is_route_file,
@@ -84,7 +85,7 @@ METADATA_CACHE_PIPELINE = "rails"
 
 # Bumped when the shape of a metadata entry changes. A missing or stale marker
 # wipes this pipeline's cache before anything reads it.
-METADATA_CACHE_VERSION = "2"
+METADATA_CACHE_VERSION = "3"
 
 # File path -> content hash, and file path -> the cache entry holding its
 # metadata. Both are per run: two runs in one process are two checkouts.
@@ -252,32 +253,14 @@ def _ancestor_definition_imports(class_name: Optional[str], route) -> List[Dict]
     parent leaves the child's endpoint looking untouched and it is never
     regenerated. Read off whatever class index the run built; without one there
     are no ancestors to record and the endpoint is dirtied by its own file
-    alone.
+    alone. The same linearization the action resolution walks, so every file
+    that could hold the action is an edge.
     """
     imports: List[Dict] = []
-    entry = _CLASS_INDEX_CACHE.get(class_name) if class_name else None
-    visited = set()
-    while entry:
-        for module_name in entry.get("includes") or []:
-            module_entry = _CLASS_INDEX_CACHE.get(module_name)
-            if not module_entry or module_name in visited:
-                continue
-            visited.add(module_name)
-            module_import = _ancestor_import_entry(module_entry, module_name, route)
-            if module_import:
-                imports.append(module_import)
-
-        superclass = entry.get("superclass")
-        if not superclass or superclass in visited:
-            break
-        visited.add(superclass)
-        parent = _CLASS_INDEX_CACHE.get(superclass)
-        if not parent:
-            break
-        parent_import = _ancestor_import_entry(parent, superclass, route)
-        if parent_import:
-            imports.append(parent_import)
-        entry = parent
+    for ancestor_name, entry in ancestor_chain(_CLASS_INDEX_CACHE, class_name):
+        ancestor_import = _ancestor_import_entry(entry, ancestor_name, route)
+        if ancestor_import:
+            imports.append(ancestor_import)
     return imports
 
 
@@ -952,6 +935,9 @@ def _ensure_class_index(directory_path: str) -> Dict[str, Dict[str, object]]:
         classes = elements.get("classes", [])
         modules = elements.get("modules", [])
         functions = elements.get("functions", [])
+        # Every class and module the file defines, so a method can be handed to
+        # the nearest one that encloses it rather than to all of them.
+        definition_ranges = _definition_ranges(classes, modules)
 
         for klass in classes:
             name = klass.get("name")
@@ -965,7 +951,10 @@ def _ensure_class_index(directory_path: str) -> Dict[str, Dict[str, object]]:
                 "start_line": klass.get("start_line"),
                 "end_line": klass.get("end_line"),
                 "methods": _contained_method_map(
-                    functions, klass.get("start_line"), klass.get("end_line")
+                    functions,
+                    klass.get("start_line"),
+                    klass.get("end_line"),
+                    definition_ranges,
                 ),
             }
 
@@ -979,11 +968,14 @@ def _ensure_class_index(directory_path: str) -> Dict[str, Dict[str, object]]:
                 "type": "module",
                 "file_path": source_file,
                 "superclass": None,
-                "includes": [],
+                "includes": module.get("includes") or [],
                 "start_line": module.get("start_line"),
                 "end_line": module.get("end_line"),
                 "methods": _contained_method_map(
-                    functions, module.get("start_line"), module.get("end_line")
+                    functions,
+                    module.get("start_line"),
+                    module.get("end_line"),
+                    definition_ranges,
                 ),
             }
 
@@ -1008,8 +1000,47 @@ def _ensure_class_index(directory_path: str) -> Dict[str, Dict[str, object]]:
     return _CLASS_INDEX_CACHE
 
 
-def _contained_method_map(functions: List[Dict], start_line, end_line) -> Dict[str, Dict[str, int]]:
-    """The methods a class or module body holds, by name."""
+def _definition_ranges(classes: List[Dict], modules: List[Dict]) -> List[Tuple[int, int]]:
+    """The line span of every class and module one file defines."""
+    ranges: List[Tuple[int, int]] = []
+    for item in list(classes) + list(modules):
+        start_line = item.get("start_line")
+        end_line = item.get("end_line")
+        if isinstance(start_line, int) and isinstance(end_line, int):
+            ranges.append((start_line, end_line))
+    return ranges
+
+
+def _nearest_definition(
+    line: int, definition_ranges: List[Tuple[int, int]]
+) -> Optional[Tuple[int, int]]:
+    """The innermost class or module whose span holds this line."""
+    nearest: Optional[Tuple[int, int]] = None
+    for candidate in definition_ranges:
+        if not candidate[0] <= line <= candidate[1]:
+            continue
+        if (
+            nearest is None
+            or candidate[0] > nearest[0]
+            or (candidate[0] == nearest[0] and candidate[1] < nearest[1])
+        ):
+            nearest = candidate
+    return nearest
+
+
+def _contained_method_map(
+    functions: List[Dict],
+    start_line,
+    end_line,
+    definition_ranges: List[Tuple[int, int]],
+) -> Dict[str, Dict[str, int]]:
+    """The methods a class or module body owns, by name.
+
+    A method belongs to the nearest definition that encloses it and to nothing
+    else. Taking every `def` inside the span handed a concern the methods of its
+    own nested `module ClassMethods`, and a route named after one of them was
+    documented as an action Rails answers 404 on.
+    """
     method_map: Dict[str, Dict[str, int]] = {}
     if not isinstance(start_line, int) or not isinstance(end_line, int):
         return method_map
@@ -1018,15 +1049,18 @@ def _contained_method_map(functions: List[Dict], start_line, end_line) -> Dict[s
         func_start = func.get("start_line")
         func_end = func.get("end_line")
         if (
-            method_name
-            and isinstance(func_start, int)
-            and isinstance(func_end, int)
-            and start_line <= func_start <= end_line
+            not method_name
+            or not isinstance(func_start, int)
+            or not isinstance(func_end, int)
+            or not start_line <= func_start <= end_line
         ):
-            method_map[method_name] = {
-                "start_line": func_start,
-                "end_line": func_end,
-            }
+            continue
+        if _nearest_definition(func_start, definition_ranges) != (start_line, end_line):
+            continue
+        method_map[method_name] = {
+            "start_line": func_start,
+            "end_line": func_end,
+        }
     return method_map
 
 

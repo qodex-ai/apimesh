@@ -905,37 +905,61 @@ def _inherited_method_info(
     the first one that carries the method, so the ancestor's own body is what
     gets documented.
     """
-    if not class_index or not class_name:
-        return None
+    for ancestor_name, entry in ancestor_chain(class_index, class_name):
+        found = _ancestor_method_info(entry, ancestor_name, action, class_name)
+        if found:
+            return found
+    return None
 
-    entry = class_index.get(class_name)
-    visited = set()
-    while entry:
-        # An included module wins over the superclass, and a later include wins
-        # over an earlier one, which is the ancestry Ruby builds. A module the
-        # scan never saw resolves to nothing and changes nothing.
-        for module_name in reversed(entry.get("includes") or []):
+
+def ancestor_chain(
+    class_index: Optional[Dict[str, Dict]], class_name: Optional[str]
+) -> List[Tuple[str, Dict]]:
+    """
+    The ancestors of a class, nearest first and without the class itself, in the
+    order Ruby resolves a method through them.
+
+    Ruby puts every module a body includes ahead of the superclass, a later
+    include statement ahead of an earlier one, and the arguments of a single
+    statement in the order they are written. A module that an included module
+    includes sits directly behind its includer. A name the scan never saw has
+    no entry to walk, so it drops out of the chain and changes nothing.
+    """
+    chain: List[Tuple[str, Dict]] = []
+    if not class_index or not class_name:
+        return chain
+
+    seen = set()
+    current = class_name
+    while current and current not in seen:
+        seen.add(current)
+        entry = class_index.get(current)
+        if not entry:
+            break
+        if current != class_name:
+            chain.append((current, entry))
+        _extend_with_included_modules(class_index, entry, seen, chain)
+        current = entry.get("superclass")
+    return chain
+
+
+def _extend_with_included_modules(
+    class_index: Dict[str, Dict],
+    entry: Dict,
+    seen: set,
+    chain: List[Tuple[str, Dict]],
+) -> None:
+    """The includes of one body, linearized behind it."""
+    for group in reversed(entry.get("includes") or []):
+        for module_name in group:
+            if not module_name or module_name in seen:
+                continue
+            seen.add(module_name)
             module_entry = class_index.get(module_name)
             if not module_entry:
                 continue
-            found = _ancestor_method_info(
-                module_entry, module_name, action, class_name
-            )
-            if found:
-                return found
-
-        superclass = entry.get("superclass")
-        if not superclass or superclass in visited:
-            return None
-        visited.add(superclass)
-        parent = class_index.get(superclass)
-        if not parent:
-            return None
-        found = _ancestor_method_info(parent, superclass, action, class_name)
-        if found:
-            return found
-        entry = parent
-    return None
+            chain.append((module_name, module_entry))
+            _extend_with_included_modules(class_index, module_entry, seen, chain)
 
 
 def _ancestor_method_info(

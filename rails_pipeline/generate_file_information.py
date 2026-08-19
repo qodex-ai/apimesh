@@ -27,17 +27,20 @@ def _node_text(source: bytes, node) -> str:
     return source[node.start_byte : node.end_byte].decode("utf-8", "replace")
 
 
-def _gather_included_modules(node, source: str) -> List[str]:
+def _gather_included_modules(node, source: str) -> List[List[str]]:
     """
-    The modules a class body includes. Ruby looks a method up in the included
-    modules before the superclass, so an action can live in a concern; only the
-    class's own body counts, never a nested class's.
+    The modules a class or module body includes, one group per include
+    statement and in source order. Ruby looks a method up in the included
+    modules before the superclass, so an action can live in a concern, and the
+    ancestor order it builds depends on both which statement an argument came
+    from and where it sat in that statement; a flat list loses both. Only the
+    body's own statements count, never a nested class's.
     """
     body_node = node.child_by_field_name("body")
     if body_node is None:
         return []
 
-    names: List[str] = []
+    groups: List[List[str]] = []
     for child in body_node.children:
         if child.type not in {"call", "command", "command_call"}:
             continue
@@ -47,11 +50,15 @@ def _gather_included_modules(node, source: str) -> List[str]:
         arguments_node = child.child_by_field_name("arguments")
         if arguments_node is None:
             continue
-        # `include Trackable, Auditable` includes both.
-        for argument in arguments_node.children:
-            if argument.type in {"constant", "scope_resolution"}:
-                names.append(_node_text(source, argument).strip())
-    return names
+        # `include Trackable, Auditable` includes both, Trackable first.
+        names = [
+            _node_text(source, argument).strip()
+            for argument in arguments_node.children
+            if argument.type in {"constant", "scope_resolution"}
+        ]
+        if names:
+            groups.append(names)
+    return groups
 
 
 def _gather_class_info(node, source: str) -> Dict:
@@ -81,6 +88,9 @@ def _gather_module_info(node, source: str) -> Dict:
         "name": name,
         "start_line": node.start_point[0] + 1,
         "end_line": node.end_point[0] + 1,
+        # A concern includes concerns of its own, and those sit in the ancestry
+        # of every class that includes it.
+        "includes": _gather_included_modules(node, source),
     }
 
 
