@@ -29,6 +29,7 @@ from rails_pipeline.find_api_definition_files import (
     find_api_definition_files,
 )
 from rails_pipeline.identify_api_functions import (
+    collect_route_concerns,
     find_api_endpoints,
     is_route_file,
 )
@@ -83,7 +84,7 @@ METADATA_CACHE_PIPELINE = "rails"
 
 # Bumped when the shape of a metadata entry changes. A missing or stale marker
 # wipes this pipeline's cache before anything reads it.
-METADATA_CACHE_VERSION = "1"
+METADATA_CACHE_VERSION = "2"
 
 # File path -> content hash, and file path -> the cache entry holding its
 # metadata. Both are per run: two runs in one process are two checkouts.
@@ -227,8 +228,61 @@ def _resolve_imported_definitions(import_item, route):
     return candidates
 
 
+def _ancestor_import_entry(entry: Dict, name: str, route) -> Optional[Dict]:
+    file_path = entry.get("file_path")
+    start_line = entry.get("start_line")
+    end_line = entry.get("end_line")
+    if not file_path or not isinstance(start_line, int) or not isinstance(end_line, int):
+        return None
+    return {
+        "type": entry.get("type") or "class",
+        "name": name,
+        "start_line": start_line,
+        "end_line": end_line,
+        "route": route,
+        "file_path": os.path.abspath(str(file_path)),
+    }
+
+
+def _ancestor_definition_imports(class_name: Optional[str], route) -> List[Dict]:
+    """The dependency edges to the files an action's controller descends from.
+
+    Ruby binds no name on require, so a parent controller and a concern are
+    dependencies no require based edge ever records: without them, editing the
+    parent leaves the child's endpoint looking untouched and it is never
+    regenerated. Read off whatever class index the run built; without one there
+    are no ancestors to record and the endpoint is dirtied by its own file
+    alone.
+    """
+    imports: List[Dict] = []
+    entry = _CLASS_INDEX_CACHE.get(class_name) if class_name else None
+    visited = set()
+    while entry:
+        for module_name in entry.get("includes") or []:
+            module_entry = _CLASS_INDEX_CACHE.get(module_name)
+            if not module_entry or module_name in visited:
+                continue
+            visited.add(module_name)
+            module_import = _ancestor_import_entry(module_entry, module_name, route)
+            if module_import:
+                imports.append(module_import)
+
+        superclass = entry.get("superclass")
+        if not superclass or superclass in visited:
+            break
+        visited.add(superclass)
+        parent = _CLASS_INDEX_CACHE.get(superclass)
+        if not parent:
+            break
+        parent_import = _ancestor_import_entry(parent, superclass, route)
+        if parent_import:
+            imports.append(parent_import)
+        entry = parent
+    return imports
+
+
 def _endpoint_imports(endpoint, abs_file_path, route):
-    return pipeline_common.endpoint_imports(
+    imports = pipeline_common.endpoint_imports(
         endpoint,
         abs_file_path,
         route,
@@ -236,6 +290,8 @@ def _endpoint_imports(endpoint, abs_file_path, route):
         get_dependencies,
         _resolve_imported_definitions,
     )
+    imports.extend(_ancestor_definition_imports(endpoint.get("class_name"), route))
+    return imports
 
 
 def _build_api_index(endpoints: list) -> dict:
@@ -704,14 +760,24 @@ def run_swagger_generation(host: str) -> Optional[Dict]:
         all_endpoints_dict: Dict[str, List[Dict]] = {}
         route_map: Dict[str, List[Dict]] = {}
         controller_files: List[Path] = []
+        route_files: List[Path] = []
         dropped_routes: List[str] = []
 
         for file in api_definition_files:
             ruby_file = Path(file)
             if is_route_file(ruby_file):
-                find_api_endpoints(ruby_file, directory_path, route_map)
+                route_files.append(ruby_file)
             else:
                 controller_files.append(ruby_file)
+
+        # Read off every route file before the first one is walked: a concern
+        # config/routes.rb defines is referenced from config/routes/admin.rb,
+        # and either file can be the one reached first.
+        route_concerns = collect_route_concerns(route_files)
+        for route_file in route_files:
+            find_api_endpoints(
+                route_file, directory_path, route_map, concerns=route_concerns
+            )
 
         for controller_file in controller_files:
             endpoints = find_api_endpoints(
@@ -884,36 +950,41 @@ def _ensure_class_index(directory_path: str) -> Dict[str, Dict[str, object]]:
 
         elements = data.get("elements", {})
         classes = elements.get("classes", [])
+        modules = elements.get("modules", [])
         functions = elements.get("functions", [])
 
         for klass in classes:
             name = klass.get("name")
             if not name or name in _CLASS_INDEX_CACHE:
                 continue
-            class_start = klass.get("start_line")
-            class_end = klass.get("end_line")
-            method_map: Dict[str, Dict[str, int]] = {}
-            if isinstance(class_start, int) and isinstance(class_end, int):
-                for func in functions:
-                    method_name = func.get("name")
-                    start_line = func.get("start_line")
-                    end_line = func.get("end_line")
-                    if (
-                        method_name
-                        and isinstance(start_line, int)
-                        and isinstance(end_line, int)
-                        and class_start <= start_line <= class_end
-                    ):
-                        method_map[method_name] = {
-                            "start_line": start_line,
-                            "end_line": end_line,
-                        }
             _CLASS_INDEX_CACHE[name] = {
+                "type": "class",
                 "file_path": source_file,
                 "superclass": klass.get("superclass"),
+                "includes": klass.get("includes") or [],
                 "start_line": klass.get("start_line"),
                 "end_line": klass.get("end_line"),
-                "methods": method_map,
+                "methods": _contained_method_map(
+                    functions, klass.get("start_line"), klass.get("end_line")
+                ),
+            }
+
+        # Modules are indexed alongside the classes because a controller concern
+        # carries actions, and Ruby resolves them off the same constant name.
+        for module in modules:
+            name = module.get("name")
+            if not name or name in _CLASS_INDEX_CACHE:
+                continue
+            _CLASS_INDEX_CACHE[name] = {
+                "type": "module",
+                "file_path": source_file,
+                "superclass": None,
+                "includes": [],
+                "start_line": module.get("start_line"),
+                "end_line": module.get("end_line"),
+                "methods": _contained_method_map(
+                    functions, module.get("start_line"), module.get("end_line")
+                ),
             }
 
         for func in functions:
@@ -935,6 +1006,28 @@ def _ensure_class_index(directory_path: str) -> Dict[str, Dict[str, object]]:
             )
 
     return _CLASS_INDEX_CACHE
+
+
+def _contained_method_map(functions: List[Dict], start_line, end_line) -> Dict[str, Dict[str, int]]:
+    """The methods a class or module body holds, by name."""
+    method_map: Dict[str, Dict[str, int]] = {}
+    if not isinstance(start_line, int) or not isinstance(end_line, int):
+        return method_map
+    for func in functions:
+        method_name = func.get("name")
+        func_start = func.get("start_line")
+        func_end = func.get("end_line")
+        if (
+            method_name
+            and isinstance(func_start, int)
+            and isinstance(func_end, int)
+            and start_line <= func_start <= end_line
+        ):
+            method_map[method_name] = {
+                "start_line": func_start,
+                "end_line": func_end,
+            }
+    return method_map
 
 
 def _collect_parent_class_names(directory_path: str, class_name: Optional[str]) -> List[str]:

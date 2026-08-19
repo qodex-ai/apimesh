@@ -19,7 +19,10 @@ from rails_pipeline import definition_swagger_generator as generator_module
 from rails_pipeline import run_swagger_generation as run_module
 from rails_pipeline.find_api_definition_files import find_api_definition_files
 from rails_pipeline.generate_file_information import process_file
-from rails_pipeline.identify_api_functions import find_api_endpoints
+from rails_pipeline.identify_api_functions import (
+    collect_route_concerns,
+    find_api_endpoints,
+)
 from rails_pipeline.run_swagger_generation import (
     CONTEXT_TOKEN_BUDGET,
     _batch_endpoint_jobs,
@@ -1593,6 +1596,47 @@ def test_split_route_files_compose_into_one_route_map(tmp_path):
     }
 
 
+SHARED_CONCERN_MAIN_ROUTES = """Rails.application.routes.draw do
+  concern :commentable do
+    resources :comments, only: [:index]
+  end
+end
+"""
+
+# The accented comment shifts every byte offset in this file, so a concern
+# replayed against this buffer instead of its own reads garbage.
+SHARED_CONCERN_ADMIN_ROUTES = """# routes d'André
+resources :posts, only: [:index], concerns: :commentable
+"""
+
+
+def test_a_concern_defined_in_another_route_file_replays(tmp_path):
+    """config/routes.rb defines the concern, config/routes/admin.rb uses it.
+
+    The referencing file is walked first here, which only composes because the
+    concern tables of every route file are merged before the first walk.
+    """
+    routes = _write(tmp_path / "config" / "routes.rb", SHARED_CONCERN_MAIN_ROUTES)
+    admin = _write(
+        tmp_path / "config" / "routes" / "admin.rb", SHARED_CONCERN_ADMIN_ROUTES
+    )
+    concerns = collect_route_concerns([admin, routes])
+
+    route_map: dict = {}
+    for route_file in (admin, routes):
+        find_api_endpoints(route_file, str(tmp_path), route_map, concerns=concerns)
+
+    assert {
+        controller: {
+            (route["verb"], route["path"], route["action"]) for route in entries
+        }
+        for controller, entries in route_map.items()
+    } == {
+        "posts": {("GET", "/posts", "index")},
+        "comments": {("GET", "/posts/:post_id/comments", "index")},
+    }
+
+
 ENGINE_ROUTES = """Rails.application.routes.draw do
   resources :invoices, only: [:index]
 end
@@ -1770,6 +1814,82 @@ def test_an_inherited_action_documents_the_parent_method(tmp_path, monkeypatch):
     assert show["start_line"] == 2 and show["end_line"] == 4
 
 
+TRACKABLE_CONCERN = """module Trackable
+  extend ActiveSupport::Concern
+
+  def track
+    render json: { tracked: true }
+  end
+end
+"""
+
+CONCERN_CONTROLLER = """class SignalsController < ApplicationController
+  include Trackable
+
+  def index
+    render json: []
+  end
+end
+"""
+
+CONCERN_ACTION_ROUTES = """Rails.application.routes.draw do
+  get '/signals/track', to: 'signals#track'
+  resources :signals, only: [:index]
+end
+"""
+
+
+def test_an_action_from_an_included_concern_documents_the_module_method(
+    tmp_path, monkeypatch
+):
+    """`track` lives in an included module, and only superclasses were walked."""
+    repo_root = tmp_path / "concern_app"
+    _write(repo_root / "config" / "routes.rb", CONCERN_ACTION_ROUTES)
+    concern = _write(
+        repo_root / "app" / "controllers" / "concerns" / "trackable.rb",
+        TRACKABLE_CONCERN,
+    )
+    controller = _write(
+        repo_root / "app" / "controllers" / "signals_controller.rb", CONCERN_CONTROLLER
+    )
+    class_index = _build_class_index(monkeypatch, repo_root, tmp_path / "out")
+
+    route_map: dict = {}
+    find_api_endpoints(repo_root / "config" / "routes.rb", str(repo_root), route_map)
+    dropped: list = []
+    endpoints = find_api_endpoints(
+        controller, str(repo_root), route_map, class_index, dropped
+    )
+
+    methods = {method["route"]: method for method in endpoints[0]["methods"]}
+    assert dropped == []
+    assert set(methods) == {"/signals", "/signals/track"}
+    track = methods["/signals/track"]
+    assert track["file_path"] == str(concern)
+    assert track["inherited_from"] == "Trackable"
+    assert track["start_line"] == 4 and track["end_line"] == 6
+
+
+def test_one_class_yields_exactly_one_class_entry(tmp_path):
+    """`class` is also the type of the bare keyword token, so matching it put a
+    phantom anonymous entry in the metadata and in the class index."""
+    controller = _write(
+        tmp_path / "app" / "controllers" / "signals_controller.rb", CONCERN_CONTROLLER
+    )
+    concern = _write(
+        tmp_path / "app" / "controllers" / "concerns" / "trackable.rb", TRACKABLE_CONCERN
+    )
+
+    controller_elements = process_file(str(controller), str(tmp_path))["elements"]
+    assert [item["name"] for item in controller_elements["classes"]] == [
+        "SignalsController"
+    ]
+    assert controller_elements["classes"][0]["includes"] == ["Trackable"]
+
+    concern_elements = process_file(str(concern), str(tmp_path))["elements"]
+    assert [item["name"] for item in concern_elements["modules"]] == ["Trackable"]
+
+
 HELPER_CONTROLLER = """class HelperWidgetsController < ApplicationController
   def show
     set_widget
@@ -1842,6 +1962,104 @@ def test_the_class_index_is_complete_before_the_workers_start(tmp_path, monkeypa
 
     assert expected
     assert seen and all(view == expected for view in seen)
+
+
+HOP_PARENT_BEFORE = """class AuditedController < ApplicationController
+  def audit
+    Rails.logger.info('first')
+  end
+end
+"""
+
+HOP_PARENT_AFTER = """class AuditedController < ApplicationController
+  def audit
+    Rails.logger.info('second')
+  end
+end
+"""
+
+HOP_CHILD_CONTROLLER = """class WidgetsController < AuditedController
+  def index
+    render json: []
+  end
+end
+"""
+
+HOP_SIBLING_CONTROLLER = """class GadgetsController < ApplicationController
+  def index
+    render json: []
+  end
+end
+"""
+
+HOP_ROUTES = """Rails.application.routes.draw do
+  resources :widgets, only: [:index]
+  resources :gadgets, only: [:index]
+end
+"""
+
+
+def test_editing_the_parent_controller_marks_the_childs_endpoint_dirty(
+    tmp_path, monkeypatch
+):
+    """Ruby binds no name on require, so the parent file was never an index edge.
+
+    Without it the second run reads the child's endpoint as untouched and never
+    documents the parent's new body.
+    """
+    repo_root = tmp_path / "hop_app"
+    _write(repo_root / "config" / "routes.rb", HOP_ROUTES)
+    parent = _write(
+        repo_root / "app" / "controllers" / "audited_controller.rb", HOP_PARENT_BEFORE
+    )
+    _write(
+        repo_root / "app" / "controllers" / "widgets_controller.rb",
+        HOP_CHILD_CONTROLLER,
+    )
+    _write(
+        repo_root / "app" / "controllers" / "gadgets_controller.rb",
+        HOP_SIBLING_CONTROLLER,
+    )
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+    output_filepath = _prepare_run(monkeypatch, repo_root, output_dir)
+    monkeypatch.setattr(run_module, "get_git_commit_hash", lambda: "base")
+
+    requested = []
+
+    def _fake_batch(endpoints_list, shared_context, sections):
+        requested.append(endpoints_list)
+        return {
+            "paths": {
+                "/widgets": {"get": {"summary": "widgets"}},
+                "/gadgets": {"get": {"summary": "gadgets"}},
+            }
+        }
+
+    monkeypatch.setattr(run_module, "get_batch_definition_swagger", _fake_batch)
+
+    first = run_swagger_generation("http://localhost:3000")
+    # The caller persists the spec between runs, the pipeline reads it back.
+    output_filepath.write_text(json.dumps(first), encoding="utf-8")
+
+    api_index = json.loads((output_dir / "api_index.json").read_text(encoding="utf-8"))
+    widgets_files = api_index["GET /widgets"]["files"]
+    assert [
+        (item["name"], item["file_path"]) for item in widgets_files[0]["imports"]
+    ] == [("AuditedController", os.path.abspath(str(parent)))]
+
+    _write(parent, HOP_PARENT_AFTER)
+    monkeypatch.setattr(
+        run_module,
+        "get_changed_files_since",
+        lambda *args, **kwargs: {os.path.abspath(str(parent))},
+    )
+    monkeypatch.setattr(run_module, "get_git_commit_hash", lambda: "head")
+    requested.clear()
+
+    run_swagger_generation("http://localhost:3000")
+
+    assert requested == ["GET /widgets"]
 
 
 MOVED_BASE_BEFORE = """class BaseController < ApplicationController
