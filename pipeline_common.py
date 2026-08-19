@@ -499,6 +499,28 @@ def prepare_metadata_cache(cache_dir, version):
     return cache_dir
 
 
+def index_paths_exist(api_index):
+    """True when every file the index references still exists.
+
+    After a repository moves, keys still match but the stored absolute paths
+    do not; the no-change fast return must fall through so the hash-skip loop
+    rebuilds entries with fresh paths (at zero LLM cost)."""
+    if not isinstance(api_index, dict):
+        return True
+    for entry in api_index.values():
+        if not isinstance(entry, dict):
+            continue
+        for file_entry in entry.get("files", []):
+            file_path = file_entry.get("file_path")
+            if file_path and not os.path.exists(file_path):
+                return False
+            for imported in file_entry.get("imports", []):
+                import_path = imported.get("file_path")
+                if import_path and not os.path.exists(import_path):
+                    return False
+    return True
+
+
 def cache_file_metadata(
     file_path, directory_path, cache_path_of, process_file, entries, on_error=None
 ):
@@ -508,14 +530,26 @@ def cache_file_metadata(
         return
     key = os.path.abspath(file_path)
     if os.path.exists(cache_path):
-        # Byte for byte what a previous run parsed, so its metadata still holds.
-        entries[key] = cache_path
-        return
+        # Byte for byte what a previous run parsed, so its metadata still
+        # holds, provided the entry itself is intact. A truncated write must
+        # not become a permanent live entry.
+        try:
+            with open(cache_path, "r", encoding="utf-8") as f:
+                json.load(f)
+            entries[key] = cache_path
+            return
+        except (OSError, ValueError):
+            try:
+                os.remove(cache_path)
+            except OSError:
+                pass
     # One unreadable file must not cost the run every other file's metadata.
     try:
         file_info = process_file(file_path, directory_path)
-        with open(cache_path, "w", encoding="utf-8") as f:
+        tmp_path = cache_path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(file_info, f, indent=4)
+        os.replace(tmp_path, cache_path)
     except Exception as exc:
         if on_error is not None:
             on_error(file_path, exc)

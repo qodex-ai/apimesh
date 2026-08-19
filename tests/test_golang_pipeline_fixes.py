@@ -1831,3 +1831,27 @@ def test_a_stale_version_marker_wipes_the_cache(tmp_path, monkeypatch):
     assert (cache_dir / "cache_version").read_text(
         encoding="utf-8"
     ) == rsg.METADATA_CACHE_VERSION
+
+
+def test_a_known_receiver_with_no_match_drops_rather_than_borrowing(tmp_path, monkeypatch):
+    """UserService.List must never be documented from OrderService.List."""
+    import golang_pipeline.run_swagger_generation as go_rsg
+
+    monkeypatch.setattr(
+        go_rsg,
+        "_ensure_function_index",
+        lambda directory_path: {
+            "List": [
+                {
+                    "file_path": str(tmp_path / "orders.go"),
+                    "receiver_type": "OrderService",
+                    "start_line": 1,
+                    "end_line": 5,
+                }
+            ]
+        },
+    )
+    result = go_rsg._find_function_definition(
+        str(tmp_path), "List", receiver_type="UserService"
+    )
+    assert result is None

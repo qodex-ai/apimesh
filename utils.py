@@ -265,7 +265,13 @@ def get_changed_files_since(
             changed.add(os.path.abspath(os.path.join(repo_path, line)))
         return True
 
-    ok = _collect(["git", "diff", "--name-only", f"{base_commit}...HEAD"])
+    base_ok = _collect(["git", "diff", "--name-only", f"{base_commit}...HEAD"])
+    if not base_ok:
+        # A shallow or rebased checkout cannot diff against the base commit.
+        # A partial set here would stamp stale output as current, so force a
+        # full regeneration instead.
+        return None
+    ok = base_ok
     if include_uncommitted:
         ok = _collect(["git", "diff", "--name-only"]) and ok
         ok = _collect(["git", "diff", "--name-only", "--cached"]) and ok

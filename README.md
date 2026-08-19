@@ -6,7 +6,7 @@
 [![Discord](https://img.shields.io/badge/Discord-Join%20Community-5865f2?logo=discord&logoColor=white)](https://discord.gg/MHDayrP7)
 [![Twitter](https://img.shields.io/badge/Twitter-Follow%20Updates-1da1f2?logo=x&logoColor=white)](https://x.com/qodex_ai)
 
-**Open-source OpenAPI generator.** Point it at a repository and it detects the web framework, extracts every REST endpoint with static analysis, uses an LLM only to write schemas and descriptions, and produces a valid **OpenAPI 3.0 `swagger.json`** plus a **self-contained HTML endpoint catalog** you can open in any browser.
+**Open-source OpenAPI generator.** Point it at a repository and it detects the web framework (one LLM call, cached), extracts REST endpoints, and produces a valid **OpenAPI 3.0 `swagger.json`** plus a **self-contained HTML endpoint catalog** you can open in any browser. For the supported frameworks below, routes, methods, and prefixes come from static analysis and the LLM only writes schemas and descriptions; for anything else, a generic LLM extraction fallback takes over, which can miss or misread routes.
 
 Built to be driven by humans or by AI agents: one non-interactive command in, one machine-readable spec out, with honest exit codes and a coverage report inside the spec.
 
@@ -79,7 +79,7 @@ docker run --pull always --rm -v $(pwd):/workspace \
 | Code | Meaning |
 | --- | --- |
 | 0 | Spec written (and HTML, unless skipped). |
-| 1 | Nothing written: no endpoints found, or no OpenAI key available. The message says which. |
+| 1 | Fatal failure, nothing written. Common causes: no endpoints found, no OpenAI key, framework detection or generation errors. The message says which. |
 | 2 | Spec written, but the requested HTML catalog failed to render. |
 
 **Outputs**, all inside the `apimesh/` folder of the scanned repo (docker) or next to it:
@@ -92,7 +92,7 @@ docker run --pull always --rm -v $(pwd):/workspace \
 | `config.json` | Stored key (mode 0600, auto-gitignored), model, host, framework. |
 | `metadata_cache/` | Content-addressed parse cache; makes reruns cheap. Safe to delete. |
 
-**Trust, but verify:** every spec carries `info.x-apimesh-coverage` with `endpoints_extracted`, `generated`, `skipped_unchanged`, and `failed` counts. If `failed` is nonzero the spec is a lower bound; rerunning retries exactly the failed endpoints. Custom metadata lives in `x-` extension fields (`x-authorization-tag`, `x-module-tag`, `x-sensitive-information`), so strict OpenAPI validators accept the output.
+**Trust, but verify:** every spec carries `info.x-apimesh-coverage` with `endpoints_extracted`, `generated`, `skipped_unchanged`, and `failed` counts. If `failed` is nonzero, treat the spec as incomplete: new endpoints that failed are absent, and a changed endpoint that failed may still show its previous operation until a rerun succeeds. For the supported frameworks, rerunning retries just the failed endpoints; the generic fallback reruns its whole extraction. Custom metadata lives in `x-` extension fields (`x-authorization-tag`, `x-module-tag`, `x-sensitive-information`), so strict OpenAPI validators accept the output.
 
 ## Supported frameworks
 
@@ -100,14 +100,14 @@ docker run --pull always --rm -v $(pwd):/workspace \
 | --- | --- | --- |
 | Python | Flask, FastAPI, Django (URLconf), Django REST Framework | AST analysis |
 | Node.js / TypeScript | Express (incl. mounted routers), NestJS | tree-sitter |
-| Ruby on Rails | Full routing DSL: resources, namespaces, scopes, concerns, engines, split route files | tree-sitter |
+| Ruby on Rails | resources/resource, namespaces, scopes, member/collection, concerns, shallow nesting, engines, split route files | tree-sitter |
 | Go | gin, echo, chi, fiber, gorilla/mux, net/http (incl. Go 1.22 patterns) | tree-sitter |
 | Anything else | Generic LLM extraction fallback | LLM |
 
 ## How it works
 
 1. **Detect** the framework (cached after the first run).
-2. **Extract** endpoints deterministically: routes, methods, and prefixes come from parsers, never from the model.
+2. **Extract** endpoints: parsers own routes, methods, and prefixes for the supported frameworks; the generic fallback asks the model instead.
 3. **Generate** schemas and descriptions with the LLM, batched per source file under a hard token budget, with per-endpoint failure isolation.
 4. **Rerun cheaply**: unchanged endpoints are skipped via content hashes, edits to shared helpers invalidate their dependents, and failed endpoints retry automatically.
 
