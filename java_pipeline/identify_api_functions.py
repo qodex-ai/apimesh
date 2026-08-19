@@ -49,6 +49,15 @@ _CONDITION_ATTRIBUTES = _NEGOTIATION_ATTRIBUTES + _PREDICATE_ATTRIBUTES
 _MODIFIERS = "modifiers"
 _ANNOTATION_TYPES = {"marker_annotation", "annotation"}
 
+# Every declaration that can enclose another one, so a nested interface is named
+# through the types around it rather than as if it sat at the top level.
+_TYPE_DECLARATIONS = {
+    "class_declaration",
+    "interface_declaration",
+    "enum_declaration",
+    "record_declaration",
+}
+
 # Counted across one extraction run and reported once, so a repo that silently
 # loses routes says so instead of shipping a thin spec.
 _EXTRACTION_DROPS = {"assumed_get": 0, "unresolved": 0}
@@ -477,13 +486,12 @@ def _imported_types(root: Node, source: bytes) -> Dict[str, str]:
     return types
 
 
-def _implemented_names(declaration: Node, source: bytes) -> List[str]:
-    """The interfaces an implements clause names, generic arguments stripped."""
-    interfaces = declaration.child_by_field_name("interfaces")
-    if interfaces is None:
+def _type_list_names(container: Optional[Node], source: bytes) -> List[str]:
+    """The type names one implements or extends clause lists, generics stripped."""
+    if container is None:
         return []
     names: List[str] = []
-    for child in interfaces.children:
+    for child in container.children:
         if child.type != "type_list":
             continue
         for entry in child.children:
@@ -492,10 +500,32 @@ def _implemented_names(declaration: Node, source: bytes) -> List[str]:
     return names
 
 
+def _implemented_names(declaration: Node, source: bytes) -> List[str]:
+    """The interfaces an implements clause names."""
+    return _type_list_names(declaration.child_by_field_name("interfaces"), source)
+
+
+def _extended_names(declaration: Node, source: bytes) -> List[str]:
+    """The interfaces an interface's own extends clause names."""
+    for child in declaration.children:
+        if child.type == "extends_interfaces":
+            return _type_list_names(child, source)
+    return []
+
+
 def _interface_entry(
-    declaration: Node, source: bytes, package: str, file_path: Path
+    declaration: Node,
+    source: bytes,
+    package: str,
+    imported: Dict[str, str],
+    file_path: Path,
+    nested_name: str,
 ) -> Optional[Dict]:
-    """One scanned interface's mappings, or None when it declares none."""
+    """One scanned interface's mappings, or None when it carries nothing.
+
+    An interface that only extends others still carries the chain to whatever
+    declares the mappings, so it is indexed as well.
+    """
     class_mapping = _class_mapping(declaration, source)
     methods: Dict[Tuple[str, int], Dict] = {}
     for method in _class_methods(declaration):
@@ -505,16 +535,22 @@ def _interface_entry(
         methods[_method_key(method, source)] = _method_mapping(
             annotation, annotation_name, source
         )
-    if class_mapping is None and not methods:
+    extends = _extended_names(declaration, source)
+    if class_mapping is None and not methods and not extends:
         return None
-    name = _declared_name(declaration, source)
     return {
-        "name": name,
+        "name": _declared_name(declaration, source),
         "package": package,
-        "fqn": f"{package}.{name}" if package else name,
+        # The file's imports, so the interfaces this one extends are resolved
+        # in the scope they were written in rather than the implementation's.
+        "imported": imported,
+        # The enclosing types are part of the name: `Contracts.UserApi` is
+        # com.acme.Contracts.UserApi, and there is no com.acme.UserApi to find.
+        "fqn": f"{package}.{nested_name}" if package else nested_name,
         "file_path": str(file_path),
         "class_mapping": class_mapping,
         "methods": methods,
+        "extends": extends,
         "implemented": False,
     }
 
@@ -529,35 +565,52 @@ def _index_file_types(file_path: str, index: Dict) -> None:
     root = parser.parse(source).root_node
     package = _package_name(root, source)
     imported = _imported_types(root, source)
-    stack = [root]
+    # Each node is walked with the dotted path of the types enclosing it, which
+    # is what a nested interface is named by.
+    stack = [(root, "")]
     while stack:
-        node = stack.pop()
-        if node.type == "interface_declaration":
-            entry = _interface_entry(node, source, package, path)
-            if entry is not None:
-                index["by_fqn"][entry["fqn"]] = entry
-                index["by_simple"].setdefault(entry["name"], []).append(entry)
-        elif node.type == "class_declaration" and _has_controller_annotation(
-            node, source
-        ):
-            index["implements"].append(
-                (package, imported, _implemented_names(node, source))
-            )
-        stack.extend(list(node.children))
+        node, enclosing = stack.pop()
+        inner = enclosing
+        if node.type in _TYPE_DECLARATIONS:
+            name = _declared_name(node, source)
+            inner = f"{enclosing}.{name}" if enclosing else name
+            if node.type == "interface_declaration":
+                entry = _interface_entry(node, source, package, imported, path, inner)
+                if entry is not None:
+                    index["by_fqn"][entry["fqn"]] = entry
+                    index["by_simple"].setdefault(entry["name"], []).append(entry)
+            elif node.type == "class_declaration" and _has_controller_annotation(
+                node, source
+            ):
+                index["implements"].append(
+                    (package, imported, _implemented_names(node, source))
+                )
+        stack.extend((child, inner) for child in node.children)
 
 
 def _resolve_interface(
     name: str, package: str, imported: Dict[str, str], index: Dict
 ) -> Optional[Dict]:
-    """The scanned interface an implements clause names.
+    """The scanned interface an implements or extends clause names.
 
     Resolution reads the package the way import resolution does: a qualified
     name is matched whole, a simple one through the file's imports, then its
     own package, and only then by simple name when the scan set holds exactly
-    one interface with it.
+    one interface with it. A dotted name is also how a nested type is written
+    through its outer one, so its first segment is resolved the same way and
+    the rest of the path is appended to what that gives.
     """
     if "." in name:
-        return index["by_fqn"].get(name)
+        entry = index["by_fqn"].get(name)
+        if entry is not None:
+            return entry
+        head, _, rest = name.partition(".")
+        outer = imported.get(head)
+        if outer:
+            entry = index["by_fqn"].get(f"{outer}.{rest}")
+            if entry is not None:
+                return entry
+        return index["by_fqn"].get(f"{package}.{name}") if package else None
     qualified = imported.get(name)
     if qualified:
         return index["by_fqn"].get(qualified)
@@ -568,20 +621,46 @@ def _resolve_interface(
     return candidates[0] if len(candidates) == 1 else None
 
 
+def _interface_closure(
+    names: Iterable[str], package: str, imported: Dict[str, str], index: Dict
+) -> List[Dict]:
+    """The interfaces these names reach through extends, nearest first.
+
+    Spring's MethodIntrospector searches the parent interfaces too, so the
+    mappings on `V1Api` are served by a controller that only claims the
+    `V2Api extends V1Api` in between. Breadth first, so the nearest declaration
+    of a name is the one that wins, and each interface is walked once, so a
+    diamond or a cycle terminates.
+    """
+    entries: List[Dict] = []
+    visited: set = set()
+    queue = [(name, package, imported) for name in names]
+    while queue:
+        name, from_package, from_imported = queue.pop(0)
+        entry = _resolve_interface(name, from_package, from_imported, index)
+        if entry is None or entry["fqn"] in visited:
+            continue
+        visited.add(entry["fqn"])
+        entries.append(entry)
+        queue.extend(
+            (parent, entry["package"], entry["imported"]) for parent in entry["extends"]
+        )
+    return entries
+
+
 def index_scanned_types(files: Iterable[str], repo_root: str) -> Dict:
     """The mapping interfaces of the scan set, and which of them are implemented.
 
     An interface nobody in the scan set implements has no body to document, so
-    it emits nothing and every mapping it declares is counted as dropped.
+    it emits nothing and every mapping it declares is counted as dropped. An
+    interface reached through an extends chain is implemented all the same.
     """
     index: Dict = {"by_fqn": {}, "by_simple": {}, "implements": []}
     for file_path in files:
         _index_file_types(file_path, index)
     for package, imported, names in index["implements"]:
-        for name in names:
-            entry = _resolve_interface(name, package, imported, index)
-            if entry is not None:
-                entry["implemented"] = True
+        for entry in _interface_closure(names, package, imported, index):
+            entry["implemented"] = True
     for entry in index["by_fqn"].values():
         if not entry["implemented"]:
             _EXTRACTION_DROPS["unresolved"] += len(entry["methods"])
@@ -608,15 +687,15 @@ def _inherited_mappings(
 ) -> Dict:
     """The mappings this controller inherits from the interfaces it implements.
 
-    The first interface that declares a prefix contributes it, and the first
-    that declares a mapping for a method signature contributes that.
+    The nearest interface that declares a prefix contributes it, and the nearest
+    that declares a mapping for a method signature contributes that. The parents
+    of those interfaces are walked too, since Spring reads them as well.
     """
     class_mapping: Optional[Dict] = None
     methods: Dict[Tuple[str, int], Dict] = {}
-    for name in _implemented_names(declaration, source):
-        entry = _resolve_interface(name, package, imported, index)
-        if entry is None:
-            continue
+    for entry in _interface_closure(
+        _implemented_names(declaration, source), package, imported, index
+    ):
         if class_mapping is None:
             class_mapping = entry["class_mapping"]
         for key, mapping in entry["methods"].items():

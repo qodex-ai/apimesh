@@ -23,6 +23,13 @@ _ANNOTATION_PATTERN = re.compile(
     r"@\s*(?:" + "|".join(SPRING_WEB_ANNOTATIONS) + r")\b"
 )
 
+# An interface that only passes a contract along carries no annotation of its
+# own, and a controller reaches the mappings it serves through it. Leaving such
+# a file unparsed broke the chain in the middle and lost every one of them.
+_EXTENDING_INTERFACE_PATTERN = re.compile(
+    r"\binterface\s+\w+\s*(?:<[^>]*>)?\s+extends\b"
+)
+
 
 def _is_ignored(path: Path, base_path: Path) -> bool:
     # Only components below the scanned repo may be ignored, otherwise a repo
@@ -49,7 +56,9 @@ def file_contains_api_defs(file_path: Path) -> bool:
         text = file_path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return False
-    return bool(_ANNOTATION_PATTERN.search(text))
+    return bool(
+        _ANNOTATION_PATTERN.search(text) or _EXTENDING_INTERFACE_PATTERN.search(text)
+    )
 
 
 def find_api_definition_files(directory: str) -> List[str]:
