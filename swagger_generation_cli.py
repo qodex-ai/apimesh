@@ -72,6 +72,12 @@ class RunSwagger:
         try:
             with telemetry.stage(run_id, "scan_repo"):
                 file_paths = self.file_scanner.get_all_file_paths()
+            if not file_paths:
+                print("\n***************************************************")
+                print("No supported source files were found in this repository")
+                print("(looked for .py, .js, .ts, .java, .rb, .go).")
+                print("Nothing was written and no API calls were made.")
+                raise NoEndpointsFound("no supported source files")
 
             print("\n***************************************************")
             with telemetry.stage(run_id, "detect_framework"):
@@ -110,6 +116,15 @@ class RunSwagger:
                             all_endpoints.extend(endpoints)
 
                 with telemetry.stage(run_id, "generate_swagger", {"fast_path": bool(swagger)}):
+                    if not swagger and not all_endpoints:
+                        # No endpoints were extracted; embedding the whole repo
+                        # would spend real money to document nothing.
+                        print("\n***************************************************")
+                        print("No API endpoints were found in this repository.")
+                        print("Nothing was written: swagger.json and the HTML viewer were not created.")
+                        print(f"We detected the framework as '{framework or 'unknown'}'. If that is wrong,")
+                        print("fix the \"framework\" value in apimesh/config.json and run again.")
+                        raise NoEndpointsFound("no endpoints were extracted")
                     if not swagger:
                         print("\n***************************************************")
                         print("Started creating faiss index for all files")
@@ -120,6 +135,8 @@ class RunSwagger:
                         print("Completed Fetching authentication related information")
                         endpoint_related_information = self.endpoints_extractor.get_endpoint_related_information(faiss_vector, all_endpoints)
                         swagger = self.swagger_generator.create_swagger_json(endpoint_related_information, authentication_information, framework, self.user_config['api_host'])
+            except NoEndpointsFound:
+                raise
             except Exception:
                 print("Oops! looks like we encountered an issue. Please try after some time.")
                 raise

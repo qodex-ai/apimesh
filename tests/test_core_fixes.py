@@ -829,3 +829,50 @@ def test_legacy_generation_reports_coverage(monkeypatch, tmp_path):
         "skipped_unchanged": 0,
         "failed": 1,
     }
+
+
+def test_no_endpoints_short_circuits_before_embedding(monkeypatch, capsys):
+    """A frontend or marketing folder with zero endpoints must exit cleanly
+    before any embedding spend, not after indexing the whole tree."""
+    runner = swagger_generation_cli.RunSwagger.__new__(swagger_generation_cli.RunSwagger)
+    runner.ai_chat_id = ""
+    runner.user_config = {"framework": "express", "api_host": "https://x.example"}
+    runner.user_configurations = None
+
+    class Scanner:
+        def get_all_file_paths(self):
+            return ["/repo/src/App.js"]
+        def find_api_files(self, file_paths, framework):
+            return []
+
+    class Faiss:
+        def create_faiss_index(self, *a, **k):
+            raise AssertionError("embedding must not run for zero endpoints")
+
+    class Telemetry:
+        def new_run_id(self):
+            return "r"
+        def capture(self, *a, **k):
+            pass
+        def stage(self, *a, **k):
+            import contextlib
+            return contextlib.nullcontext()
+
+    runner.file_scanner = Scanner()
+    runner.faiss_index = Faiss()
+    runner.telemetry = Telemetry()
+    runner.framework_identifier = None
+    runner.endpoints_extractor = None
+    runner.swagger_generator = None
+
+    def fake_pipeline(self, framework):
+        return None
+
+    monkeypatch.setattr(
+        swagger_generation_cli.RunSwagger, "run_python_nodejs_ruby", fake_pipeline
+    )
+    with pytest.raises(swagger_generation_cli.NoEndpointsFound):
+        runner.run("")
+    out = capsys.readouterr().out
+    assert "No API endpoints were found" in out
+    assert "Started creating faiss index" not in out
