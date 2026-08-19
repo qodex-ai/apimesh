@@ -617,8 +617,14 @@ def _maybe_incremental_update(
         return pipeline_common.apply_host(existing_swagger, host)
     changed_keys = set()
     for key in existing_keys & new_keys:
+        # A merged variant lives in its own file, and an edit or an addition
+        # there is an edit to this endpoint. Reading only the job that carries
+        # them left a route clean while its operation lost a whole variant.
+        handlers = [
+            variant for job in endpoint_map.get(key) or [] for variant in _job_variants(job)
+        ]
         if pipeline_common.endpoint_has_changed(
-            existing_index.get(key), endpoint_map.get(key), changed_files
+            existing_index.get(key), handlers, changed_files
         ):
             changed_keys.add(key)
 
