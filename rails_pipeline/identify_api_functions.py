@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Iterable, List, Optional, Tuple
 
 from tree_sitter import Language, Node, Parser
 import tree_sitter_ruby
@@ -111,17 +111,71 @@ def find_api_endpoints(
     route_map: Dict[str, List[Dict]],
     class_index: Optional[Dict[str, Dict]] = None,
     dropped_routes: Optional[List[str]] = None,
+    concerns: Optional[Dict[str, Tuple[Node, bytes]]] = None,
 ) -> List[Dict]:
     if is_route_file(file_path):
-        _update_route_map(route_map, file_path)
+        _update_route_map(route_map, file_path, concerns)
         return []
     return _extract_controller_endpoints(
         file_path, repo_root, route_map, class_index, dropped_routes
     )
 
 
+def collect_route_concerns(
+    route_files: Iterable[Path],
+) -> Dict[str, Tuple[Node, bytes]]:
+    """
+    Every `concern :name do ... end` the route files define, each kept with the
+    buffer it was parsed from. config/routes.rb defines concerns that
+    config/routes/admin.rb references, so the table has to be complete before
+    the first file is walked, and a concern replayed in another route file has
+    to walk its own bytes: tree-sitter offsets only mean anything against the
+    buffer they were taken from.
+    """
+    concerns: Dict[str, Tuple[Node, bytes]] = {}
+    for routes_file in route_files:
+        try:
+            source = Path(routes_file).read_bytes()
+        except OSError:
+            continue
+        _collect_concern_definitions(parser.parse(source).root_node, source, concerns)
+    return concerns
+
+
+def _collect_concern_definitions(
+    node: Node, source: bytes, concerns: Dict[str, Tuple[Node, bytes]]
+) -> None:
+    call_node = node
+    block_node: Optional[Node] = None
+    if node.type == "method_add_block":
+        call_node = node.child_by_field_name("call")
+        block_node = node.child_by_field_name("block")
+    elif node.type in {"call", "command", "command_call"}:
+        for child in node.children:
+            if child.type == "do_block":
+                block_node = child
+                break
+
+    if call_node is not None and block_node is not None:
+        method_node = call_node.child_by_field_name("method")
+        if (
+            method_node is not None
+            and _node_text(source, method_node).strip().lower() == "concern"
+        ):
+            concern_name = _first_symbol_or_string(
+                _extract_arguments(call_node, source)
+            )
+            if concern_name:
+                concerns.setdefault(concern_name, (block_node, source))
+
+    for child in node.children:
+        _collect_concern_definitions(child, source, concerns)
+
+
 def _update_route_map(
-    route_map: Dict[str, List[Dict]], routes_file: Path
+    route_map: Dict[str, List[Dict]],
+    routes_file: Path,
+    shared_concerns: Optional[Dict[str, Tuple[Node, bytes]]] = None,
 ) -> None:
     try:
         source = routes_file.read_bytes()
@@ -131,7 +185,9 @@ def _update_route_map(
     tree = parser.parse(source)
     context = RouteContext()
     routes: List[Dict] = []
-    concerns: Dict[str, Node] = {}
+    # A copy: what this file defines is replayed from this file's buffer and
+    # must not leak into the table the other route files walk.
+    concerns: Dict[str, Tuple[Node, bytes]] = dict(shared_concerns or {})
 
     _walk_routes(tree.root_node, source, context, routes, concerns)
 
@@ -151,7 +207,7 @@ def _walk_routes(
     source: str,
     context: RouteContext,
     routes: List[Dict],
-    concerns: Dict[str, Node],
+    concerns: Dict[str, Tuple[Node, bytes]],
 ):
     if node.type == "call":
         block_node: Optional[Node] = None
@@ -183,7 +239,7 @@ def _handle_command(
     source: str,
     context: RouteContext,
     routes: List[Dict],
-    concerns: Dict[str, Node],
+    concerns: Dict[str, Tuple[Node, bytes]],
 ):
     method_node = call_node.child_by_field_name("method")
     if not method_node:
@@ -199,7 +255,7 @@ def _handle_command(
         # site: they are replayed inside every resource that asks for it.
         concern_name = _first_symbol_or_string(args)
         if concern_name and block_node is not None:
-            concerns[concern_name] = block_node
+            concerns[concern_name] = (block_node, source)
         return
 
     if method_lower == "namespace":
@@ -361,21 +417,26 @@ def _replay_concerns(
     controller_key: str,
     routes: List[Dict],
     plural: bool,
-    concerns: Dict[str, Node],
+    concerns: Dict[str, Tuple[Node, bytes]],
     shallow: bool,
 ):
     """
     Emit the routes of every named concern inside the resource asking for it,
     which is where Rails puts them. Reached from both spellings: the
     `concerns: :commentable` option and the `concerns :commentable` call.
+
+    The concern is walked against the buffer it was defined in, never the one
+    referencing it: the referencing file's bytes would read the nodes at the
+    wrong offsets.
     """
     for concern_name in concern_names:
-        concern_block = concerns.get(concern_name)
-        if concern_block is None:
+        concern_entry = concerns.get(concern_name)
+        if concern_entry is None:
             continue
+        concern_block, concern_source = concern_entry
         _walk_resource_block(
             concern_block,
-            source,
+            concern_source,
             context,
             controller_key,
             routes,
@@ -403,7 +464,7 @@ def _walk_resource_block(
     controller_key: str,
     routes: List[Dict],
     plural: bool,
-    concerns: Dict[str, Node],
+    concerns: Dict[str, Tuple[Node, bytes]],
     shallow: bool = False,
 ):
     for child in _iter_block_children(block_node):
@@ -839,9 +900,10 @@ def _inherited_method_info(
     file_path: Path,
 ) -> Optional[Dict]:
     """
-    The action as a parent controller defines it. Walks the ancestor chain the
-    class index tracks and returns the first parent that carries the method, so
-    the parent's own body is what gets documented.
+    The action as an ancestor of the controller defines it. Walks the ancestors
+    the class index tracks, in the order Ruby resolves a method in, and returns
+    the first one that carries the method, so the ancestor's own body is what
+    gets documented.
     """
     if not class_index or not class_name:
         return None
@@ -849,6 +911,19 @@ def _inherited_method_info(
     entry = class_index.get(class_name)
     visited = set()
     while entry:
+        # An included module wins over the superclass, and a later include wins
+        # over an earlier one, which is the ancestry Ruby builds. A module the
+        # scan never saw resolves to nothing and changes nothing.
+        for module_name in reversed(entry.get("includes") or []):
+            module_entry = class_index.get(module_name)
+            if not module_entry:
+                continue
+            found = _ancestor_method_info(
+                module_entry, module_name, action, class_name
+            )
+            if found:
+                return found
+
         superclass = entry.get("superclass")
         if not superclass or superclass in visited:
             return None
@@ -856,20 +931,30 @@ def _inherited_method_info(
         parent = class_index.get(superclass)
         if not parent:
             return None
-        meta = (parent.get("methods") or {}).get(action)
-        parent_file = parent.get("file_path")
-        if meta and parent_file and isinstance(meta.get("start_line"), int):
-            return {
-                "type": "method",
-                "name": action,
-                "start_line": meta["start_line"],
-                "end_line": meta["end_line"],
-                "file_path": str(parent_file),
-                "class_name": class_name,
-                "inherited_from": superclass,
-            }
+        found = _ancestor_method_info(parent, superclass, action, class_name)
+        if found:
+            return found
         entry = parent
     return None
+
+
+def _ancestor_method_info(
+    entry: Dict, ancestor_name: str, action: str, class_name: str
+) -> Optional[Dict]:
+    """The action as one ancestor defines it, or None when it does not."""
+    meta = (entry.get("methods") or {}).get(action)
+    ancestor_file = entry.get("file_path")
+    if not meta or not ancestor_file or not isinstance(meta.get("start_line"), int):
+        return None
+    return {
+        "type": "method",
+        "name": action,
+        "start_line": meta["start_line"],
+        "end_line": meta["end_line"],
+        "file_path": str(ancestor_file),
+        "class_name": class_name,
+        "inherited_from": ancestor_name,
+    }
 
 
 def _collect_controller_methods(root: Node, source: str, file_path: Path):
