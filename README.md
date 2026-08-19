@@ -102,6 +102,7 @@ docker run --pull always --rm -v $(pwd):/workspace \
 | Node.js / TypeScript | Express (incl. mounted routers), NestJS | tree-sitter |
 | Ruby on Rails | resources/resource, namespaces, scopes, member/collection, concerns, shallow nesting, engines, split route files | tree-sitter |
 | Go | gin, echo, chi, fiber, gorilla/mux, net/http (incl. Go 1.22 patterns) | tree-sitter |
+| Java | Spring annotation-based controllers (@RestController, @RequestMapping, verb mappings) | tree-sitter |
 | Anything else | Generic LLM extraction fallback | LLM |
 
 ## How it works
