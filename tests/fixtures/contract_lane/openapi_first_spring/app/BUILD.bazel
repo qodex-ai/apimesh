@@ -6,3 +6,9 @@ openapi_spring_spec(
     api_package = "com.acme.generated.api",
     model_package = "com.acme.generated.dto",
 )
+
+java_library(
+    name = "app_lib",
+    srcs = glob(["src/main/java/**/*.java"]) + [":openapi_pets_api.srcjar"],
+    deps = ["@maven//:org_springframework_spring_web"],
+)

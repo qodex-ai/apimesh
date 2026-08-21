@@ -902,13 +902,6 @@ def _cli_with_stubs(framework):
     cli.user_config = {"framework": framework, "api_host": "http://api.example.test"}
     cli.telemetry = _NullTelemetry()
 
-    generic_calls = []
-
-    class _Extractor:
-        def extract_endpoints_with_gpt(self, file_path, fw):
-            generic_calls.append(file_path)
-            return []
-
     class _Scanner:
         def get_all_file_paths(self):
             return ["/repo/App.java"]
@@ -916,12 +909,10 @@ def _cli_with_stubs(framework):
         def find_api_files(self, paths, fw):
             return list(paths)
 
-    cli.endpoints_extractor = _Extractor()
     cli.file_scanner = _Scanner()
     cli.framework_identifier = None
-    cli.faiss_index = None
     cli.swagger_generator = None
-    return cli, generic_calls
+    return cli
 
 
 _PIPELINE_GENERATOR_NAMES = (
@@ -949,46 +940,97 @@ def _stub_all_pipelines(monkeypatch, result=None, raises=None):
     "framework",
     sorted(swagger_generation_cli.PIPELINE_FRAMEWORKS),
 )
-def test_pipeline_framework_zero_result_never_calls_generic_extractor(
+def test_pipeline_framework_zero_result_is_an_honest_zero(
     monkeypatch, capsys, framework
 ):
     """A supported framework whose parser proves nothing gets an honest zero.
 
-    The old behavior handed the repo to the per-file LLM extractor, which
+    The old behavior handed the repo to a per-file LLM extractor, which
     published Feign clients and guessed paths as endpoints.
     """
     from swagger_generation_cli import NoEndpointsFound
 
     _stub_all_pipelines(monkeypatch, result=None)
-    cli, generic_calls = _cli_with_stubs(framework)
+    cli = _cli_with_stubs(framework)
 
     with pytest.raises(NoEndpointsFound):
         cli.run()
 
-    assert generic_calls == []
-    out = capsys.readouterr().out
-    assert "routes are never LLM-guessed" in out
+    assert "routes are never LLM-guessed" in capsys.readouterr().out
 
 
 def test_pipeline_crash_is_fatal_not_rescued_by_llm_guessing(monkeypatch):
     """A parser crash aborts the run rather than switching to route invention."""
     _stub_all_pipelines(monkeypatch, raises=RuntimeError("parser exploded"))
-    cli, generic_calls = _cli_with_stubs("spring")
+    cli = _cli_with_stubs("spring")
 
     with pytest.raises(RuntimeError, match="parser exploded"):
         cli.run()
 
-    assert generic_calls == []
 
-
-def test_non_pipeline_framework_still_uses_the_generic_extractor(monkeypatch):
-    """Frameworks without a deterministic parser keep the legacy LLM path."""
+def test_unsupported_framework_fails_closed_with_no_llm_extraction(monkeypatch, capsys):
+    """No deterministic parser means zero endpoints, never LLM guessing."""
     from swagger_generation_cli import NoEndpointsFound
 
     _stub_all_pipelines(monkeypatch, result=None)
-    cli, generic_calls = _cli_with_stubs("laravel")
+    cli = _cli_with_stubs("laravel")
 
     with pytest.raises(NoEndpointsFound):
         cli.run()
 
-    assert generic_calls == ["/repo/App.java"]
+    out = capsys.readouterr().out
+    assert "no deterministic parser exists for 'laravel'" in out
+
+
+@pytest.mark.parametrize("stored", ["Spring", "SPRING", " spring ", "spring_boot", "Spring Boot"])
+def test_framework_spelling_cannot_dodge_the_pipeline(monkeypatch, stored):
+    """A cached 'Spring' or detected 'spring_boot' still runs the java parser.
+
+    Before normalization, any non-canonical spelling skipped the parser AND
+    the fail-closed set, landing in the LLM extraction path.
+    """
+    import swagger_generation_cli as cli_mod
+    from swagger_generation_cli import NoEndpointsFound
+
+    dispatched = []
+
+    def _generator(host):
+        dispatched.append(host)
+        return None
+
+    for name in _PIPELINE_GENERATOR_NAMES:
+        monkeypatch.setattr(cli_mod, name, _generator)
+    cli = _cli_with_stubs(stored)
+
+    with pytest.raises(NoEndpointsFound):
+        cli.run()
+
+    assert dispatched, f"{stored!r} must dispatch a pipeline parser"
+
+
+def test_canonical_framework_aliases():
+    from swagger_generation_cli import canonical_framework
+
+    assert canonical_framework("Spring") == "spring"
+    assert canonical_framework("spring_boot") == "spring"
+    assert canonical_framework("Ruby on Rails") == "ruby_on_rails"
+    assert canonical_framework("Go") == "golang"
+    assert canonical_framework("laravel") == "laravel"
+    assert canonical_framework(None) == ""
+
+
+def test_zero_endpoint_run_warns_about_stale_output(monkeypatch, capsys, tmp_path):
+    """An old swagger.json left on disk is flagged, not silently kept current."""
+    from swagger_generation_cli import NoEndpointsFound
+
+    stale = tmp_path / "swagger.json"
+    stale.write_text("{\"openapi\": \"3.0.0\", \"paths\": {\"/old\": {}}}")
+    monkeypatch.setenv("APIMESH_OUTPUT_FILEPATH", str(stale))
+    _stub_all_pipelines(monkeypatch, result=None)
+    cli = _cli_with_stubs("spring")
+
+    with pytest.raises(NoEndpointsFound):
+        cli.run()
+
+    out = capsys.readouterr().out
+    assert "previous run's result" in out

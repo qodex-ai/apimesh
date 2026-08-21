@@ -143,3 +143,41 @@ def test_source_index_skips_test_sources(tmp_path):
     index = build_source_index(str(tmp_path))
 
     assert index.classes == []
+
+
+def test_multi_document_file_with_evidence_is_excluded_as_ambiguous(tmp_path):
+    """Evidence names a file; two contracts in it cannot share one proof."""
+    (tmp_path / "both.yaml").write_text(
+        "openapi: 3.0.0\npaths:\n  /a:\n    get:\n      responses: {'200': {description: ok}}\n"
+        "---\n"
+        "openapi: 3.0.0\npaths:\n  /b:\n    get:\n      responses: {'200': {description: ok}}\n"
+    )
+    inventory = discover_contract_documents(str(tmp_path))
+    index = build_source_index(str(tmp_path))
+    evidence = [{"kind": "server", "generator": "spring", "api_package": None}]
+
+    for entry in inventory["contracts"]:
+        operations, _ = load_operations(entry, str(tmp_path))
+        verdict = classify_contract(entry, operations, evidence, index)
+        assert verdict["status"] == "excluded"
+        assert verdict["reason"] == "multi_document_ambiguity"
+
+
+def test_unknown_kind_evidence_proves_nothing(tmp_path):
+    """A spec whose only invocation has an unrecognized generator falls
+    through to correlation, the same as having no build evidence at all."""
+    (tmp_path / "api.yaml").write_text(
+        "openapi: 3.0.0\npaths:\n  /a:\n    get:\n      operationId: nothingMatches\n"
+        "      responses: {'200': {description: ok}}\n"
+    )
+    inventory = discover_contract_documents(str(tmp_path))
+    index = build_source_index(str(tmp_path))
+    entry = inventory["contracts"][0]
+    operations, _ = load_operations(entry, str(tmp_path))
+
+    verdict = classify_contract(
+        entry, operations, [{"kind": "unknown", "generator": "acme-custom"}], index
+    )
+
+    assert verdict["status"] == "excluded"
+    assert verdict["reason"] == "no_server_evidence"

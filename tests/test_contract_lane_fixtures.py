@@ -49,12 +49,14 @@ def _extract_code_ops(fixture: Path):
         reset_type_index,
     )
 
+    from collections import Counter
+
     reset_extraction_drops()
     reset_type_index()
-    ops = set()
+    ops = Counter()
     for file_path in find_api_definition_files(str(fixture)):
         for endpoint in find_api_endpoints(file_path, str(fixture)):
-            ops.add((endpoint["method"], endpoint["route"]))
+            ops[(endpoint["method"], endpoint["route"])] += 1
     return ops
 
 
@@ -81,12 +83,15 @@ def test_expected_json_is_well_formed(fixture):
 
 @pytest.mark.parametrize("fixture", FIXTURES, ids=lambda p: p.name)
 def test_code_lane_matches_expectations_today(fixture):
+    """Counter equality: each expected op exactly once, duplicates surface."""
+    from collections import Counter
+
     expected = _expected(fixture)
-    expected_code_ops = {
+    expected_code_ops = Counter(
         (op["method"], op["route"])
         for op in expected["included"]
         if op["lane"] == "code"
-    }
+    )
 
     assert _extract_code_ops(fixture) == expected_code_ops
 
