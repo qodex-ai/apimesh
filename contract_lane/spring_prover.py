@@ -227,6 +227,15 @@ def classify_contract(
     server_invocations = [e for e in evidence if e["kind"] == "server"]
     client_invocations = [e for e in evidence if e["kind"] == "client"]
 
+    if (server_invocations or client_invocations) and entry.get("contracts_in_file", 1) > 1:
+        # Build evidence names a file; a file holding several contract
+        # documents cannot be attributed to one of them. Ambiguity excludes.
+        return {
+            "status": "excluded",
+            "path": entry["path"],
+            "reason": "multi_document_ambiguity",
+        }
+
     if server_invocations:
         implementers: List[dict] = []
         for invocation in server_invocations:

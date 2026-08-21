@@ -13,6 +13,7 @@ resolved, because folding and routing need their content in place.
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Dict, List, Tuple
 from urllib.parse import unquote
@@ -49,9 +50,13 @@ def _walk_pointer(document: dict, pointer: str):
         if isinstance(node, dict) and token in node:
             node = node[token]
         elif isinstance(node, list):
+            # RFC 6901 array indexes are non-negative digit sequences only;
+            # Python's negative indexing must not leak in.
+            if not token.isdigit():
+                raise RefError(f"pointer {pointer!r} has a non-numeric index")
             try:
                 node = node[int(token)]
-            except (ValueError, IndexError) as ex:
+            except IndexError as ex:
                 raise RefError(f"pointer {pointer!r} misses a list index") from ex
         else:
             raise RefError(f"pointer {pointer!r} has no target")
@@ -68,9 +73,11 @@ class ContractLoader:
 
     def _contained_path(self, base_file: str, reference: str) -> str:
         """The repo-relative path a file reference resolves to, or RefError."""
-        if reference.startswith(("http://", "https://", "file:", "//")):
-            raise RefError(f"remote reference refused: {reference}")
-        if reference.startswith("/") or (len(reference) > 1 and reference[1] == ":"):
+        # Any scheme at all is refused, whatever its case: HTTPS://, ftp://,
+        # ssh://, file:, and a Windows drive letter all match here.
+        if re.match(r"^[A-Za-z][A-Za-z0-9+.\-]*:", reference) or reference.startswith("//"):
+            raise RefError(f"non-local reference refused: {reference}")
+        if reference.startswith("/"):
             raise RefError(f"absolute reference refused: {reference}")
         base_dir = (self.repo_root / base_file).parent
         candidate = os.path.realpath(base_dir / reference)
@@ -160,11 +167,19 @@ class ContractLoader:
         closure: Dict[str, dict] = {}
         errors: List[str] = []
         visited = set()
+        # YAML anchors alias one object from many places; walking each container
+        # once keeps an alias DAG linear instead of exponential.
+        seen_containers = set()
 
         def _walk(current, current_file: str, depth: int) -> None:
             if depth > MAX_NODE_DEPTH:
                 errors.append("node nesting exceeds the depth limit")
                 return
+            if isinstance(current, (dict, list)):
+                marker = id(current)
+                if marker in seen_containers:
+                    return
+                seen_containers.add(marker)
             if isinstance(current, dict):
                 ref = current.get("$ref")
                 if isinstance(ref, str):
@@ -285,8 +300,10 @@ def load_operations(entry: dict, repo_root: str) -> Tuple[List[dict], List[dict]
                 )
                 continue
             merged = dict(operation)
+            parameter_origins: List[str] = []
             if parameters:
                 merged["parameters"] = [body for body, _ in parameters]
+                parameter_origins = [origin for _, origin in parameters]
             operations.append(
                 {
                     "method": verb.upper(),
@@ -297,8 +314,10 @@ def load_operations(entry: dict, repo_root: str) -> Tuple[List[dict], List[dict]
                     "ref_closure": closure,
                     # The file the operation body lives in: differs from the
                     # contract's path when a path-item alias crossed files,
-                    # and reference rewriting must resolve against it.
+                    # and reference rewriting must resolve against it. Folded
+                    # parameters keep their own origins for the same reason.
                     "source_file": item_file,
+                    "parameter_origins": parameter_origins,
                 }
             )
     return operations, unresolved

@@ -119,8 +119,17 @@ class _ComponentStore:
         self.components.setdefault(category, {})[name] = node
 
 
-def _rewrite(node, base_file: str, loader: ContractLoader, store: _ComponentStore, closure: Dict[str, dict]):
-    """A deep copy of node with every $ref renamed onto the merged components."""
+def _rewrite(node, base_file: str, loader: ContractLoader, store: _ComponentStore, closure: Dict[str, dict], memo: Optional[dict] = None):
+    """A deep copy of node with every $ref renamed onto the merged components.
+
+    The memo keys container identity per base file, so a YAML alias DAG is
+    rewritten once per aliased object instead of once per appearance.
+    """
+    memo = {} if memo is None else memo
+    if isinstance(node, (dict, list)):
+        memo_key = (id(node), base_file)
+        if memo_key in memo:
+            return memo[memo_key]
     if isinstance(node, dict):
         ref = node.get("$ref")
         if isinstance(ref, str):
@@ -130,15 +139,21 @@ def _rewrite(node, base_file: str, loader: ContractLoader, store: _ComponentStor
             if named is None:
                 # Not a components target: inline the validated target.
                 target = closure.get(closure_key)
-                return _rewrite(target, target_file, loader, store, closure)
-            category, name = named
-            return {"$ref": f"#/components/{category}/{name}"}
-        return {
-            key: _rewrite(value, base_file, loader, store, closure)
-            for key, value in node.items()
-        }
+                result = _rewrite(target, target_file, loader, store, closure, memo)
+            else:
+                category, name = named
+                result = {"$ref": f"#/components/{category}/{name}"}
+        else:
+            result = {
+                key: _rewrite(value, base_file, loader, store, closure, memo)
+                for key, value in node.items()
+            }
+        memo[(id(node), base_file)] = result
+        return result
     if isinstance(node, list):
-        return [_rewrite(item, base_file, loader, store, closure) for item in node]
+        result = [_rewrite(item, base_file, loader, store, closure, memo) for item in node]
+        memo[(id(node), base_file)] = result
+        return result
     return node
 
 
@@ -164,9 +179,23 @@ def reconcile(contract_rows: List[dict], code_ops: List[dict], repo_root: str) -
     def _materialize(row: dict) -> dict:
         record = row["record"]
         closure = record["ref_closure"]
-        operation = _rewrite(
-            record["operation"], record["source_file"], loader, store, closure
-        )
+        # Folded parameters may come from other files than the operation body,
+        # and their inner references resolve against those origins.
+        body = {k: v for k, v in record["operation"].items() if k != "parameters"}
+        operation = _rewrite(body, record["source_file"], loader, store, closure)
+        raw_parameters = record["operation"].get("parameters") or []
+        origins = record.get("parameter_origins") or []
+        if raw_parameters:
+            operation["parameters"] = [
+                _rewrite(
+                    parameter,
+                    origins[index] if index < len(origins) else record["source_file"],
+                    loader,
+                    store,
+                    closure,
+                )
+                for index, parameter in enumerate(raw_parameters)
+            ]
         for closure_key, target in closure.items():
             named = store.name_for(closure_key)
             if named is None or closure_key in rewritten_components_done:

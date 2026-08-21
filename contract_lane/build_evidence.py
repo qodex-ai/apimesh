@@ -13,23 +13,42 @@ import xml.etree.ElementTree as ElementTree
 from pathlib import Path
 from typing import Dict, List, Optional
 
-# Generator names that produce serving code, per openapi-generator's catalog.
-# Bare language names (java, go, python, typescript-axios...) are clients.
+# Generator names enumerated from openapi-generator's catalog. A name in
+# neither set is "unknown", which never proves anything in either direction:
+# guessing by suffix once classified an arbitrary "*-server" name as proof.
 _SERVER_GENERATOR_NAMES = {
     "spring",
     "kotlin-spring",
+    "kotlin-server",
+    "kotlin-vertx",
     "micronaut",
     "java-camel",
     "java-msf4j",
     "java-vertx-web",
+    "java-undertow-server",
+    "java-inflector",
+    "java-play-framework",
+    "jaxrs-cxf",
+    "jaxrs-cxf-cdi",
+    "jaxrs-cxf-extended",
+    "jaxrs-jersey",
+    "jaxrs-resteasy",
+    "jaxrs-resteasy-eap",
+    "jaxrs-spec",
     "python-flask",
     "python-fastapi",
     "python-aiohttp",
     "python-blueplanet",
     "aspnetcore",
+    "go-server",
+    "go-gin-server",
+    "go-echo-server",
+    "nodejs-express-server",
+    "graphql-nodejs-express-server",
     "cpp-pistache-server",
     "cpp-restbed-server",
     "cpp-qt-qhttpengine-server",
+    "erlang-server",
     "haskell-servant",
     "haskell-yesod",
     "php-laravel",
@@ -38,6 +57,7 @@ _SERVER_GENERATOR_NAMES = {
     "php-symfony",
     "ruby-on-rails",
     "ruby-sinatra",
+    "rust-server",
     "rust-axum",
     "scala-akka-http-server",
     "scala-cask",
@@ -47,16 +67,43 @@ _SERVER_GENERATOR_NAMES = {
     "scalatra",
 }
 
+_CLIENT_GENERATOR_NAMES = {
+    "java",
+    "java-micronaut-client",
+    "kotlin",
+    "go",
+    "python",
+    "python-pydantic-v1",
+    "javascript",
+    "javascript-apollo-deprecated",
+    "typescript",
+    "typescript-axios",
+    "typescript-fetch",
+    "typescript-node",
+    "typescript-angular",
+    "typescript-rxjs",
+    "ruby",
+    "rust",
+    "csharp",
+    "php",
+    "dart",
+    "dart-dio",
+    "swift5",
+    "swift6",
+    "cpp-restsdk",
+    "elixir",
+    "erlang-client",
+    "haskell-http-client",
+}
+
 
 def _generator_kind(name: str) -> str:
     lowered = (name or "").strip().lower()
-    if not lowered:
-        return "unknown"
-    if lowered.endswith("-server") or lowered in _SERVER_GENERATOR_NAMES:
+    if lowered in _SERVER_GENERATOR_NAMES:
         return "server"
-    if lowered.startswith("jaxrs"):
-        return "server"
-    return "client"
+    if lowered in _CLIENT_GENERATOR_NAMES:
+        return "client"
+    return "unknown"
 
 
 def _contain(repo_root: Path, base_dir: Path, raw_path: str) -> Optional[str]:
@@ -115,10 +162,14 @@ def _substitute(value: str, properties: Dict[str, str], pom_dir: str) -> str:
             return pom_dir
         return properties.get(name, match.group(0))
 
-    previous = None
-    while previous != value:
-        previous = value
-        value = re.sub(r"\$\{([^}]+)\}", _one, value)
+    # Bounded: mutually recursive properties (a=${b}, b=${a}) otherwise
+    # alternate forever. Whatever is unresolved after the bound stays ${...}
+    # and the caller reports it.
+    for _ in range(10):
+        substituted = re.sub(r"\$\{([^}]+)\}", _one, value)
+        if substituted == value:
+            break
+        value = substituted
     return value
 
 
@@ -127,6 +178,23 @@ def _child_text(element, name: str) -> Optional[str]:
         if _strip_ns(child.tag) == name and child.text:
             return child.text.strip()
     return None
+
+
+def _plugins_outside_plugin_management(root_element):
+    """Plugin elements that can actually execute.
+
+    A plugin under <pluginManagement> only sets defaults; treating it as an
+    invocation once turned a configuration template into server evidence.
+    """
+    managed = set()
+    for element in root_element.iter():
+        if _strip_ns(element.tag) == "pluginManagement":
+            managed.update(id(child) for child in element.iter())
+    return [
+        element
+        for element in root_element.iter()
+        if _strip_ns(element.tag) == "plugin" and id(element) not in managed
+    ]
 
 
 def _maven_invocations(pom_path: Path, repo_root: Path) -> List[dict]:
@@ -147,14 +215,14 @@ def _maven_invocations(pom_path: Path, repo_root: Path) -> List[dict]:
     build_file = str(pom_path.relative_to(repo_root))
     invocations = []
 
-    for plugin in root_element.iter():
-        if _strip_ns(plugin.tag) != "plugin":
-            continue
+    for plugin in _plugins_outside_plugin_management(root_element):
         artifact = _child_text(plugin, "artifactId")
         if artifact not in _MAVEN_GENERATOR_PLUGINS:
             continue
         for configuration in plugin.iter():
             if _strip_ns(configuration.tag) != "configuration":
+                continue
+            if (_child_text(configuration, "skip") or "").strip().lower() == "true":
                 continue
             generator = _child_text(configuration, "generatorName") or _child_text(
                 configuration, "language"
@@ -232,6 +300,10 @@ def _gradle_invocations(build_path: Path, repo_root: Path) -> List[dict]:
         return []
     if "generatorName" not in text:
         return []
+    # Commented-out configuration is not configuration. Line comments keep
+    # their :// forms so URLs inside strings survive.
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
+    text = re.sub(r"(?<!:)//[^\n]*", "", text)
     build_file = str(build_path.relative_to(repo_root))
     root_dir = _gradle_root_dir(build_path, repo_root)
     invocations = []
@@ -311,12 +383,26 @@ _INLINE_API_PACKAGE = re.compile(r"--api-package\s+\"?([\w.]+)")
 def _resolve_spec_path(repo_root: Path, package_dir: Path, raw: str) -> Optional[str]:
     """The existing repo file a build-file spec reference names, or None.
 
-    Bazel macros resolve inputs against different roots (the package, a
-    resources root the generator cds into), so the candidates are tried most
-    specific first and only a file that exists counts.
+    Bazel labels resolve exactly: //pkg:file is pkg/file from the repo root
+    and :file is package-relative; stripping the package once attached server
+    evidence to an unrelated same-named file. External-repo labels (@dep//..)
+    are unknowable here. Plain paths try the package, the conventional
+    resources root, then the repo root, and only a file that exists counts.
     """
+    if raw.startswith("@"):
+        return None
     if raw.startswith("//"):
-        raw = raw.lstrip("/").split(":")[-1]
+        package, _, filename = raw[2:].partition(":")
+        label_path = f"{package}/{filename}" if filename else package
+        contained = _contain(repo_root, repo_root, label_path)
+        if contained and (repo_root / contained).is_file():
+            return contained
+        return None
+    if raw.startswith(":"):
+        contained = _contain(repo_root, package_dir, raw[1:])
+        if contained and (repo_root / contained).is_file():
+            return contained
+        return None
     for base in (package_dir, package_dir / "src" / "main" / "resources", repo_root):
         contained = _contain(repo_root, base, raw)
         if contained and (repo_root / contained).is_file():
@@ -494,6 +580,9 @@ def _bazel_invocations(repo_root: Path, build_files: List[Path], macros: Dict[st
 
 _SKIPPED_DIRS = {".git", "node_modules", "target", "build", "dist", ".gradle", ".idea"}
 
+# A build file larger than this is generated output or hostile, not authored.
+MAX_BUILD_FILE_BYTES = 5 * 1024 * 1024
+
 
 def collect_build_evidence(repo_root: str) -> List[dict]:
     """Every generator invocation the repo's build files declare."""
@@ -506,6 +595,15 @@ def collect_build_evidence(repo_root: str) -> List[dict]:
         dirnames[:] = sorted(d for d in dirnames if d not in _SKIPPED_DIRS)
         for filename in filenames:
             path = Path(current_dir) / filename
+            # A symlinked or absurdly large build file is not evidence; it is
+            # a way to read outside the repo or stall the scan.
+            if path.is_symlink():
+                continue
+            try:
+                if path.stat().st_size > MAX_BUILD_FILE_BYTES:
+                    continue
+            except OSError:
+                continue
             if filename == "pom.xml":
                 poms.append(path)
             elif filename in ("build.gradle", "build.gradle.kts"):
@@ -522,9 +620,9 @@ def collect_build_evidence(repo_root: str) -> List[dict]:
         invocations.extend(_gradle_invocations(gradle, root))
     macros = _bzl_macro_generators(root, sorted(bzl_files))
     if macros:
-        invocations.extend(
-            _bazel_invocations(root, sorted(bazel_build_files + bzl_files), macros)
-        )
+        # Call sites count only in BUILD files: a macro invoked inside another
+        # .bzl function is a template, not a package declaring generation.
+        invocations.extend(_bazel_invocations(root, sorted(bazel_build_files), macros))
     return invocations
 
 

@@ -21,10 +21,16 @@ already in, and may label excluded residue in reports.
    committed source.
 2. **Build-linked server generation**: a build file names the spec as input to a
    server-mode generator invocation (openapi-generator `-g spring` /
-   `generatorName: spring` / `interfaceOnly` / `delegatePattern`, oapi-codegen
-   server configs), and the generated output is wired into this repo's code.
-   Corroboration, when present: source classes implement or delegate the
-   generated symbols.
+   `generatorName: spring` / `interfaceOnly` / `delegatePattern`; oapi-codegen
+   server configs arrive with the Go prover). What is verified statically:
+   the invocation is live text (not pluginManagement, not `<skip>true</skip>`,
+   not commented out, call sites in real packages) and the named spec exists.
+   Full build-graph wiring (this target compiles into the deployable) is not
+   proven; instead, implementation corroboration (source classes implementing
+   or delegating the generated symbols) is computed and every served-but-
+   uncorroborated spec is flagged in the report. Generator names come from an
+   explicit catalog; an unrecognized name is `unknown` and proves nothing in
+   either direction.
 3. **Correlation only**: operationId or `implements *Api` matches with no build
    edge. Never includes on its own; produces a `candidate` entry in the report
    for a human or agent to confirm with an override.
@@ -45,12 +51,24 @@ Every potential operation, from any lane, becomes a candidate:
   "method": "GET",
   "route": "/api/bootstrap",
   "route_shape": "GET /api/bootstrap",
-  "evidence": {"tier": 2, "build_file": "esd-app/BUILD.bazel", "generator": "spring"},
-  "eligibility_hash": "<spec content + build evidence + prover version>",
-  "payload_hash": "<the operation object as authored>",
+  "doc_index": 0,
+  "invocations": [{"tier": 2, "build_file": "esd-app/BUILD.bazel", "generator": "spring", "kind": "server"}],
+  "service": "esd-web-app",
+  "eligibility_hash": "<spec content + every build file carrying its invocations + implementing controller files + prover version>",
+  "payload_hash": "<the operation object plus its resolved reference closure>",
   "operation": {"...": "authored content, refs resolved and namespaced"}
 }
 ```
+
+Evidence is a list because one spec can carry several invocations, server and
+client at once; classification weighs all of them. `doc_index` exists because
+a file can hold several YAML documents; since build evidence names files, a
+multi-contract file is excluded as ambiguous rather than letting one
+document's proof cover its siblings. The eligibility hash covers the whole
+proof surface: removing the only implementing controller, or editing the
+build file, must invalidate cached eligibility even when the spec itself is
+unchanged. The payload hash covers referenced files, so editing an external
+schema refreshes the operations that use it.
 
 `route_shape` canonicalizes path parameters to `{}` so `/users/{id}` and
 `/users/{userId}` collide on purpose. Collisions between candidates from
@@ -84,9 +102,13 @@ per source spec before merging.
 ## Discovery scope
 
 Contract discovery sweeps the whole repo every run with its own ignore policy:
-dependency caches only (`node_modules`, `.git`, virtualenvs). The code lane's
-semantic ignores (`docs`, `vendor`, `tests`) do not apply, because that is
-where contracts live. Discovery is never narrowed by a previous run's profile.
+dependency caches (`node_modules`, `.git`, virtualenvs) and build OUTPUT
+directories (`target`, `build`, `dist`), which hold copies of authored specs
+and would double-discover them. The code lane's semantic ignores (`docs`,
+`vendor`, `tests`) do not apply, because that is where contracts live.
+Discovery is never narrowed by a previous run's profile, is bounded by file
+and byte budgets, and reports `truncated: true` when a budget stops it early.
+Only ApiMesh's own output files are excluded, never their directory.
 
 ## Persistence
 

@@ -266,3 +266,138 @@ def test_bazel_inline_genrule_client_commands(tmp_path):
     assert inline[0]["kind"] == "client"
     assert inline[0]["spec_path"] == "src/main/resources/workflow.yml"
     assert inline[0]["api_package"] == "com.flow.generated.api"
+
+
+# ---------------------------------------------------------------------------
+# Review round 1 regressions
+# ---------------------------------------------------------------------------
+
+def test_plugin_management_is_configuration_not_evidence(tmp_path):
+    (tmp_path / "api.yaml").write_text("openapi: 3.0.0\npaths: {}\n")
+    (tmp_path / "pom.xml").write_text(
+        "<project><build><pluginManagement><plugins><plugin>\n"
+        "  <artifactId>openapi-generator-maven-plugin</artifactId>\n"
+        "  <configuration>\n"
+        "    <inputSpec>${project.basedir}/api.yaml</inputSpec>\n"
+        "    <generatorName>spring</generatorName>\n"
+        "  </configuration>\n"
+        "</plugin></plugins></pluginManagement></build></project>\n"
+    )
+    assert collect_build_evidence(str(tmp_path)) == []
+
+
+def test_skipped_execution_is_not_evidence(tmp_path):
+    (tmp_path / "api.yaml").write_text("openapi: 3.0.0\npaths: {}\n")
+    (tmp_path / "pom.xml").write_text(
+        "<project><build><plugins><plugin>\n"
+        "  <artifactId>openapi-generator-maven-plugin</artifactId>\n"
+        "  <configuration>\n"
+        "    <skip>true</skip>\n"
+        "    <inputSpec>${project.basedir}/api.yaml</inputSpec>\n"
+        "    <generatorName>spring</generatorName>\n"
+        "  </configuration>\n"
+        "</plugin></plugins></build></project>\n"
+    )
+    assert collect_build_evidence(str(tmp_path)) == []
+
+
+def test_commented_gradle_configuration_is_not_evidence(tmp_path):
+    (tmp_path / "api.yaml").write_text("openapi: 3.0.0\npaths: {}\n")
+    (tmp_path / "build.gradle").write_text(
+        "// openApiGenerate {\n"
+        "//     generatorName = \"spring\"\n"
+        "//     inputSpec = \"$projectDir/api.yaml\"\n"
+        "// }\n"
+        "/*\n"
+        "openApiGenerate { generatorName = \"spring\"\n"
+        "inputSpec = \"$projectDir/api.yaml\" }\n"
+        "*/\n"
+    )
+    assert collect_build_evidence(str(tmp_path)) == []
+
+
+def test_bazel_label_resolves_to_its_package_not_a_same_named_file(tmp_path):
+    """//shared:api.yaml must never bind to the calling package's api.yaml."""
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools" / "defs.bzl").write_text(
+        "def openapi_spring_spec(name, spec_file):\n"
+        "    native.genrule(name = name, cmd = \"generate -g spring -i \" + spec_file)\n"
+    )
+    (tmp_path / "shared").mkdir()
+    (tmp_path / "shared" / "api.yaml").write_text("openapi: 3.0.0\npaths: {}\n")
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "api.yaml").write_text("openapi: 3.0.0\npaths: {}\n")
+    (tmp_path / "app" / "BUILD.bazel").write_text(
+        "load(\"//tools:defs.bzl\", \"openapi_spring_spec\")\n"
+        "openapi_spring_spec(\n"
+        "    name = \"gen\",\n"
+        "    spec_file = \"//shared:api.yaml\",\n"
+        ")\n"
+    )
+
+    invocations = collect_build_evidence(str(tmp_path))
+
+    assert len(invocations) == 1
+    assert invocations[0]["spec_path"] == "shared/api.yaml"
+
+
+def test_macro_calls_inside_bzl_files_are_templates_not_invocations(tmp_path):
+    (tmp_path / "api.yaml").write_text("openapi: 3.0.0\npaths: {}\n")
+    (tmp_path / "defs.bzl").write_text(
+        "def _gen(spec):\n"
+        "    return \"generate -g spring -i \" + spec\n"
+        "\n"
+        "def wrapper(name):\n"
+        "    _gen(spec = \"api.yaml\")\n"
+        "\n"
+        "def helper():\n"
+        "    wrapper(name = \"dead\")\n"
+    )
+
+    assert collect_build_evidence(str(tmp_path)) == []
+
+
+def test_cyclic_maven_properties_terminate_as_unresolved(tmp_path):
+    (tmp_path / "pom.xml").write_text(
+        "<project>\n"
+        "  <properties><a>${b}</a><b>${a}</b></properties>\n"
+        "  <build><plugins><plugin>\n"
+        "    <artifactId>openapi-generator-maven-plugin</artifactId>\n"
+        "    <configuration>\n"
+        "      <inputSpec>${a}/api.yaml</inputSpec>\n"
+        "      <generatorName>spring</generatorName>\n"
+        "    </configuration>\n"
+        "  </plugin></plugins></build>\n"
+        "</project>\n"
+    )
+    invocations = collect_build_evidence(str(tmp_path))
+    assert len(invocations) == 1
+    assert invocations[0]["spec_path"] is None
+    assert "unresolved_input" in invocations[0]
+
+
+def test_symlinked_build_files_are_ignored(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    real = outside / "build.gradle"
+    real.write_text(
+        "openApiGenerate { generatorName = \"spring\"\ninputSpec = \"$projectDir/api.yaml\" }\n"
+    )
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "api.yaml").write_text("openapi: 3.0.0\npaths: {}\n")
+    (repo / "build.gradle").symlink_to(real)
+
+    assert collect_build_evidence(str(repo)) == []
+
+
+def test_unrecognized_generator_names_are_unknown_not_guessed(tmp_path):
+    for name in ("vendor-client-server", "acme-custom", "jaxrs-madeup"):
+        (tmp_path / "pom.xml").write_text(
+            "<project><build><plugins><plugin>\n"
+            "  <artifactId>openapi-generator-maven-plugin</artifactId>\n"
+            f"  <configuration><generatorName>{name}</generatorName></configuration>\n"
+            "</plugin></plugins></build></project>\n"
+        )
+        invocations = collect_build_evidence(str(tmp_path))
+        assert invocations[0]["kind"] == "unknown", name

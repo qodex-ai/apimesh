@@ -58,6 +58,7 @@ def test_discovery_ignores_non_openapi_yaml():
     all_paths = {
         entry["path"]
         for bucket in inventory.values()
+        if isinstance(bucket, list)
         for entry in bucket
         if isinstance(entry, dict) and "path" in entry
     }
@@ -372,3 +373,101 @@ def test_resolver_unit_depth_limit():
         node = {"nested": node}
     with pytest.raises(RefError):
         loader.resolve_node(node, "doc.yaml")
+
+
+# ---------------------------------------------------------------------------
+# Review round 1 regressions
+# ---------------------------------------------------------------------------
+
+def test_discovery_finds_compact_json_contracts(tmp_path):
+    (tmp_path / "api.json").write_text(
+        '{"openapi":"3.0.0","paths":{"/a":{"get":{"responses":{"200":{"description":"ok"}}}}}}'
+    )
+    assert _contract_paths(tmp_path) == {"api.json"}
+
+
+def test_output_at_repo_root_does_not_blind_discovery(tmp_path, monkeypatch):
+    """Excluding the output's whole directory once emptied entire inventories."""
+    (tmp_path / "swagger.json").write_text('{"openapi":"3.0.0","paths":{"/x":{"get":{}}}}')
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "api.yaml").write_text(
+        "openapi: 3.0.0\npaths:\n  /a:\n    get:\n      responses: {'200': {description: ok}}\n"
+    )
+    monkeypatch.setenv("APIMESH_OUTPUT_FILEPATH", str(tmp_path / "swagger.json"))
+
+    assert _contract_paths(tmp_path) == {"docs/api.yaml"}
+
+
+def test_multi_document_contracts_carry_their_sibling_count(tmp_path):
+    (tmp_path / "both.yaml").write_text(
+        "openapi: 3.0.0\npaths:\n  /a:\n    get: {}\n"
+        "---\n"
+        "openapi: 3.0.0\npaths:\n  /b:\n    get: {}\n"
+    )
+    inventory = discover_contract_documents(str(tmp_path))
+    assert [e["contracts_in_file"] for e in inventory["contracts"]] == [2, 2]
+    assert [e["doc_index"] for e in inventory["contracts"]] == [0, 1]
+
+
+@pytest.mark.parametrize(
+    "reference",
+    ["HTTPS://evil.example.com/x#/a", "ftp://evil/x#/a", "ssh://evil/x#/a"],
+)
+def test_loader_refuses_every_scheme_case_insensitively(tmp_path, reference):
+    (tmp_path / "api.yaml").write_text(
+        "openapi: 3.0.0\n"
+        "paths:\n"
+        "  /a:\n"
+        "    get:\n"
+        "      responses:\n"
+        f"        '200': {{$ref: '{reference}'}}\n"
+    )
+    operations, unresolved = load_operations(_entry_for(tmp_path, "api.yaml"), str(tmp_path))
+    assert operations == []
+    assert len(unresolved) == 1
+
+
+def test_loader_rejects_negative_pointer_indexes(tmp_path):
+    """RFC 6901 has no negative indexes; Python's list[-1] must not leak in."""
+    (tmp_path / "api.yaml").write_text(
+        "openapi: 3.0.0\n"
+        "servers:\n"
+        "  - {url: /v1}\n"
+        "paths:\n"
+        "  /a:\n"
+        "    get:\n"
+        "      responses:\n"
+        "        '200': {$ref: '#/servers/-1'}\n"
+    )
+    operations, unresolved = load_operations(_entry_for(tmp_path, "api.yaml"), str(tmp_path))
+    assert operations == []
+    assert "non-numeric index" in unresolved[0]["error"]
+
+
+def test_loader_walks_yaml_alias_dags_linearly(tmp_path):
+    """A wide alias DAG must terminate promptly, not traverse exponentially."""
+    lines = ["openapi: 3.0.0", "components:", "  schemas:", "    L0: &l0 {type: object}"]
+    for level in range(1, 24):
+        lines.append(
+            f"    L{level}: &l{level}"
+            + " {allOf: [*l" + str(level - 1) + ", *l" + str(level - 1) + "]}"
+        )
+    lines += [
+        "paths:",
+        "  /a:",
+        "    get:",
+        "      responses:",
+        "        '200':",
+        "          description: ok",
+        "          content:",
+        "            application/json:",
+        "              schema: {$ref: '#/components/schemas/L23'}",
+    ]
+    (tmp_path / "api.yaml").write_text("\n".join(lines) + "\n")
+
+    import time as _time
+    start = _time.time()
+    operations, unresolved = load_operations(_entry_for(tmp_path, "api.yaml"), str(tmp_path))
+    assert _time.time() - start < 5
+    assert unresolved == []
+    assert len(operations) == 1
