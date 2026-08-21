@@ -859,3 +859,133 @@ def rebuild_unchanged_index_entries(
         if stored:
             rebuilt["context_hash"] = stored
         updated_index[key] = rebuilt
+
+
+# ---------------------------------------------------------------------------
+# Contract lane integration, shared by every pipeline
+# ---------------------------------------------------------------------------
+
+def base_swagger(repo_name, host, commit_hash, repo_url, generated_at):
+    """The empty document a contract-only run starts from."""
+    return {
+        "openapi": "3.0.0",
+        "info": {
+            "title": repo_name,
+            "version": "1.0.0",
+            "description": "This Swagger file was generated using OpenAI GPT.",
+            "x-generated-at": generated_at,
+            "x-commit-reference": commit_hash,
+            "x-github-repo-url": repo_url,
+        },
+        "servers": [{"url": host}],
+        "paths": {},
+    }
+
+
+def integrate_contract_lane(directory_path, endpoint_jobs, method_of, normalize_route):
+    """Run the contract lane and supersede code jobs the contracts cover.
+
+    Returns (lane_result, reconciled, filtered_jobs). lane_result is None when
+    the lane is disabled; filtered_jobs is then the input unchanged. A code
+    route a served contract also declares is documented from the contract, so
+    generating it again would double-spend and collide.
+    """
+    from contract_lane.lane import run_lane
+    from contract_lane.reconcile import reconcile
+
+    lane_result = run_lane(directory_path)
+    if lane_result is None:
+        return None, None, endpoint_jobs
+    code_ops = [
+        {
+            "method": (method_of(job) or "").upper(),
+            "route": normalize_route(job.get("route")),
+            "source_id": str(position),
+        }
+        for position, job in enumerate(endpoint_jobs)
+    ]
+    reconciled = reconcile(lane_result["rows"], code_ops, directory_path)
+    allowed = {int(op["source_id"]) for op in reconciled["code_to_generate"]}
+    filtered = [job for position, job in enumerate(endpoint_jobs) if position in allowed]
+    return lane_result, reconciled, filtered
+
+
+def write_repo_profile(report, reconciled, output_filepath):
+    """The run's full account of the contract lane, for humans and agents.
+
+    A generated report, never an input: the next run re-derives everything
+    from the repository. Best-effort, a profile that cannot be written must
+    not fail the spec.
+    """
+    profile = {
+        "contract_lane": report,
+        "conflicts": reconciled["conflicts"],
+        "superseded_code_endpoints": len(reconciled["superseded_code"]),
+    }
+    path = os.path.join(os.path.dirname(output_filepath), "repo_profile.json")
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp_path = f"{path}.tmp"
+        with open(tmp_path, "w") as handle:
+            json.dump(profile, handle, indent=2, sort_keys=True)
+        os.replace(tmp_path, path)
+    except OSError as ex:
+        print(f"apimesh: could not write {path}: {ex}")
+
+
+def finish_with_contract(swagger, reconciled, report, output_filepath):
+    """Merge the contract lane's operations into the code lane's document.
+
+    Spec-sourced operations from a previous run are stripped first, so a
+    contract operation that disappeared from its spec leaves the document:
+    the contract portion is rebuilt from scratch on every run.
+    """
+    paths = swagger.setdefault("paths", {})
+    for route in list(paths):
+        item = paths[route]
+        if not isinstance(item, dict):
+            continue
+        for verb in list(item):
+            operation = item[verb]
+            if isinstance(operation, dict) and any(
+                str(source).startswith("spec:")
+                for source in operation.get("x-apimesh-source") or []
+            ):
+                del item[verb]
+        if not item:
+            del paths[route]
+    for route, item in reconciled["paths"].items():
+        paths.setdefault(route, {}).update(item)
+    if reconciled["components"]:
+        components = swagger.setdefault("components", {})
+        for category, items in reconciled["components"].items():
+            components.setdefault(category, {}).update(items)
+
+    contract_operations = sum(len(item) for item in reconciled["paths"].values())
+    summary = {
+        "specs_found": report["specs_found"],
+        "specs_served": len(report["served"]),
+        "specs_excluded": len(report["excluded"]),
+        "specs_candidate": len(report["candidates"]),
+        "operations": contract_operations,
+        "unresolved_operations": len(report["unresolved_operations"]),
+        "conflicts": len(reconciled["conflicts"]),
+        "superseded_code_endpoints": len(reconciled["superseded_code"]),
+        "truncated": report["truncated"],
+    }
+    info = swagger.setdefault("info", {})
+    coverage = info.get("x-apimesh-coverage")
+    if isinstance(coverage, dict):
+        coverage["contract"] = summary
+    else:
+        info["x-apimesh-coverage"] = {"contract": summary}
+    # A repo with no contracts gets the coverage line but no profile file:
+    # dropping an empty report into every plain repo is noise.
+    if report["specs_found"]:
+        write_repo_profile(report, reconciled, output_filepath)
+        print(
+            f"apimesh: contract lane served {summary['specs_served']} specs "
+            f"({contract_operations} operations), excluded {summary['specs_excluded']}, "
+            f"candidates {summary['specs_candidate']}"
+        )
+    return swagger

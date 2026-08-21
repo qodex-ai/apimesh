@@ -87,7 +87,7 @@ def test_two_runs_are_identical_modulo_timestamp(contract_only_repo):
     assert first == second
 
 
-def test_finish_with_contract_removes_stale_spec_operations():
+def test_finish_with_contract_removes_stale_spec_operations(tmp_path):
     """A spec op from a previous run that the contract no longer declares
     leaves the document; code-lane ops are untouched."""
     swagger = {
@@ -117,7 +117,11 @@ def test_finish_with_contract_removes_stale_spec_operations():
         "truncated": False,
     }
 
-    merged = rsg._finish_with_contract(swagger, reconciled, report)
+    import pipeline_common
+
+    merged = pipeline_common.finish_with_contract(
+        swagger, reconciled, report, str(tmp_path / "swagger.json")
+    )
 
     assert "/api/old" not in merged["paths"]
     assert "/api/new" in merged["paths"]
@@ -248,3 +252,47 @@ def test_override_naming_an_unknown_spec_is_flagged(tmp_path):
     assert {"path": "vanished.yaml", "action": "exclude", "state": "unmatched"} in (
         result["report"]["overrides"]
     )
+
+
+# ---------------------------------------------------------------------------
+# The lane rides every pipeline
+# ---------------------------------------------------------------------------
+
+def test_go_oapi_codegen_repo_yields_a_spec_with_no_llm(monkeypatch, tmp_path):
+    import golang_pipeline.run_swagger_generation as go_rsg
+
+    monkeypatch.setenv("APIMESH_USER_REPO_PATH", str(FIXTURES_ROOT / "go_oapi_codegen"))
+    monkeypatch.setenv("APIMESH_OUTPUT_FILEPATH", str(tmp_path / "out" / "swagger.json"))
+
+    def _forbid(*args, **kwargs):
+        raise AssertionError("no LLM call may happen for a contract-only repo")
+
+    monkeypatch.setattr(go_rsg, "get_batch_definition_swagger", _forbid)
+    monkeypatch.setattr(go_rsg, "get_function_definition_swagger", _forbid)
+
+    swagger = go_rsg.run_swagger_generation("http://api.example.test")
+
+    assert swagger is not None
+    ops = {(m.upper(), route) for route, item in swagger["paths"].items() for m in item}
+    assert ops == {("GET", "/widgets"), ("POST", "/widgets")}
+    assert swagger["info"]["x-apimesh-coverage"]["contract"]["specs_served"] == 1
+
+
+def test_connexion_repo_yields_a_spec_under_its_base_path(monkeypatch, tmp_path):
+    import python_pipeline.run_swagger_generation as py_rsg
+
+    monkeypatch.setenv("APIMESH_USER_REPO_PATH", str(FIXTURES_ROOT / "connexion_app"))
+    monkeypatch.setenv("APIMESH_OUTPUT_FILEPATH", str(tmp_path / "out" / "swagger.json"))
+
+    def _forbid(*args, **kwargs):
+        raise AssertionError("no LLM call may happen for a contract-only repo")
+
+    monkeypatch.setattr(py_rsg, "get_batch_definition_swagger", _forbid, raising=False)
+    monkeypatch.setattr(py_rsg, "get_function_definition_swagger", _forbid, raising=False)
+
+    swagger = py_rsg.run_swagger_generation("http://api.example.test")
+
+    assert swagger is not None
+    ops = {(m.upper(), route) for route, item in swagger["paths"].items() for m in item}
+    assert ops == {("GET", "/v1/notes")}
+    assert (tmp_path / "out" / "repo_profile.json").is_file()

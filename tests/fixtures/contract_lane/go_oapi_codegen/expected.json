@@ -1,0 +1,9 @@
+{
+  "description": "oapi-codegen chi-server via go:generate: the spec is served; generated code is not committed",
+  "included": [
+    {"method": "GET", "route": "/widgets", "lane": "contract"},
+    {"method": "POST", "route": "/widgets", "lane": "contract"}
+  ],
+  "excluded_specs": [],
+  "candidates": []
+}

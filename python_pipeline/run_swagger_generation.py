@@ -733,11 +733,43 @@ def run_swagger_generation(host):
         # all, so nothing above sees a conventional Django project.
         endpoint_jobs.extend(collect_django_endpoints(python_files, directory_path))
         endpoint_jobs = _routed_endpoints(endpoint_jobs)
-        if not endpoint_jobs:
+        # The contract lane runs before anything else is decided: a spec-first
+        # repo can carry its whole surface in contracts the code lane cannot
+        # see. Deterministic and LLM-free, so it runs every time.
+        lane_result, reconciled, endpoint_jobs = pipeline_common.integrate_contract_lane(
+            directory_path, endpoint_jobs, _job_method, _normalize_route
+        )
+        contract_paths = bool(reconciled and reconciled["paths"])
+
+        if not endpoint_jobs and not contract_paths:
             print("apimesh: python parser found 0 endpoints, nothing will be generated")
             return None
+
+        if not endpoint_jobs:
+            print(
+                "apimesh: python parser found 0 annotated endpoints; "
+                "the contract lane supplies the spec"
+            )
+            swagger = pipeline_common.base_swagger(
+                repo_name,
+                host,
+                get_git_commit_hash(),
+                get_github_repo_url(),
+                datetime.datetime.utcnow().isoformat() + "Z",
+            )
+            # An empty code index is deliberate: code endpoints that existed
+            # on a previous run and are gone now must leave the spec.
+            _write_api_index(_build_api_index([]))
+            pipeline_common.record_coverage(swagger, 0, 0, 0, 0)
+            return pipeline_common.finish_with_contract(
+                swagger, reconciled, lane_result["report"], get_output_filepath()
+            )
         incremental_swagger = _maybe_incremental_update(directory_path, endpoint_jobs, host)
         if incremental_swagger is not None:
+            if reconciled is not None:
+                return pipeline_common.finish_with_contract(
+                    incremental_swagger, reconciled, lane_result["report"], get_output_filepath()
+                )
             return incremental_swagger
         swagger = {
             "openapi": "3.0.0",
@@ -762,6 +794,10 @@ def run_swagger_generation(host):
         # failure looks unchanged next run and is never retried.
         _write_api_index(_build_api_index(generated))
         pipeline_common.record_coverage(swagger, len(endpoint_jobs), len(generated), 0, len(failed))
+        if reconciled is not None:
+            return pipeline_common.finish_with_contract(
+                swagger, reconciled, lane_result["report"], get_output_filepath()
+            )
         return swagger
     finally:
         # The cache outlives the run; only entries for content that is gone are

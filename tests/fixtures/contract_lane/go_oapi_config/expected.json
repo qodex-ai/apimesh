@@ -1,0 +1,8 @@
+{
+  "description": "oapi-codegen with a config file declaring std-http-server",
+  "included": [
+    {"method": "GET", "route": "/gadgets", "lane": "contract"}
+  ],
+  "excluded_specs": [],
+  "candidates": []
+}

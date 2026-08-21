@@ -1,0 +1,8 @@
+{
+  "description": "connexion add_api registers the spec directly; base_path is the prefix",
+  "included": [
+    {"method": "GET", "route": "/v1/notes", "lane": "contract"}
+  ],
+  "excluded_specs": [],
+  "candidates": []
+}

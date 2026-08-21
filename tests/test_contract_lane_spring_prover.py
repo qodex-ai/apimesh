@@ -181,3 +181,28 @@ def test_unknown_kind_evidence_proves_nothing(tmp_path):
 
     assert verdict["status"] == "excluded"
     assert verdict["reason"] == "no_server_evidence"
+
+
+# ---------------------------------------------------------------------------
+# Go and connexion fixtures ride the same classification
+# ---------------------------------------------------------------------------
+
+def test_go_oapi_codegen_server_spec_is_served():
+    results = _classify_fixture("go_oapi_codegen")
+    verdict = results["api/openapi.yaml"]
+    assert verdict["status"] == "served"
+    assert verdict["default_prefix"] == ""
+
+
+def test_go_oapi_client_spec_is_excluded():
+    results = _classify_fixture("go_oapi_client")
+    verdict = results["vendorapi/partner.yaml"]
+    assert verdict["status"] == "excluded"
+    assert verdict["reason"] == "client_generator"
+
+
+def test_connexion_spec_is_served_under_its_base_path():
+    results = _classify_fixture("connexion_app")
+    verdict = results["specs/openapi.yaml"]
+    assert verdict["status"] == "served"
+    assert verdict["default_prefix"] == "/v1"

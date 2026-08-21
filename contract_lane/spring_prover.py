@@ -244,6 +244,14 @@ def classify_contract(
                 implementers.extend(index.implementers_of_package(api_package))
         matched, unannotated, _ = _match_operations(operations, index)
         default_prefix, prefix_variants = _spec_prefixes(implementers)
+        if not default_prefix:
+            # Registration-style evidence (connexion add_api) can carry the
+            # mount prefix itself.
+            for invocation in server_invocations:
+                base_path = (invocation.get("options") or {}).get("base_path")
+                if base_path:
+                    default_prefix = base_path
+                    break
         return {
             "status": "served",
             "path": entry["path"],

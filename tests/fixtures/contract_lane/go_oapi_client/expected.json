@@ -1,0 +1,8 @@
+{
+  "description": "oapi-codegen client generation: the partner spec is consumed, never served",
+  "included": [],
+  "excluded_specs": [
+    {"path": "vendorapi/partner.yaml", "reason": "client_generator"}
+  ],
+  "candidates": []
+}
