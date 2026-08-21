@@ -1,0 +1,8 @@
+load("//tools/openapi:openapi_defs.bzl", "openapi_spring_spec")
+
+openapi_spring_spec(
+    name = "openapi_pets_api",
+    spec_file = "src/main/resources/api/pets.yaml",
+    api_package = "com.acme.generated.api",
+    model_package = "com.acme.generated.dto",
+)

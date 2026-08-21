@@ -1,0 +1,7 @@
+openapi: 3.0.0
+info: {title: Stripe Charges, version: "1.0.0"}
+paths:
+  /v1/charges:
+    post:
+      operationId: createCharge
+      responses: {"200": {description: ok}}
