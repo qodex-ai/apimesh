@@ -182,8 +182,12 @@ def _rewrite(node, base_file: str, loader: ContractLoader, store: _ComponentStor
             ):
                 rewritten_mapping = {}
                 for mapping_key, mapping_value in discriminator["mapping"].items():
-                    if isinstance(mapping_value, str) and "#" in mapping_value:
-                        target_file, pointer = loader._split_ref(base_file, mapping_value)
+                    reference = mapping_value
+                    if isinstance(reference, str) and "#" not in reference and "/" not in reference:
+                        # A bare name is shorthand for a local schema.
+                        reference = f"#/components/schemas/{reference}"
+                    if isinstance(reference, str) and "#" in reference:
+                        target_file, pointer = loader._split_ref(base_file, reference)
                         named = store.name_for(f"{target_file}#{pointer.lstrip('#')}")
                         if named is not None:
                             category, name = named
@@ -263,13 +267,15 @@ def reconcile(contract_rows: List[dict], code_ops: List[dict], repo_root: str) -
             named = store.name_for(closure_key)
             if named is None or closure_key in rewritten_components_done:
                 continue
-            rewritten_components_done.add(closure_key)
             category, name = named
             store.put(
                 category,
                 name,
                 _rewrite(target, closure_key.partition("#")[0], loader, store, closure),
             )
+            # Done only after the body landed: marking first and failing left
+            # later operations pointing at a name with no component.
+            rewritten_components_done.add(closure_key)
         # Security requirements reference schemes by name; rename the schemes
         # into the merged components and the requirement keys with them.
         schemes = record.get("security_schemes") or {}
@@ -281,12 +287,12 @@ def reconcile(contract_rows: List[dict], code_ops: List[dict], repo_root: str) -
                 )
                 category, new_name = store.name_for(scheme_key)
                 if scheme_key not in rewritten_components_done:
-                    rewritten_components_done.add(scheme_key)
                     store.put(
                         category,
                         new_name,
                         _rewrite(scheme_node, row["spec_path"], loader, store, closure),
                     )
+                    rewritten_components_done.add(scheme_key)
                 renamed[scheme_name] = new_name
             if operation.get("security"):
                 operation["security"] = [
@@ -304,6 +310,16 @@ def reconcile(contract_rows: List[dict], code_ops: List[dict], repo_root: str) -
             rewrite_failures.append(
                 {"method": method, "route": winner["route"], "error": str(ex)}
             )
+            # The contract could not be published; any code route this shape
+            # superseded goes back to the code lane instead of vanishing.
+            restored = [
+                op
+                for op in superseded_code
+                if route_shape(op["method"], op["route"]) == (method, shape)
+            ]
+            if restored:
+                code_to_generate.extend(restored)
+                superseded_code = [op for op in superseded_code if op not in restored]
             continue
         operation["x-apimesh-source"] = [winner["source_id"]]
         if (method, shape) in conditions_by_shape:

@@ -311,3 +311,42 @@ def test_provisional_only_evidence_is_a_candidate(tmp_path):
     verdict = classify_contract(entry, operations, provisional, index)
     assert verdict["status"] == "candidate"
     assert verdict["reason"] == "provisional_evidence"
+
+
+def test_plurality_is_not_a_majority(tmp_path):
+    """2/1/1 votes resolve nothing; 3/1 does, and the report counts it."""
+    (tmp_path / "src").mkdir()
+    sources = {
+        "A": "/api", "B": "/api", "C": "/api", "D": "/other",
+    }
+    for name, prefix in sources.items():
+        (tmp_path / "src" / f"{name}Controller.java").write_text(
+            "package com.acme.web;\n"
+            "import com.acme.generated.api.PetsApi;\n"
+            "import org.springframework.web.bind.annotation.RequestMapping;\n"
+            "import org.springframework.web.bind.annotation.RestController;\n"
+            "@RestController\n"
+            f"@RequestMapping(\"{prefix}\")\n"
+            f"public class {name}Controller implements PetsApi {{\n"
+            "    public Object listPets() { return null; }\n"
+            "}\n"
+        )
+    (tmp_path / "api.yaml").write_text(
+        "openapi: 3.0.0\n"
+        "paths:\n"
+        "  /pets:\n"
+        "    get:\n"
+        "      operationId: listPets\n"
+        "      responses: {'200': {description: ok}}\n"
+    )
+    inventory = discover_contract_documents(str(tmp_path))
+    index = build_source_index(str(tmp_path))
+    entry = inventory["contracts"][0]
+    operations, _ = load_operations(entry, str(tmp_path))
+
+    verdict = classify_contract(entry, operations, _SERVER_EVIDENCE, index)
+
+    # 3 votes /api vs 1 vote /other: strict majority publishes /api.
+    assert verdict["status"] == "served"
+    assert verdict["prefixes_by_operation"][0] == ["/api"]
+    assert verdict["operations_prefix_by_majority"] == 1

@@ -552,3 +552,79 @@ def test_add_api_in_test_files_proves_nothing(tmp_path):
         "app.add_api(\"../openapi.yaml\")\n"
     )
     assert collect_build_evidence(str(tmp_path)) == []
+
+
+# ---------------------------------------------------------------------------
+# Review round 3 regressions
+# ---------------------------------------------------------------------------
+
+def test_untracked_go_output_stays_provisional(tmp_path):
+    """In a git repo, only committed generated output corroborates."""
+    import subprocess
+
+    from contract_lane.build_evidence import _TRACKED_CACHE
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    (repo / "api.yaml").write_text("openapi: 3.0.0\npaths: {}\n")
+    (repo / "gen.go").write_text(
+        "package api\n//go:generate oapi-codegen -generate chi-server -o api_gen.go api.yaml\n"
+    )
+    (repo / "api_gen.go").write_text("package api\n")
+    subprocess.run(["git", "-C", str(repo), "add", "api.yaml", "gen.go"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t",
+         "commit", "-qm", "init"],
+        check=True,
+    )
+
+    _TRACKED_CACHE.clear()
+    invocations = collect_build_evidence(str(repo))
+    assert invocations[0]["provisional"] is True  # output exists but untracked
+
+    subprocess.run(["git", "-C", str(repo), "add", "api_gen.go"], check=True)
+    _TRACKED_CACHE.clear()
+    invocations = collect_build_evidence(str(repo))
+    assert invocations[0]["provisional"] is False
+
+
+def test_connexion_spec_dir_is_per_app(tmp_path):
+    """Two apps in one module must not borrow each other's spec directory."""
+    (tmp_path / "a_specs").mkdir()
+    (tmp_path / "b_specs").mkdir()
+    (tmp_path / "a_specs" / "api.yaml").write_text("openapi: 3.0.0\npaths: {}\n")
+    (tmp_path / "b_specs" / "api.yaml").write_text("openapi: 3.0.0\npaths: {}\n")
+    (tmp_path / "app.py").write_text(
+        "import connexion\n"
+        "first = connexion.FlaskApp(__name__, specification_dir=\"a_specs\")\n"
+        "second = connexion.FlaskApp(__name__, specification_dir=\"b_specs\")\n"
+        "second.add_api(\"api.yaml\")\n"
+    )
+
+    invocations = collect_build_evidence(str(tmp_path))
+
+    assert len(invocations) == 1
+    assert invocations[0]["spec_path"] == "b_specs/api.yaml"
+
+
+def test_bazel_helper_chain_files_are_all_proof_files(tmp_path):
+    (tmp_path / "api.yaml").write_text("openapi: 3.0.0\npaths: {}\n")
+    (tmp_path / "inner.bzl").write_text(
+        "def _gen_cmd(spec):\n"
+        "    return \"generate -g spring -i \" + spec\n"
+    )
+    (tmp_path / "outer.bzl").write_text(
+        "load(\"//:inner.bzl\", \"_gen_cmd\")\n"
+        "def openapi_spring_spec(name, spec_file):\n"
+        "    native.genrule(name = name, cmd = _gen_cmd(spec_file))\n"
+    )
+    (tmp_path / "BUILD.bazel").write_text(
+        "load(\"//:outer.bzl\", \"openapi_spring_spec\")\n"
+        "openapi_spring_spec(name = \"gen\", spec_file = \"api.yaml\")\n"
+    )
+
+    invocations = collect_build_evidence(str(tmp_path))
+
+    assert len(invocations) == 1
+    assert set(invocations[0]["config_files"]) == {"inner.bzl", "outer.bzl"}

@@ -340,3 +340,65 @@ def test_superseded_code_conditions_ride_on_the_contract_operation(tmp_path):
     assert operation["x-apimesh-routing-conditions"] == {
         "consumes": ["application/json"]
     }
+
+
+# ---------------------------------------------------------------------------
+# Review round 3 regressions
+# ---------------------------------------------------------------------------
+
+def test_failed_rewrite_returns_the_superseded_code_route(tmp_path):
+    """A contract op that cannot materialize must not delete the code route
+    it superseded; the code lane gets it back."""
+    (tmp_path / "api.yaml").write_text(
+        "openapi: 3.0.0\n"
+        "x-shared:\n"
+        "  a: {$ref: '#/x-shared/b'}\n"
+        "  b: {$ref: '#/x-shared/a'}\n"
+        "paths:\n"
+        "  /cyclic:\n"
+        "    get:\n"
+        "      responses:\n"
+        "        '200': {$ref: '#/x-shared/a'}\n"
+    )
+    rows = _rows(tmp_path, "api.yaml")
+    code_ops = [{"method": "GET", "route": "/cyclic", "source_id": "code:0"}]
+
+    result = reconcile(rows, code_ops, str(tmp_path))
+
+    assert result["paths"] == {}
+    assert len(result["rewrite_failures"]) == 1
+    assert [op["source_id"] for op in result["code_to_generate"]] == ["code:0"]
+    assert result["superseded_code"] == []
+
+
+def test_mapping_only_discriminator_target_is_materialized(tmp_path):
+    """A schema referenced ONLY through a discriminator mapping, by short
+    name, still lands in components with the mapping renamed onto it."""
+    (tmp_path / "api.yaml").write_text(
+        "openapi: 3.0.0\n"
+        "components:\n"
+        "  schemas:\n"
+        "    Dog: {type: object, properties: {bark: {type: string}}}\n"
+        "    Pet:\n"
+        "      discriminator:\n"
+        "        propertyName: kind\n"
+        "        mapping:\n"
+        "          dog: Dog\n"
+        "      type: object\n"
+        "paths:\n"
+        "  /pets:\n"
+        "    get:\n"
+        "      responses:\n"
+        "        '200':\n"
+        "          description: ok\n"
+        "          content:\n"
+        "            application/json:\n"
+        "              schema: {$ref: '#/components/schemas/Pet'}\n"
+    )
+    rows = _rows(tmp_path, "api.yaml")
+
+    result = reconcile(rows, [], str(tmp_path))
+
+    pet = result["components"]["schemas"]["api_Pet"]
+    assert pet["discriminator"]["mapping"] == {"dog": "#/components/schemas/api_Dog"}
+    assert result["components"]["schemas"]["api_Dog"]["type"] == "object"

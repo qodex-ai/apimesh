@@ -119,6 +119,38 @@ def _contain(repo_root: Path, base_dir: Path, raw_path: str) -> Optional[str]:
 
 _OPTION_KEYS = ("interfaceOnly", "delegatePattern", "useTags", "requestMappingMode")
 
+_TRACKED_CACHE: Dict[str, Optional[set]] = {}
+
+
+def _tracked_files(repo_root: Path) -> Optional[set]:
+    """The repo's git-tracked files, or None when git cannot answer.
+
+    An untracked generated file proves someone ran a generator locally, not
+    that the repository commits its output; only tracked output corroborates.
+    """
+    key = str(repo_root)
+    if key not in _TRACKED_CACHE:
+        import subprocess
+
+        try:
+            result = subprocess.run(
+                ["git", "ls-files", "-z"],
+                cwd=key,
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+            if result.returncode == 0:
+                _TRACKED_CACHE[key] = {
+                    name for name in result.stdout.split("\0") if name
+                }
+            else:
+                _TRACKED_CACHE[key] = None
+        except Exception:
+            _TRACKED_CACHE[key] = None
+    return _TRACKED_CACHE[key]
+
 
 def _strip_hash_comments(text: str) -> str:
     """Drop #-to-end-of-line comments, tolerating # inside quoted strings.
@@ -490,6 +522,7 @@ def _bzl_macro_generators(repo_root: Path, bzl_files: List[Path]) -> Dict[str, d
                 **_options_from_text(definition["body"]),
             },
             "defined_in": definition["defined_in"],
+            "proof_files": [definition["defined_in"]],
         }
 
     changed = True
@@ -500,6 +533,11 @@ def _bzl_macro_generators(repo_root: Path, bzl_files: List[Path]) -> Dict[str, d
                 continue
             for known, info in list(macros.items()):
                 if re.search(rf"\b{re.escape(known)}\s*\(", definition["body"]):
+                    # The generator kind came through a helper chain; every
+                    # file on that chain is part of the proof surface.
+                    proof_files = list(info["proof_files"])
+                    if definition["defined_in"] not in proof_files:
+                        proof_files.append(definition["defined_in"])
                     macros[name] = {
                         "generator": info["generator"],
                         "kind": info["kind"],
@@ -509,6 +547,7 @@ def _bzl_macro_generators(repo_root: Path, bzl_files: List[Path]) -> Dict[str, d
                             **_options_from_text(definition["body"]),
                         },
                         "defined_in": definition["defined_in"],
+                        "proof_files": proof_files,
                     }
                     changed = True
                     break
@@ -539,9 +578,9 @@ def _bazel_entry(macro: dict, build_file: str, extra_options: str) -> dict:
         "options": dict(macro["options"], **_options_from_text(extra_options)),
         "api_package": None,
         "provisional": False,
-        # The macro definition decides the generator kind, so its file is
-        # part of the proof surface.
-        "config_files": [macro["defined_in"]],
+        # The generator kind may come through a helper chain; every file on
+        # that chain is part of the proof surface.
+        "config_files": list(macro["proof_files"]),
     }
 
 
@@ -731,11 +770,16 @@ def _golang_invocations(go_path: Path, text: str, repo_root: Path) -> List[dict]
         if spec_token is None:
             continue
         # go build never runs go generate: the directive alone proves intent,
-        # not a server. Committed generated output is what corroborates it.
+        # not a server. Committed generated output is what corroborates it;
+        # an untracked file someone generated locally is not committed.
+        tracked = _tracked_files(repo_root)
+        contained_output = (
+            _contain(repo_root, package_dir, output_token) if output_token else None
+        )
         output_exists = bool(
-            output_token
-            and (contained_output := _contain(repo_root, package_dir, output_token))
+            contained_output
             and (repo_root / contained_output).is_file()
+            and (tracked is None or contained_output in tracked)
         )
         entry = {
             "build_file": build_file,
@@ -771,22 +815,44 @@ _CONNEXION_APP_BINDING = re.compile(r"(\w+)\s*=\s*connexion\.\w*App\s*\(")
 _IDENTIFIER_TAIL = re.compile(r"(\w+)\s*$")
 
 
+def _connexion_app_bindings(text: str) -> Dict[str, str]:
+    """App variable -> its own specification_dir (empty when not declared).
+
+    A module can hold several connexion apps with different spec directories;
+    reading one app's directory for another app's registration once attached
+    evidence to the wrong file.
+    """
+    bindings: Dict[str, str] = {}
+    for match in _CONNEXION_APP_BINDING.finditer(text):
+        depth = 1
+        index = match.end()
+        while index < len(text) and depth:
+            if text[index] == "(":
+                depth += 1
+            elif text[index] == ")":
+                depth -= 1
+            index += 1
+        arguments = text[match.end() : index - 1]
+        spec_dir_match = _SPECIFICATION_DIR.search(arguments)
+        bindings[match.group(1)] = spec_dir_match.group(1) if spec_dir_match else ""
+    return bindings
+
+
 def _connexion_invocations(py_path: Path, text: str, repo_root: Path) -> List[dict]:
     # A commented-out add_api and an add_api on something that is not a
     # connexion App are both nothing.
     text = _strip_hash_comments(text)
-    app_names = set(_CONNEXION_APP_BINDING.findall(text))
-    if not app_names:
+    app_bindings = _connexion_app_bindings(text)
+    if not app_bindings:
         return []
     invocations = []
     build_file = str(py_path.relative_to(repo_root))
     module_dir = py_path.parent
-    spec_dir_match = _SPECIFICATION_DIR.search(text)
-    specification_dir = spec_dir_match.group(1) if spec_dir_match else ""
     for match in _CONNEXION_ADD_API.finditer(text):
         receiver_match = _IDENTIFIER_TAIL.search(text[: match.start()])
-        if receiver_match is None or receiver_match.group(1) not in app_names:
+        if receiver_match is None or receiver_match.group(1) not in app_bindings:
             continue
+        specification_dir = app_bindings[receiver_match.group(1)]
         depth = 1
         index = match.end()
         while index < len(text) and depth:
