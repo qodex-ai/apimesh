@@ -295,6 +295,10 @@ def load_operations(entry: dict, repo_root: str) -> Tuple[List[dict], List[dict]
                     "tags": [t for t in operation.get("tags") or [] if isinstance(t, str)],
                     "operation": merged,
                     "ref_closure": closure,
+                    # The file the operation body lives in: differs from the
+                    # contract's path when a path-item alias crossed files,
+                    # and reference rewriting must resolve against it.
+                    "source_file": item_file,
                 }
             )
     return operations, unresolved
