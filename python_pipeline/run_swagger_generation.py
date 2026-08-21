@@ -548,7 +548,7 @@ def _update_swagger_for_batches(swagger: dict, directory_path: str, endpoint_job
 
 
 def _report_generation(generated: int, failed: int) -> None:
-    """Raising on a total wipeout lets the CLI fall back to the generic extractor."""
+    """Raising on a total wipeout fails the run instead of shipping an invented spec."""
     total = generated + failed
     if not total:
         return
@@ -734,7 +734,7 @@ def run_swagger_generation(host):
         endpoint_jobs.extend(collect_django_endpoints(python_files, directory_path))
         endpoint_jobs = _routed_endpoints(endpoint_jobs)
         if not endpoint_jobs:
-            print("apimesh: python parser found 0 endpoints, falling back to generic extraction")
+            print("apimesh: python parser found 0 endpoints, nothing will be generated")
             return None
         incremental_swagger = _maybe_incremental_update(directory_path, endpoint_jobs, host)
         if incremental_swagger is not None:

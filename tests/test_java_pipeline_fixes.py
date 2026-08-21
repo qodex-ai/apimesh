@@ -1127,7 +1127,7 @@ def test_a_repo_without_endpoints_falls_back(tmp_path, monkeypatch, capsys):
 
     assert rsg.run_swagger_generation("http://localhost:8080") is None
     assert (
-        "apimesh: java parser found 0 endpoints, falling back to generic extraction"
+        "apimesh: java parser found 0 endpoints, nothing will be generated"
         in capsys.readouterr().out
     )
 

@@ -57,7 +57,7 @@ MAX_HANDLER_TOKENS = pipeline_common.MAX_HANDLER_TOKENS
 
 
 _EMPTY_EXTRACTION_WARNING = (
-    "apimesh: rails parser found 0 endpoints, falling back to generic extraction"
+    "apimesh: rails parser found 0 endpoints, nothing will be generated"
 )
 
 
@@ -859,7 +859,7 @@ def run_swagger_generation(host: str) -> Optional[Dict]:
         if not generated:
             raise RuntimeError(
                 "apimesh: rails parser generated 0 endpoints, "
-                "falling back to generic extraction"
+                "failing the run instead of inventing routes"
             )
 
         # Only endpoints that made it into the spec are indexed, otherwise a

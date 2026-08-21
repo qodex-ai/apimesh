@@ -323,7 +323,7 @@ def test_unknown_framework_uses_generic_extractor(monkeypatch):
         f.write('@GetMapping("/springy") public String get() {}')
         tmp_sample = f.name
     try:
-        endpoints = extractor.extract_endpoints_with_gpt(tmp_sample, "spring")
+        endpoints = extractor.extract_endpoints_with_gpt(tmp_sample, "laravel")
     finally:
         _os.unlink(tmp_sample)
     assert endpoints == [{"method": "GET", "path": "/springy"}]
@@ -876,3 +876,119 @@ def test_no_endpoints_short_circuits_before_embedding(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "No API endpoints were found" in out
     assert "Started creating faiss index" not in out
+
+
+# ---------------------------------------------------------------------------
+# Pipeline frameworks never fall back to LLM route guessing
+# ---------------------------------------------------------------------------
+
+class _NullTelemetry:
+    def new_run_id(self):
+        return "test-run"
+
+    def capture(self, *args, **kwargs):
+        pass
+
+    def stage(self, *args, **kwargs):
+        import contextlib
+        return contextlib.nullcontext()
+
+
+def _cli_with_stubs(framework):
+    """A RunSwagger wired for run() without touching config, network or disk."""
+    import swagger_generation_cli as cli_mod
+
+    cli = cli_mod.RunSwagger.__new__(cli_mod.RunSwagger)
+    cli.user_config = {"framework": framework, "api_host": "http://api.example.test"}
+    cli.telemetry = _NullTelemetry()
+
+    generic_calls = []
+
+    class _Extractor:
+        def extract_endpoints_with_gpt(self, file_path, fw):
+            generic_calls.append(file_path)
+            return []
+
+    class _Scanner:
+        def get_all_file_paths(self):
+            return ["/repo/App.java"]
+
+        def find_api_files(self, paths, fw):
+            return list(paths)
+
+    cli.endpoints_extractor = _Extractor()
+    cli.file_scanner = _Scanner()
+    cli.framework_identifier = None
+    cli.faiss_index = None
+    cli.swagger_generator = None
+    return cli, generic_calls
+
+
+_PIPELINE_GENERATOR_NAMES = (
+    "python_swagger_generator",
+    "nodejs_swagger_generator",
+    "ruby_on_rails_swagger_generator",
+    "golang_swagger_generator",
+    "java_swagger_generator",
+)
+
+
+def _stub_all_pipelines(monkeypatch, result=None, raises=None):
+    import swagger_generation_cli as cli_mod
+
+    def _generator(host):
+        if raises is not None:
+            raise raises
+        return result
+
+    for name in _PIPELINE_GENERATOR_NAMES:
+        monkeypatch.setattr(cli_mod, name, _generator)
+
+
+@pytest.mark.parametrize(
+    "framework",
+    sorted(swagger_generation_cli.PIPELINE_FRAMEWORKS),
+)
+def test_pipeline_framework_zero_result_never_calls_generic_extractor(
+    monkeypatch, capsys, framework
+):
+    """A supported framework whose parser proves nothing gets an honest zero.
+
+    The old behavior handed the repo to the per-file LLM extractor, which
+    published Feign clients and guessed paths as endpoints.
+    """
+    from swagger_generation_cli import NoEndpointsFound
+
+    _stub_all_pipelines(monkeypatch, result=None)
+    cli, generic_calls = _cli_with_stubs(framework)
+
+    with pytest.raises(NoEndpointsFound):
+        cli.run()
+
+    assert generic_calls == []
+    out = capsys.readouterr().out
+    assert "routes are never LLM-guessed" in out
+
+
+def test_pipeline_crash_is_fatal_not_rescued_by_llm_guessing(monkeypatch):
+    """A parser crash aborts the run rather than switching to route invention."""
+    _stub_all_pipelines(monkeypatch, raises=RuntimeError("parser exploded"))
+    cli, generic_calls = _cli_with_stubs("spring")
+
+    with pytest.raises(RuntimeError, match="parser exploded"):
+        cli.run()
+
+    assert generic_calls == []
+
+
+def test_non_pipeline_framework_still_uses_the_generic_extractor(monkeypatch):
+    """Frameworks without a deterministic parser keep the legacy LLM path."""
+    from swagger_generation_cli import NoEndpointsFound
+
+    _stub_all_pipelines(monkeypatch, result=None)
+    cli, generic_calls = _cli_with_stubs("laravel")
+
+    with pytest.raises(NoEndpointsFound):
+        cli.run()
+
+    assert generic_calls == ["/repo/App.java"]
