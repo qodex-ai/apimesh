@@ -1,0 +1,15 @@
+openapi: 3.0.0
+info: {title: Users API docs, version: "1.0.0"}
+paths:
+  /users:
+    get:
+      operationId: listUsers
+      responses: {"200": {description: ok}}
+    post:
+      operationId: createUser
+      responses: {"201": {description: created}}
+  /users/export:
+    get:
+      operationId: exportUsers
+      description: Removed from the code two releases ago.
+      responses: {"200": {description: ok}}

@@ -1,0 +1,8 @@
+{
+  "description": "Gateway passthrough: the upstream Stripe spec is never ingested just because traffic is proxied to it",
+  "included": [],
+  "excluded_specs": [
+    {"path": "vendor/stripe/charges.yaml", "reason": "no_server_evidence"}
+  ],
+  "candidates": []
+}

@@ -57,7 +57,7 @@ MAX_HANDLER_TOKENS = pipeline_common.MAX_HANDLER_TOKENS
 
 
 _EMPTY_EXTRACTION_WARNING = (
-    "apimesh: rails parser found 0 endpoints, falling back to generic extraction"
+    "apimesh: rails parser found 0 endpoints, nothing will be generated"
 )
 
 
@@ -797,15 +797,49 @@ def run_swagger_generation(host: str) -> Optional[Dict]:
                 else:
                     endpoint_jobs.append(endpoint)
 
+        # The contract lane runs before anything else is decided: a spec-first
+        # repo can carry its whole surface in contracts the code lane cannot
+        # see. Deterministic and LLM-free, so it runs every time.
+        lane_result, reconciled, endpoint_jobs = pipeline_common.integrate_contract_lane(
+            directory_path, endpoint_jobs, _job_method, _normalize_route
+        )
+        contract_paths = bool(reconciled and reconciled["paths"])
+
         # Checked before the incremental pass: an empty extraction there would be
         # read as "every endpoint was deleted" and wipe the index.
-        if not endpoint_jobs:
+        if not endpoint_jobs and not contract_paths:
             print(_EMPTY_EXTRACTION_WARNING)
             return None
 
+        if not endpoint_jobs:
+            print(
+                "apimesh: rails parser found 0 annotated endpoints; "
+                "the contract lane supplies the spec"
+            )
+            swagger = pipeline_common.base_swagger(
+                repo_name,
+                host,
+                get_git_commit_hash(),
+                get_github_repo_url(),
+                datetime.datetime.utcnow().isoformat() + "Z",
+            )
+            # An empty code index is deliberate: code endpoints that existed
+            # on a previous run and are gone now must leave the spec.
+            _write_api_index(_build_api_index([]))
+            pipeline_common.record_coverage(swagger, 0, 0, 0, 0)
+            return pipeline_common.finish_with_contract(
+                swagger, reconciled, lane_result["report"], get_output_filepath()
+            )
+
         incremental_swagger = _maybe_incremental_update(directory_path, endpoint_jobs, host)
         if incremental_swagger is not None:
-            return incremental_swagger
+            if reconciled is not None:
+                return pipeline_common.finish_with_contract(
+                    incremental_swagger, reconciled, lane_result["report"], get_output_filepath()
+                )
+            # The lane is disabled: contract operations from a previous run
+            # must not ride out on the incremental fast path as current.
+            return pipeline_common.strip_contract_operations(incremental_swagger)
         failures: List[str] = []
         generated: List[Dict] = []
         batches = _batch_endpoint_jobs(endpoint_jobs)
@@ -859,7 +893,7 @@ def run_swagger_generation(host: str) -> Optional[Dict]:
         if not generated:
             raise RuntimeError(
                 "apimesh: rails parser generated 0 endpoints, "
-                "falling back to generic extraction"
+                "failing the run instead of inventing routes"
             )
 
         # Only endpoints that made it into the spec are indexed, otherwise a
@@ -870,7 +904,11 @@ def run_swagger_generation(host: str) -> Optional[Dict]:
             dropped=len(dropped_routes) if dropped_routes is not None else None,
         )
 
-        return swagger
+        if reconciled is not None:
+            return pipeline_common.finish_with_contract(
+                swagger, reconciled, lane_result["report"], get_output_filepath()
+            )
+        return pipeline_common.strip_contract_operations(swagger)
     finally:
         # The cache outlives the run; only entries for content that is gone are
         # dropped, so the next run parses just what changed.

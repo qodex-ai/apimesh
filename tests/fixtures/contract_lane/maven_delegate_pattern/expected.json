@@ -1,0 +1,9 @@
+{
+  "description": "Delegate pattern: no @RestController exists in source, the @Service delegate plus the maven spring invocation is the proof",
+  "included": [
+    {"method": "GET", "route": "/orders", "lane": "contract"},
+    {"method": "GET", "route": "/orders/{orderId}", "lane": "contract"}
+  ],
+  "excluded_specs": [],
+  "candidates": []
+}

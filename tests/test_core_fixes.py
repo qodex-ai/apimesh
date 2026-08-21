@@ -305,30 +305,6 @@ def test_all_routing_patterns_are_valid_regexes_and_match_their_framework():
     assert any(re.search(p, nest_sample) for p in nest_patterns)
 
 
-def test_unknown_framework_uses_generic_extractor(monkeypatch):
-    """spring/laravel used to die with UnboundLocalError before any LLM call."""
-    import endpoints_extractor as ee
-
-    captured = {}
-
-    class FakeClient:
-        def call_chat_completion(self, messages, temperature=0.5):
-            captured["messages"] = messages
-            return '[{"method": "GET", "path": "/springy"}]'
-
-    monkeypatch.setattr(ee, "OpenAiClient", lambda: FakeClient())
-    extractor = ee.EndpointsExtractor()
-    import tempfile, os as _os
-    with tempfile.NamedTemporaryFile("w", suffix=".java", delete=False) as f:
-        f.write('@GetMapping("/springy") public String get() {}')
-        tmp_sample = f.name
-    try:
-        endpoints = extractor.extract_endpoints_with_gpt(tmp_sample, "spring")
-    finally:
-        _os.unlink(tmp_sample)
-    assert endpoints == [{"method": "GET", "path": "/springy"}]
-    assert "routing expert" in captured["messages"][1]["content"]
-
 
 PLACEHOLDER_HOST = UserConfigurations.PLACEHOLDER_API_HOST
 
@@ -682,65 +658,12 @@ def test_cli_parses_no_html_flag():
     assert swagger_generation_cli.parse_args(["sk"]).no_html is False
 
 
-def test_extractor_filters_malformed_endpoint_entries(monkeypatch):
-    import endpoints_extractor as ee
-
-    class FakeClient:
-        def call_chat_completion(self, messages, temperature=0.5):
-            return '[null, {"method": "GET", "path": "/health"}, {"method": 5, "path": "/x"}, "junk"]'
-
-    monkeypatch.setattr(ee, "OpenAiClient", lambda: FakeClient())
-    extractor = ee.EndpointsExtractor()
-    import tempfile, os as _os
-    with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
-        f.write("@app.route('/health')\ndef h(): pass\n")
-        name = f.name
-    try:
-        endpoints = extractor.extract_endpoints_with_gpt(name, "flask")
-    finally:
-        _os.unlink(name)
-    assert endpoints == [{"method": "GET", "path": "/health"}]
-
 
 def test_config_json_is_written_owner_only(user_config_file):
     _configure(user_config_file)
     mode = user_config_file.stat().st_mode & 0o777
     assert mode == 0o600
 
-
-def test_faiss_index_returns_merged_batches_and_skips_unreadable(monkeypatch, tmp_path):
-    """The batched indices are the result; re-embedding the corpus doubled the
-    spend and reintroduced the per-request token limit."""
-    import faiss_index_generator as fig
-
-    calls = []
-
-    class FakeIndex:
-        def __init__(self, texts):
-            self.texts = list(texts)
-        def merge_from(self, other):
-            self.texts.extend(other.texts)
-
-    monkeypatch.setattr(
-        fig.FAISS, "from_texts",
-        lambda texts, embeddings, metadatas=None: (calls.append(list(texts)), FakeIndex(texts))[1],
-    )
-    good = tmp_path / "a.py"
-    good.write_text("def handler(): pass\n" * 5)
-    unreadable = tmp_path / "b.py"
-    unreadable.write_bytes(b"\xff\xfe garbage \xff")
-
-    generator = fig.GenerateFaissIndex.__new__(fig.GenerateFaissIndex)
-    class C: embeddings = None
-    generator.openai_client = C()
-    index = generator.create_faiss_index([str(good), str(unreadable)], "flask")
-
-    assert isinstance(index, FakeIndex)
-    total_embedded = sum(len(batch) for batch in calls)
-    assert total_embedded == len(index.texts)  # embedded exactly once, no duplicate pass
-
-    with pytest.raises(ValueError):
-        generator.create_faiss_index([str(unreadable)], "flask")
 
 
 def test_save_swagger_json_reports_html_outcome(monkeypatch, tmp_path):
@@ -876,3 +799,161 @@ def test_no_endpoints_short_circuits_before_embedding(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "No API endpoints were found" in out
     assert "Started creating faiss index" not in out
+
+
+# ---------------------------------------------------------------------------
+# Pipeline frameworks never fall back to LLM route guessing
+# ---------------------------------------------------------------------------
+
+class _NullTelemetry:
+    def new_run_id(self):
+        return "test-run"
+
+    def capture(self, *args, **kwargs):
+        pass
+
+    def stage(self, *args, **kwargs):
+        import contextlib
+        return contextlib.nullcontext()
+
+
+def _cli_with_stubs(framework):
+    """A RunSwagger wired for run() without touching config, network or disk."""
+    import swagger_generation_cli as cli_mod
+
+    cli = cli_mod.RunSwagger.__new__(cli_mod.RunSwagger)
+    cli.user_config = {"framework": framework, "api_host": "http://api.example.test"}
+    cli.telemetry = _NullTelemetry()
+
+    class _Scanner:
+        def get_all_file_paths(self):
+            return ["/repo/App.java"]
+
+        def find_api_files(self, paths, fw):
+            return list(paths)
+
+    cli.file_scanner = _Scanner()
+    cli.framework_identifier = None
+    cli.swagger_generator = None
+    return cli
+
+
+_PIPELINE_GENERATOR_NAMES = (
+    "python_swagger_generator",
+    "nodejs_swagger_generator",
+    "ruby_on_rails_swagger_generator",
+    "golang_swagger_generator",
+    "java_swagger_generator",
+)
+
+
+def _stub_all_pipelines(monkeypatch, result=None, raises=None):
+    import swagger_generation_cli as cli_mod
+
+    def _generator(host):
+        if raises is not None:
+            raise raises
+        return result
+
+    for name in _PIPELINE_GENERATOR_NAMES:
+        monkeypatch.setattr(cli_mod, name, _generator)
+
+
+@pytest.mark.parametrize(
+    "framework",
+    sorted(swagger_generation_cli.PIPELINE_FRAMEWORKS),
+)
+def test_pipeline_framework_zero_result_is_an_honest_zero(
+    monkeypatch, capsys, framework
+):
+    """A supported framework whose parser proves nothing gets an honest zero.
+
+    The old behavior handed the repo to a per-file LLM extractor, which
+    published Feign clients and guessed paths as endpoints.
+    """
+    from swagger_generation_cli import NoEndpointsFound
+
+    _stub_all_pipelines(monkeypatch, result=None)
+    cli = _cli_with_stubs(framework)
+
+    with pytest.raises(NoEndpointsFound):
+        cli.run()
+
+    assert "routes are never LLM-guessed" in capsys.readouterr().out
+
+
+def test_pipeline_crash_is_fatal_not_rescued_by_llm_guessing(monkeypatch):
+    """A parser crash aborts the run rather than switching to route invention."""
+    _stub_all_pipelines(monkeypatch, raises=RuntimeError("parser exploded"))
+    cli = _cli_with_stubs("spring")
+
+    with pytest.raises(RuntimeError, match="parser exploded"):
+        cli.run()
+
+
+def test_unsupported_framework_fails_closed_with_no_llm_extraction(monkeypatch, capsys):
+    """No deterministic parser means zero endpoints, never LLM guessing."""
+    from swagger_generation_cli import NoEndpointsFound
+
+    _stub_all_pipelines(monkeypatch, result=None)
+    cli = _cli_with_stubs("laravel")
+
+    with pytest.raises(NoEndpointsFound):
+        cli.run()
+
+    out = capsys.readouterr().out
+    assert "no deterministic parser exists for 'laravel'" in out
+
+
+@pytest.mark.parametrize("stored", ["Spring", "SPRING", " spring ", "spring_boot", "Spring Boot"])
+def test_framework_spelling_cannot_dodge_the_pipeline(monkeypatch, stored):
+    """A cached 'Spring' or detected 'spring_boot' still runs the java parser.
+
+    Before normalization, any non-canonical spelling skipped the parser AND
+    the fail-closed set, landing in the LLM extraction path.
+    """
+    import swagger_generation_cli as cli_mod
+    from swagger_generation_cli import NoEndpointsFound
+
+    dispatched = []
+
+    def _generator(host):
+        dispatched.append(host)
+        return None
+
+    for name in _PIPELINE_GENERATOR_NAMES:
+        monkeypatch.setattr(cli_mod, name, _generator)
+    cli = _cli_with_stubs(stored)
+
+    with pytest.raises(NoEndpointsFound):
+        cli.run()
+
+    assert dispatched, f"{stored!r} must dispatch a pipeline parser"
+
+
+def test_canonical_framework_aliases():
+    from swagger_generation_cli import canonical_framework
+
+    assert canonical_framework("Spring") == "spring"
+    assert canonical_framework("spring_boot") == "spring"
+    assert canonical_framework("Ruby on Rails") == "ruby_on_rails"
+    assert canonical_framework("Go") == "golang"
+    assert canonical_framework("laravel") == "laravel"
+    assert canonical_framework(None) == ""
+
+
+def test_zero_endpoint_run_warns_about_stale_output(monkeypatch, capsys, tmp_path):
+    """An old swagger.json left on disk is flagged, not silently kept current."""
+    from swagger_generation_cli import NoEndpointsFound
+
+    stale = tmp_path / "swagger.json"
+    stale.write_text("{\"openapi\": \"3.0.0\", \"paths\": {\"/old\": {}}}")
+    monkeypatch.setenv("APIMESH_OUTPUT_FILEPATH", str(stale))
+    _stub_all_pipelines(monkeypatch, result=None)
+    cli = _cli_with_stubs("spring")
+
+    with pytest.raises(NoEndpointsFound):
+        cli.run()
+
+    out = capsys.readouterr().out
+    assert "previous run's result" in out

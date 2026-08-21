@@ -1,0 +1,16 @@
+openapi: 3.0.0
+info: {title: Pets API, version: "1.0.0"}
+paths:
+  /pets:
+    get:
+      operationId: listPets
+      responses: {"200": {description: ok}}
+    post:
+      operationId: createPet
+      responses: {"201": {description: created}}
+  /pets/{petId}:
+    delete:
+      operationId: deletePet
+      parameters:
+        - {name: petId, in: path, required: true, schema: {type: string}}
+      responses: {"204": {description: gone}}

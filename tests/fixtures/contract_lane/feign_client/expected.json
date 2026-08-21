@@ -1,0 +1,6 @@
+{
+  "description": "Feign declares outbound calls with inbound-looking annotations: nothing here is served",
+  "included": [],
+  "excluded_specs": [],
+  "candidates": []
+}

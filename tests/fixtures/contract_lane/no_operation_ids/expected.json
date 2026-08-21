@@ -1,0 +1,9 @@
+{
+  "description": "operationId is optional: the maven spring server invocation alone proves serving",
+  "included": [
+    {"method": "GET", "route": "/health", "lane": "contract"},
+    {"method": "GET", "route": "/health/deep", "lane": "contract"}
+  ],
+  "excluded_specs": [],
+  "candidates": []
+}
