@@ -515,7 +515,7 @@ def _update_swagger_for_batches(
 
 
 def _report_generation(generated: int, failed: int) -> None:
-    """Raising on a total wipeout lets the CLI fall back to the generic extractor."""
+    """Raising on a total wipeout fails the run instead of shipping an invented spec."""
     total = generated + failed
     if not total:
         return
@@ -1112,12 +1112,12 @@ def run_swagger_generation(host: str) -> Optional[Dict]:
             endpoint_jobs.append(hydrated)
         endpoint_jobs = _dedupe_endpoint_jobs(endpoint_jobs)
 
-        # Nothing was extracted: hand back None so the caller falls back instead
+        # Nothing was extracted: hand back None so the caller reports an honest zero instead
         # of publishing an empty spec (or, worse, incrementally deleting one).
         if not endpoint_jobs:
             print(
                 "apimesh: golang parser found 0 endpoints, "
-                "falling back to generic extraction"
+                "nothing will be generated"
             )
             return None
 

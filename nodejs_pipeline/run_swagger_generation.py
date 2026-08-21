@@ -693,7 +693,7 @@ def run_swagger_generation(host):
             if 'route' in job:
                 job['route'] = _normalize_route(job['route'])
         if not endpoint_jobs:
-            print("apimesh: nodejs parser found 0 endpoints, falling back to generic extraction")
+            print("apimesh: nodejs parser found 0 endpoints, nothing will be generated")
             return None
         incremental_swagger = _maybe_incremental_update(directory_path, endpoint_jobs, host)
         if incremental_swagger is not None:

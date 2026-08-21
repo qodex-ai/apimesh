@@ -2,7 +2,6 @@ import argparse
 import os
 import sys
 import time
-import traceback
 
 from user_config import UserConfigurations
 from swagger_generator import SwaggerGeneration
@@ -24,6 +23,18 @@ class NoEndpointsFound(Exception):
     pass
 
 
+# Frameworks with a deterministic parser. For these, what the parser proves is
+# the whole answer: the generic LLM extractor is never consulted, because a
+# guessed route set can include third-party clients and invented paths.
+PIPELINE_FRAMEWORKS = {
+    "django", "flask", "fastapi",
+    "express", "nestjs",
+    "ruby_on_rails",
+    "golang",
+    "spring",
+}
+
+
 class RunSwagger:
     def __init__(self, project_api_key, openai_api_key, ai_chat_id, is_mcp, api_host=None, openai_model=None):
         self.ai_chat_id = ai_chat_id
@@ -40,21 +51,21 @@ class RunSwagger:
 
 
     def run_python_nodejs_ruby(self, framework):
+        # A crash in a deterministic pipeline is fatal on purpose. Rescuing it
+        # with the generic LLM extractor used to publish routes the parser never
+        # proved (Feign clients, guessed paths), which poisons every consumer of
+        # the spec.
         swagger = None
-        try:
-            if framework == "django" or framework == "flask" or framework == "fastapi":
-                swagger = python_swagger_generator(self.user_config['api_host'])
-            elif framework == "express" or framework == "nestjs":
-                swagger = nodejs_swagger_generator(self.user_config['api_host'])
-            elif framework == "ruby_on_rails":
-                swagger = ruby_on_rails_swagger_generator(self.user_config['api_host'])
-            elif framework == "golang":
-                swagger = golang_swagger_generator(self.user_config['api_host'])
-            elif framework == "spring":
-                swagger = java_swagger_generator(self.user_config['api_host'])
-        except Exception as ex:
-            traceback.print_exc()
-            print("Fallback to old procedure")
+        if framework == "django" or framework == "flask" or framework == "fastapi":
+            swagger = python_swagger_generator(self.user_config['api_host'])
+        elif framework == "express" or framework == "nestjs":
+            swagger = nodejs_swagger_generator(self.user_config['api_host'])
+        elif framework == "ruby_on_rails":
+            swagger = ruby_on_rails_swagger_generator(self.user_config['api_host'])
+        elif framework == "golang":
+            swagger = golang_swagger_generator(self.user_config['api_host'])
+        elif framework == "spring":
+            swagger = java_swagger_generator(self.user_config['api_host'])
         return swagger
 
 
@@ -111,6 +122,14 @@ class RunSwagger:
                     swagger = self.run_python_nodejs_ruby(framework)
                     if swagger:
                         print("Completed finding files related to API information")
+                    elif framework in PIPELINE_FRAMEWORKS:
+                        # The deterministic parser for this framework saw the
+                        # repo and proved nothing. Asking the LLM to guess
+                        # routes here has published third-party client calls as
+                        # endpoints, so the honest answer is zero.
+                        print("Completed finding files related to API information")
+                        print(f"apimesh: the {framework} parser found no endpoints; "
+                              "routes are never LLM-guessed for supported frameworks.")
                     else:
                         api_files = self.file_scanner.find_api_files(file_paths, framework)
                         print("Completed finding files related to API information")
