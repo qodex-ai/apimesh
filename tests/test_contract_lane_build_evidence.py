@@ -1,0 +1,268 @@
+"""Build-evidence extraction: the primary serving proof for the contract lane.
+
+Maven, Gradle and Bazel invocations of OpenAPI code generators are parsed
+statically, classified server or client by generator name, and tied to the
+spec file they take as input. Nothing executes; anything unresolvable is
+reported as such.
+"""
+
+import os
+import tempfile
+from pathlib import Path
+
+import pytest
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+os.environ.setdefault("APIMESH_CONFIG_PATH", str(REPO_ROOT / "config.yml"))
+os.environ.setdefault("APIMESH_USER_REPO_PATH", str(REPO_ROOT))
+os.environ.setdefault(
+    "APIMESH_USER_CONFIG_PATH",
+    str(Path(tempfile.mkdtemp(prefix="apimesh-user-config-")) / "config.json"),
+)
+
+from contract_lane.build_evidence import collect_build_evidence, evidence_by_spec
+
+FIXTURES_ROOT = REPO_ROOT / "tests" / "fixtures" / "contract_lane"
+
+
+def test_maven_spring_delegate_is_server_evidence():
+    invocations = collect_build_evidence(str(FIXTURES_ROOT / "maven_delegate_pattern"))
+
+    assert len(invocations) == 1
+    entry = invocations[0]
+    assert entry["tool"] == "maven"
+    assert entry["generator"] == "spring"
+    assert entry["kind"] == "server"
+    assert entry["spec_path"] == "src/main/resources/orders.yaml"
+    assert entry["options"]["delegatePattern"] == "true"
+    assert entry["api_package"] == "com.acme.generated.api"
+
+
+def test_maven_java_client_is_client_evidence():
+    invocations = collect_build_evidence(str(FIXTURES_ROOT / "client_spec_colliding_ids"))
+
+    assert len(invocations) == 1
+    entry = invocations[0]
+    assert entry["generator"] == "java"
+    assert entry["kind"] == "client"
+    assert entry["spec_path"] == "vendor/crowdstrike/alerts.yaml"
+
+
+def test_maven_interface_only_options_are_captured():
+    invocations = collect_build_evidence(str(FIXTURES_ROOT / "no_operation_ids"))
+
+    assert len(invocations) == 1
+    assert invocations[0]["kind"] == "server"
+    assert invocations[0]["options"]["interfaceOnly"] == "true"
+    assert invocations[0]["spec_path"] == "src/main/resources/health.yaml"
+
+
+def test_bazel_macro_and_call_site_resolve_to_server_evidence():
+    invocations = collect_build_evidence(str(FIXTURES_ROOT / "openapi_first_spring"))
+
+    assert len(invocations) == 1
+    entry = invocations[0]
+    assert entry["tool"] == "bazel"
+    assert entry["build_file"] == "app/BUILD.bazel"
+    assert entry["generator"] == "spring"
+    assert entry["kind"] == "server"
+    assert entry["spec_path"] == "app/src/main/resources/api/pets.yaml"
+    assert entry["api_package"] == "com.acme.generated.api"
+    assert entry["options"]["interfaceOnly"] == "true"
+
+
+def test_gradle_block_with_root_dir_input(tmp_path):
+    (tmp_path / "settings.gradle").write_text("rootProject.name = 'demo'\n")
+    (tmp_path / "specs").mkdir()
+    (tmp_path / "specs" / "api.yaml").write_text("openapi: 3.0.0\npaths: {}\n")
+    (tmp_path / "build.gradle").write_text(
+        "plugins { id 'org.openapi.generator' }\n"
+        "openApiGenerate {\n"
+        "    generatorName = \"spring\"\n"
+        "    inputSpec = \"$rootDir/specs/api.yaml\"\n"
+        "    apiPackage = \"com.demo.api\"\n"
+        "    configOptions = [interfaceOnly: 'true']\n"
+        "}\n"
+    )
+
+    invocations = collect_build_evidence(str(tmp_path))
+
+    assert len(invocations) == 1
+    entry = invocations[0]
+    assert entry["tool"] == "gradle"
+    assert entry["kind"] == "server"
+    assert entry["spec_path"] == "specs/api.yaml"
+    assert entry["api_package"] == "com.demo.api"
+    assert entry["options"]["interfaceOnly"] == "true"
+
+
+def test_gradle_kotlin_dsl_client(tmp_path):
+    (tmp_path / "api.yaml").write_text("openapi: 3.0.0\npaths: {}\n")
+    (tmp_path / "build.gradle.kts").write_text(
+        "tasks.register<GenerateTask>(\"genClient\") {\n"
+        "    generatorName.set(\"typescript-axios\")\n"
+        "    inputSpec.set(\"${projectDir}/api.yaml\")\n"
+        "}\n"
+    )
+
+    invocations = collect_build_evidence(str(tmp_path))
+
+    assert len(invocations) == 1
+    assert invocations[0]["kind"] == "client"
+    assert invocations[0]["spec_path"] == "api.yaml"
+
+
+def test_maven_property_substitution(tmp_path):
+    (tmp_path / "specs").mkdir()
+    (tmp_path / "specs" / "api.yaml").write_text("openapi: 3.0.0\npaths: {}\n")
+    (tmp_path / "pom.xml").write_text(
+        "<project>\n"
+        "  <properties><spec.dir>${project.basedir}/specs</spec.dir></properties>\n"
+        "  <build><plugins><plugin>\n"
+        "    <artifactId>openapi-generator-maven-plugin</artifactId>\n"
+        "    <configuration>\n"
+        "      <inputSpec>${spec.dir}/api.yaml</inputSpec>\n"
+        "      <generatorName>spring</generatorName>\n"
+        "    </configuration>\n"
+        "  </plugin></plugins></build>\n"
+        "</project>\n"
+    )
+
+    invocations = collect_build_evidence(str(tmp_path))
+
+    assert len(invocations) == 1
+    assert invocations[0]["spec_path"] == "specs/api.yaml"
+
+
+def test_maven_unresolvable_property_is_reported_not_guessed(tmp_path):
+    (tmp_path / "pom.xml").write_text(
+        "<project><build><plugins><plugin>\n"
+        "  <artifactId>openapi-generator-maven-plugin</artifactId>\n"
+        "  <configuration>\n"
+        "    <inputSpec>${undefined.property}/api.yaml</inputSpec>\n"
+        "    <generatorName>spring</generatorName>\n"
+        "  </configuration>\n"
+        "</plugin></plugins></build></project>\n"
+    )
+
+    invocations = collect_build_evidence(str(tmp_path))
+
+    assert len(invocations) == 1
+    assert invocations[0]["spec_path"] is None
+    assert invocations[0]["unresolved_input"] == "${undefined.property}/api.yaml"
+
+
+def test_pom_with_dtd_is_refused(tmp_path):
+    (tmp_path / "pom.xml").write_text(
+        "<?xml version=\"1.0\"?>\n"
+        "<!DOCTYPE project [<!ENTITY x \"y\">]>\n"
+        "<project><build><plugins><plugin>\n"
+        "  <artifactId>openapi-generator-maven-plugin</artifactId>\n"
+        "  <configuration><generatorName>spring</generatorName></configuration>\n"
+        "</plugin></plugins></build></project>\n"
+    )
+
+    assert collect_build_evidence(str(tmp_path)) == []
+
+
+def test_unknown_generator_is_not_server_evidence(tmp_path):
+    (tmp_path / "pom.xml").write_text(
+        "<project><build><plugins><plugin>\n"
+        "  <artifactId>openapi-generator-maven-plugin</artifactId>\n"
+        "  <configuration><generatorName>go-server</generatorName></configuration>\n"
+        "</plugin></plugins></build></project>\n"
+    )
+    invocations = collect_build_evidence(str(tmp_path))
+    assert invocations[0]["kind"] == "server"
+
+    (tmp_path / "pom.xml").write_text(
+        "<project><build><plugins><plugin>\n"
+        "  <artifactId>openapi-generator-maven-plugin</artifactId>\n"
+        "  <configuration><generatorName>go</generatorName></configuration>\n"
+        "</plugin></plugins></build></project>\n"
+    )
+    invocations = collect_build_evidence(str(tmp_path))
+    assert invocations[0]["kind"] == "client"
+
+
+def test_fixtures_without_build_files_produce_no_evidence():
+    for name in ("feign_client", "gateway_passthrough", "stale_docs_spec"):
+        assert collect_build_evidence(str(FIXTURES_ROOT / name)) == []
+
+
+def test_evidence_by_spec_groups_only_resolved_inputs():
+    invocations = [
+        {"spec_path": "a.yaml", "kind": "server"},
+        {"spec_path": "a.yaml", "kind": "client"},
+        {"spec_path": None, "kind": "server"},
+    ]
+    grouped = evidence_by_spec(invocations)
+    assert set(grouped) == {"a.yaml"}
+    assert len(grouped["a.yaml"]) == 2
+
+
+def test_bazel_group_macro_with_nested_dicts(tmp_path):
+    """A specs list entry carrying a nested import_mappings dict still parses."""
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools" / "defs.bzl").write_text(
+        "def _gen_cmd(spec):\n"
+        "    return \"java -jar gen.jar generate -g spring -i \" + spec\n"
+        "\n"
+        "def openapi_spring_group(name, specs):\n"
+        "    for s in specs:\n"
+        "        _gen_cmd(s[\"spec_file\"])\n"
+    )
+    (tmp_path / "src" / "main" / "resources" / "core").mkdir(parents=True)
+    (tmp_path / "src" / "main" / "resources" / "core" / "requests.yml").write_text(
+        "openapi: 3.0.0\npaths: {}\n"
+    )
+    (tmp_path / "BUILD.bazel").write_text(
+        "load(\"//tools:defs.bzl\", \"openapi_spring_group\")\n"
+        "openapi_spring_group(\n"
+        "    name = \"grp\",\n"
+        "    specs = [\n"
+        "        {\n"
+        "            \"spec_file\": \"core/requests.yml\",\n"
+        "            \"api_package\": \"com.acme.requests.api\",\n"
+        "            \"import_mappings\": {\n"
+        "                \"Dto\": \"com.acme.other.Dto\",\n"
+        "            },\n"
+        "        },\n"
+        "    ],\n"
+        ")\n"
+    )
+
+    invocations = collect_build_evidence(str(tmp_path))
+
+    assert len(invocations) == 1
+    entry = invocations[0]
+    assert entry["kind"] == "server"
+    assert entry["spec_path"] == "src/main/resources/core/requests.yml"
+    assert entry["api_package"] == "com.acme.requests.api"
+
+
+def test_bazel_inline_genrule_client_commands(tmp_path):
+    """generate -g java -i $(location x.yml) inside a genrule cmd is client evidence."""
+    (tmp_path / "src" / "main" / "resources").mkdir(parents=True)
+    (tmp_path / "src" / "main" / "resources" / "workflow.yml").write_text(
+        "openapi: 3.0.0\npaths: {}\n"
+    )
+    (tmp_path / "tools.bzl").write_text(
+        "def _unused():\n    return \"generate -g spring\"\n"
+    )
+    (tmp_path / "BUILD.bazel").write_text(
+        "genrule(\n"
+        "    name = \"clients_gen\",\n"
+        "    cmd = \"\"\"\n"
+        "\"$$JAVA\" -jar \"$$GEN\" generate -g java -i \"$(location src/main/resources/workflow.yml)\" -o out --library jersey3 --api-package com.flow.generated.api\n"
+        "\"\"\",\n"
+        ")\n"
+    )
+
+    invocations = collect_build_evidence(str(tmp_path))
+
+    inline = [e for e in invocations if e["generator"] == "java"]
+    assert len(inline) == 1
+    assert inline[0]["kind"] == "client"
+    assert inline[0]["spec_path"] == "src/main/resources/workflow.yml"
+    assert inline[0]["api_package"] == "com.flow.generated.api"
