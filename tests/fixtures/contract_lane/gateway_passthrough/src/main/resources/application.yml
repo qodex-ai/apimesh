@@ -1,0 +1,8 @@
+spring:
+  cloud:
+    gateway:
+      routes:
+        - id: billing
+          uri: https://api.stripe.com
+          predicates:
+            - Path=/billing/**

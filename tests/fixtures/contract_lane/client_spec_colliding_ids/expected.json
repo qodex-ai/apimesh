@@ -1,0 +1,10 @@
+{
+  "description": "Vendor client spec with colliding operationIds: the client-mode generator invocation excludes it no matter how many names match",
+  "included": [
+    {"method": "GET", "route": "/internal/alerts", "lane": "code"}
+  ],
+  "excluded_specs": [
+    {"path": "vendor/crowdstrike/alerts.yaml", "reason": "client_generator"}
+  ],
+  "candidates": []
+}

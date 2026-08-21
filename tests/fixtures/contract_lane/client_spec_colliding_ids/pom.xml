@@ -1,0 +1,13 @@
+<project>
+  <build><plugins><plugin>
+    <groupId>org.openapitools</groupId>
+    <artifactId>openapi-generator-maven-plugin</artifactId>
+    <executions><execution><goals><goal>generate</goal></goals>
+      <configuration>
+        <inputSpec>${project.basedir}/vendor/crowdstrike/alerts.yaml</inputSpec>
+        <generatorName>java</generatorName>
+        <library>jersey3</library>
+      </configuration>
+    </execution></executions>
+  </plugin></plugins></build>
+</project>

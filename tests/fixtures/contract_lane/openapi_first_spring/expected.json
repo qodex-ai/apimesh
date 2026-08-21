@@ -1,0 +1,10 @@
+{
+  "description": "OpenAPI-first Spring via Bazel: spec ops included at tier 2 with the controller's /api prefix composed on",
+  "included": [
+    {"method": "GET", "route": "/api/pets", "lane": "contract"},
+    {"method": "POST", "route": "/api/pets", "lane": "contract"},
+    {"method": "DELETE", "route": "/api/pets/{petId}", "lane": "contract"}
+  ],
+  "excluded_specs": [],
+  "candidates": []
+}
