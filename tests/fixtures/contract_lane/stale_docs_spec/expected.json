@@ -1,0 +1,11 @@
+{
+  "description": "Documentation spec over annotated handlers: matched methods already carry routes, so the spec is docs and its drifted /users/export stays out",
+  "included": [
+    {"method": "GET", "route": "/users", "lane": "code"},
+    {"method": "POST", "route": "/users", "lane": "code"}
+  ],
+  "excluded_specs": [
+    {"path": "docs/openapi.yaml", "reason": "covers_routed_handlers"}
+  ],
+  "candidates": []
+}

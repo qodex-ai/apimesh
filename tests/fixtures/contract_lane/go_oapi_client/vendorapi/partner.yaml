@@ -1,0 +1,7 @@
+openapi: 3.0.0
+info: {title: Partner API, version: "1.0.0"}
+paths:
+  /partner/things:
+    get:
+      operationId: listThings
+      responses: {"200": {description: ok}}

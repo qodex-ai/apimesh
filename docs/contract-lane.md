@@ -1,0 +1,140 @@
+# Contract lane design
+
+ApiMesh's promise: swagger.json contains every endpoint the scanned repo serves,
+and nothing else. Repos that declare their API in OpenAPI documents and generate
+the serving code at build time (openapi-generator, oapi-codegen, connexion) keep
+their routing out of the committed source, so the code lane alone cannot see it.
+The contract lane reads those documents directly. This file is the contract the
+implementation and its fixtures are held to.
+
+## The invariant
+
+An operation enters swagger.json only when there is deterministic evidence that
+this repo serves it. Ambiguity always excludes, and every exclusion is reported
+in `x-apimesh-coverage` with its reason. The LLM never takes part in an
+include/exclude decision; it only writes descriptions for operations that are
+already in, and may label excluded residue in reports.
+
+## Evidence tiers
+
+1. **Direct registration** (code lane): a route the framework parser proved in
+   committed source.
+2. **Build-linked server generation**: a build file names the spec as input to a
+   server-mode generator invocation (openapi-generator `-g spring` /
+   `generatorName: spring` / `interfaceOnly` / `delegatePattern`; oapi-codegen
+   server configs arrive with the Go prover). What is verified statically:
+   the invocation is live text (not pluginManagement, not `<skip>true</skip>`,
+   not commented out, call sites in real packages) and the named spec exists.
+   Full build-graph wiring (this target compiles into the deployable) is not
+   proven; instead, implementation corroboration (source classes implementing
+   or delegating the generated symbols) is computed and every served-but-
+   uncorroborated spec is flagged in the report. Generator names come from an
+   explicit catalog; an unrecognized name is `unknown` and proves nothing in
+   either direction. Evidence that is visible but not provably executed (a
+   Maven profile-gated plugin, a go:generate directive whose output file is
+   not committed) is *provisional*: it never serves a spec by itself, and a
+   spec with only provisional evidence becomes a candidate. Known
+   approximation: a Gradle assignment inside a conditional block
+   (`if (false) { ... }`) is not evaluated and still counts; Gradle is a
+   programming language and static analysis stops at comments.
+3. **Correlation only**: operationId or `implements *Api` matches with no build
+   edge. Never includes on its own; produces a `candidate` entry in the report
+   for a human or agent to confirm with an override.
+
+Client-mode generator invocations (`-g java`, jersey, feign, webclient,
+typescript-axios and friends) mark the spec consumed: excluded, reported.
+A spec with both server and client invocations is classified per invocation,
+never as one whole-file verdict.
+
+## Candidate schema
+
+Every potential operation, from any lane, becomes a candidate:
+
+```json
+{
+  "source_id": "spec:src/main/resources/specs/orders.yaml#get /api/orders",
+  "lane": "contract | code",
+  "method": "GET",
+  "route": "/api/orders",
+  "route_shape": "GET /api/orders",
+  "doc_index": 0,
+  "invocations": [{"tier": 2, "build_file": "app/BUILD.bazel", "generator": "spring", "kind": "server"}],
+  "service": "orders-service",
+  "eligibility_hash": "<spec content + every build file carrying its invocations + implementing controller files + prover version>",
+  "payload_hash": "<the operation object plus its resolved reference closure>",
+  "operation": {"...": "authored content, refs resolved and namespaced"}
+}
+```
+
+Evidence is a list because one spec can carry several invocations, server and
+client at once; classification weighs all of them. `doc_index` exists because
+a file can hold several YAML documents; since build evidence names files, a
+multi-contract file is excluded as ambiguous rather than letting one
+document's proof cover its siblings. The eligibility hash covers the whole
+proof surface: removing the only implementing controller, or editing the
+build file, must invalidate cached eligibility even when the spec itself is
+unchanged. The payload hash covers referenced files, so editing an external
+schema refreshes the operations that use it.
+
+`route_shape` canonicalizes path parameters to `{}` so `/users/{id}` and
+`/users/{userId}` collide on purpose. A collision between two different specs
+publishes the deterministic first candidate, marked with `x-apimesh-conflict`
+naming every other claim and listed in the report. This is a deliberate
+deviation from pure ambiguity-excludes: the route provably exists (both specs
+are build-proven), only the content authority is ambiguous, and hiding a real
+route from a testing consumer costs more than flagging contested content.
+Within one chain the contract candidate owns schemas, parameters and
+descriptions, and a superseded code candidate leaves its routing conditions
+behind as `x-apimesh-routing-conditions`.
+
+## Path layers
+
+Served path = controller mapping prefix (proven Spring layers only) + operation
+path, resolved per operation. Only classes proven to implement the spec's
+generated package vote, and the ladder is: implementers whose methods match
+the operation agree exactly (intersection); they disagree (the strictly most
+common prefix tuple is published and the resolution counted in the report);
+nothing decides it (the spec-wide fallback). A multi-prefix mapping
+(`@RequestMapping({"/v1", "/v2"})`) fans out every prefix. An unreadable
+prefix (`@RequestMapping(SOME_CONSTANT)`) or a tie poisons the operation: it
+is dropped and reported, never guessed. The deployment base URL stays in
+`servers[0]` (the api_host).
+
+## Service boundary (v1)
+
+One swagger.json per run. When two deployable targets in a monorepo claim the
+same route shape, both candidates survive as a reported conflict and the
+operation carries `x-apimesh-service` tags. Splitting output per service is a
+recorded follow-up, not silently approximated.
+
+## Reference resolution
+
+`$ref` resolution is local-only: repo-confined, no URLs, no absolute paths, no
+symlink escape, cycle and size limits. An operation whose reference closure
+cannot be fully resolved is excluded and reported. Components are namespaced
+per source spec before merging.
+
+## Discovery scope
+
+Contract discovery sweeps the whole repo every run with its own ignore policy:
+dependency caches (`node_modules`, `.git`, virtualenvs) and build OUTPUT
+directories (`target`, `build`, `dist`), which hold copies of authored specs
+and would double-discover them. The code lane's semantic ignores (`docs`,
+`vendor`, `tests`) do not apply, because that is where contracts live.
+Discovery is never narrowed by a previous run's profile, is bounded by file
+and byte budgets, and reports `truncated: true` when a budget stops it early.
+Only ApiMesh's own output files are excluded, never their directory.
+
+## Persistence
+
+- Parse caches: regenerable, keyed by file content and parser version.
+- `repo_profile.json`: a generated report of what was found, included,
+  excluded and why. Read by humans and agents, never by ApiMesh itself.
+- Overrides: operator assertions. `exclude` applies unconditionally
+  (fail-closed). `include` is bound to the spec locator and evidence hash and
+  goes dormant when the underlying file changes. Agent suggestions cannot
+  force an include.
+
+## Kill switch
+
+`APIMESH_INGEST_SPECS=0` disables the contract lane for a run.

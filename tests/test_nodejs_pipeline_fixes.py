@@ -1171,7 +1171,7 @@ module.exports = helper;
 
 
 def test_zero_endpoints_returns_none(tmp_path, monkeypatch, capsys):
-    """Zero extracted endpoints must fall back instead of shipping an empty spec."""
+    """Zero extracted endpoints must return None instead of shipping an empty spec."""
     repo = tmp_path / "repo"
     _write(repo / "src" / "helper.js", NO_ENDPOINTS_JS)
     monkeypatch.setenv("APIMESH_USER_REPO_PATH", str(repo))

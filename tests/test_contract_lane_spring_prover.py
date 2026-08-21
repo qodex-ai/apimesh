@@ -1,0 +1,352 @@
+"""Spring prover: served / consumed / docs / candidate classification.
+
+Each fixture encodes one way the serving question goes wrong; the prover has
+to get all of them right at once. Matching never grants eligibility: served
+status comes from build evidence alone, and a matched-but-unproven spec is a
+candidate for a human, not an inclusion.
+"""
+
+import os
+import tempfile
+from pathlib import Path
+
+import pytest
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+os.environ.setdefault("APIMESH_CONFIG_PATH", str(REPO_ROOT / "config.yml"))
+os.environ.setdefault("APIMESH_USER_REPO_PATH", str(REPO_ROOT))
+os.environ.setdefault(
+    "APIMESH_USER_CONFIG_PATH",
+    str(Path(tempfile.mkdtemp(prefix="apimesh-user-config-")) / "config.json"),
+)
+
+from contract_lane.build_evidence import collect_build_evidence, evidence_by_spec
+from contract_lane.discovery import discover_contract_documents
+from contract_lane.loader import load_operations
+from contract_lane.spring_prover import build_source_index, classify_contract
+
+FIXTURES_ROOT = REPO_ROOT / "tests" / "fixtures" / "contract_lane"
+
+
+def _classify_fixture(name):
+    root = FIXTURES_ROOT / name
+    inventory = discover_contract_documents(str(root))
+    evidence = evidence_by_spec(collect_build_evidence(str(root)))
+    index = build_source_index(str(root))
+    results = {}
+    for entry in inventory["contracts"]:
+        operations, _ = load_operations(entry, str(root))
+        results[entry["path"]] = classify_contract(
+            entry, operations, evidence.get(entry["path"], []), index
+        )
+    return results
+
+
+def test_openapi_first_spring_is_served_with_api_prefix():
+    results = _classify_fixture("openapi_first_spring")
+    verdict = results["app/src/main/resources/api/pets.yaml"]
+
+    assert verdict["status"] == "served"
+    assert verdict["corroborated"] is True
+    assert verdict["prefixes"] == ["/api"]
+    assert verdict["prefix_variants"] == []
+
+
+def test_delegate_pattern_is_served_and_corroborated():
+    results = _classify_fixture("maven_delegate_pattern")
+    verdict = results["src/main/resources/orders.yaml"]
+
+    assert verdict["status"] == "served"
+    assert verdict["corroborated"] is True
+    assert verdict["prefixes"] == [""]
+
+
+def test_client_spec_is_excluded_no_matter_how_many_names_match():
+    results = _classify_fixture("client_spec_colliding_ids")
+    verdict = results["vendor/crowdstrike/alerts.yaml"]
+
+    assert verdict["status"] == "excluded"
+    assert verdict["reason"] == "client_generator"
+
+
+def test_stale_docs_spec_is_classified_documentation():
+    results = _classify_fixture("stale_docs_spec")
+    verdict = results["docs/openapi.yaml"]
+
+    assert verdict["status"] == "excluded"
+    assert verdict["reason"] == "covers_routed_handlers"
+
+
+def test_gateway_upstream_spec_has_no_server_evidence():
+    results = _classify_fixture("gateway_passthrough")
+    verdict = results["vendor/stripe/charges.yaml"]
+
+    assert verdict["status"] == "excluded"
+    assert verdict["reason"] == "no_server_evidence"
+
+
+def test_spec_without_operation_ids_is_served_via_build_evidence():
+    results = _classify_fixture("no_operation_ids")
+    verdict = results["src/main/resources/health.yaml"]
+
+    assert verdict["status"] == "served"
+    # Derived names (healthGet, healthDeepGet) corroborate the invocation.
+    assert verdict["corroborated"] is True
+    assert verdict["prefixes"] == [""]
+
+
+def test_unproven_matching_spec_is_a_candidate_never_included(tmp_path):
+    """operationIds match unannotated controller methods, but no build edge."""
+    (tmp_path / "api.yaml").write_text(
+        "openapi: 3.0.0\n"
+        "info: {title: T, version: '1'}\n"
+        "paths:\n"
+        "  /widgets:\n"
+        "    get:\n"
+        "      operationId: listWidgets\n"
+        "      responses: {'200': {description: ok}}\n"
+    )
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "WidgetsController.java").write_text(
+        "package com.acme.web;\n"
+        "import com.acme.generated.api.WidgetsApi;\n"
+        "import org.springframework.web.bind.annotation.RestController;\n"
+        "@RestController\n"
+        "public class WidgetsController implements WidgetsApi {\n"
+        "    public Object listWidgets() { return null; }\n"
+        "}\n"
+    )
+
+    inventory = discover_contract_documents(str(tmp_path))
+    index = build_source_index(str(tmp_path))
+    entry = inventory["contracts"][0]
+    operations, _ = load_operations(entry, str(tmp_path))
+
+    verdict = classify_contract(entry, operations, [], index)
+
+    assert verdict["status"] == "candidate"
+    assert verdict["matched_operations"] == 1
+
+
+def test_source_index_skips_test_sources(tmp_path):
+    """A controller under src/test proves nothing."""
+    (tmp_path / "src" / "test" / "java").mkdir(parents=True)
+    (tmp_path / "src" / "test" / "java" / "FakeController.java").write_text(
+        "package com.acme;\n"
+        "import org.springframework.web.bind.annotation.RestController;\n"
+        "@RestController\n"
+        "public class FakeController {\n"
+        "    public Object listWidgets() { return null; }\n"
+        "}\n"
+    )
+
+    index = build_source_index(str(tmp_path))
+
+    assert index.classes == []
+
+
+def test_multi_document_file_with_evidence_is_excluded_as_ambiguous(tmp_path):
+    """Evidence names a file; two contracts in it cannot share one proof."""
+    (tmp_path / "both.yaml").write_text(
+        "openapi: 3.0.0\npaths:\n  /a:\n    get:\n      responses: {'200': {description: ok}}\n"
+        "---\n"
+        "openapi: 3.0.0\npaths:\n  /b:\n    get:\n      responses: {'200': {description: ok}}\n"
+    )
+    inventory = discover_contract_documents(str(tmp_path))
+    index = build_source_index(str(tmp_path))
+    evidence = [{"kind": "server", "generator": "spring", "api_package": None}]
+
+    for entry in inventory["contracts"]:
+        operations, _ = load_operations(entry, str(tmp_path))
+        verdict = classify_contract(entry, operations, evidence, index)
+        assert verdict["status"] == "excluded"
+        assert verdict["reason"] == "multi_document_ambiguity"
+
+
+def test_unknown_kind_evidence_proves_nothing(tmp_path):
+    """A spec whose only invocation has an unrecognized generator falls
+    through to correlation, the same as having no build evidence at all."""
+    (tmp_path / "api.yaml").write_text(
+        "openapi: 3.0.0\npaths:\n  /a:\n    get:\n      operationId: nothingMatches\n"
+        "      responses: {'200': {description: ok}}\n"
+    )
+    inventory = discover_contract_documents(str(tmp_path))
+    index = build_source_index(str(tmp_path))
+    entry = inventory["contracts"][0]
+    operations, _ = load_operations(entry, str(tmp_path))
+
+    verdict = classify_contract(
+        entry, operations, [{"kind": "unknown", "generator": "acme-custom"}], index
+    )
+
+    assert verdict["status"] == "excluded"
+    assert verdict["reason"] == "no_server_evidence"
+
+
+# ---------------------------------------------------------------------------
+# Go and connexion fixtures ride the same classification
+# ---------------------------------------------------------------------------
+
+def test_go_oapi_codegen_server_spec_is_served():
+    results = _classify_fixture("go_oapi_codegen")
+    verdict = results["api/openapi.yaml"]
+    assert verdict["status"] == "served"
+    assert verdict["prefixes"] == [""]
+
+
+def test_go_oapi_client_spec_is_excluded():
+    results = _classify_fixture("go_oapi_client")
+    verdict = results["vendorapi/partner.yaml"]
+    assert verdict["status"] == "excluded"
+    assert verdict["reason"] == "client_generator"
+
+
+def test_connexion_spec_is_served_under_its_base_path():
+    results = _classify_fixture("connexion_app")
+    verdict = results["specs/openapi.yaml"]
+    assert verdict["status"] == "served"
+    assert verdict["prefixes"] == ["/v1"]
+
+
+# ---------------------------------------------------------------------------
+# Review round 2 regressions
+# ---------------------------------------------------------------------------
+
+def _spec_and_index(tmp_path, controller_source):
+    (tmp_path / "api.yaml").write_text(
+        "openapi: 3.0.0\n"
+        "paths:\n"
+        "  /pets:\n"
+        "    get:\n"
+        "      operationId: listPets\n"
+        "      responses: {'200': {description: ok}}\n"
+    )
+    (tmp_path / "src").mkdir(exist_ok=True)
+    (tmp_path / "src" / "PetsController.java").write_text(controller_source)
+    inventory = discover_contract_documents(str(tmp_path))
+    index = build_source_index(str(tmp_path))
+    entry = inventory["contracts"][0]
+    operations, _ = load_operations(entry, str(tmp_path))
+    return entry, operations, index
+
+
+_SERVER_EVIDENCE = [{
+    "kind": "server", "generator": "spring", "api_package": "com.acme.generated.api",
+    "provisional": False, "build_file": "pom.xml", "config_files": [],
+}]
+
+
+def test_multi_prefix_implementer_fans_out_every_prefix(tmp_path):
+    entry, operations, index = _spec_and_index(
+        tmp_path,
+        "package com.acme.web;\n"
+        "import com.acme.generated.api.PetsApi;\n"
+        "import org.springframework.web.bind.annotation.RequestMapping;\n"
+        "import org.springframework.web.bind.annotation.RestController;\n"
+        "@RestController\n"
+        "@RequestMapping({\"/v1\", \"/v2\"})\n"
+        "public class PetsController implements PetsApi {\n"
+        "    public Object listPets() { return null; }\n"
+        "}\n",
+    )
+    verdict = classify_contract(entry, operations, _SERVER_EVIDENCE, index)
+    assert verdict["status"] == "served"
+    assert verdict["prefixes"] == ["/v1", "/v2"]
+
+    from contract_lane.reconcile import contract_candidates
+    routes = {row["route"] for row in contract_candidates(verdict, operations)}
+    assert routes == {"/v1/pets", "/v2/pets"}
+
+
+def test_unreadable_class_prefix_excludes_instead_of_guessing(tmp_path):
+    entry, operations, index = _spec_and_index(
+        tmp_path,
+        "package com.acme.web;\n"
+        "import com.acme.generated.api.PetsApi;\n"
+        "import org.springframework.web.bind.annotation.RequestMapping;\n"
+        "import org.springframework.web.bind.annotation.RestController;\n"
+        "@RestController\n"
+        "@RequestMapping(ApiPaths.ROOT)\n"
+        "public class PetsController implements PetsApi {\n"
+        "    public Object listPets() { return null; }\n"
+        "}\n",
+    )
+    verdict = classify_contract(entry, operations, _SERVER_EVIDENCE, index)
+    assert verdict["status"] == "excluded"
+    assert verdict["reason"] == "unresolved_prefix"
+
+
+def test_tied_implementer_prefixes_are_unresolved(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "AdminController.java").write_text(
+        "package com.acme.web;\n"
+        "import com.acme.generated.api.AdminApi;\n"
+        "import org.springframework.web.bind.annotation.RequestMapping;\n"
+        "import org.springframework.web.bind.annotation.RestController;\n"
+        "@RestController\n"
+        "@RequestMapping(\"/admin\")\n"
+        "public class AdminController implements AdminApi {}\n"
+    )
+    entry, operations, index = _spec_and_index(
+        tmp_path,
+        "package com.acme.web;\n"
+        "import com.acme.generated.api.PetsApi;\n"
+        "import org.springframework.web.bind.annotation.RequestMapping;\n"
+        "import org.springframework.web.bind.annotation.RestController;\n"
+        "@RestController\n"
+        "@RequestMapping(\"/public\")\n"
+        "public class PetsController implements PetsApi {}\n",
+    )
+    verdict = classify_contract(entry, operations, _SERVER_EVIDENCE, index)
+    assert verdict["status"] == "excluded"
+    assert verdict["reason"] == "unresolved_prefix"
+
+
+def test_provisional_only_evidence_is_a_candidate(tmp_path):
+    entry, operations, index = _spec_and_index(
+        tmp_path,
+        "package com.acme;\npublic class Nothing {}\n",
+    )
+    provisional = [dict(_SERVER_EVIDENCE[0], provisional=True)]
+    verdict = classify_contract(entry, operations, provisional, index)
+    assert verdict["status"] == "candidate"
+    assert verdict["reason"] == "provisional_evidence"
+
+
+def test_plurality_is_not_a_majority(tmp_path):
+    """2/1/1 votes resolve nothing; 3/1 does, and the report counts it."""
+    (tmp_path / "src").mkdir()
+    sources = {
+        "A": "/api", "B": "/api", "C": "/api", "D": "/other",
+    }
+    for name, prefix in sources.items():
+        (tmp_path / "src" / f"{name}Controller.java").write_text(
+            "package com.acme.web;\n"
+            "import com.acme.generated.api.PetsApi;\n"
+            "import org.springframework.web.bind.annotation.RequestMapping;\n"
+            "import org.springframework.web.bind.annotation.RestController;\n"
+            "@RestController\n"
+            f"@RequestMapping(\"{prefix}\")\n"
+            f"public class {name}Controller implements PetsApi {{\n"
+            "    public Object listPets() { return null; }\n"
+            "}\n"
+        )
+    (tmp_path / "api.yaml").write_text(
+        "openapi: 3.0.0\n"
+        "paths:\n"
+        "  /pets:\n"
+        "    get:\n"
+        "      operationId: listPets\n"
+        "      responses: {'200': {description: ok}}\n"
+    )
+    inventory = discover_contract_documents(str(tmp_path))
+    index = build_source_index(str(tmp_path))
+    entry = inventory["contracts"][0]
+    operations, _ = load_operations(entry, str(tmp_path))
+
+    verdict = classify_contract(entry, operations, _SERVER_EVIDENCE, index)
+
+    # 3 votes /api vs 1 vote /other: strict majority publishes /api.
+    assert verdict["status"] == "served"
+    assert verdict["prefixes_by_operation"][0] == ["/api"]
+    assert verdict["operations_prefix_by_majority"] == 1

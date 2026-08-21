@@ -6,7 +6,7 @@
 [![Discord](https://img.shields.io/badge/Discord-Join%20Community-5865f2?logo=discord&logoColor=white)](https://discord.gg/MHDayrP7)
 [![Twitter](https://img.shields.io/badge/Twitter-Follow%20Updates-1da1f2?logo=x&logoColor=white)](https://x.com/qodex_ai)
 
-**Open-source OpenAPI generator.** Point it at a repository and it detects the web framework (one LLM call, cached), extracts REST endpoints, and produces a valid **OpenAPI 3.0 `swagger.json`** plus a **self-contained HTML endpoint catalog** you can open in any browser. For the supported frameworks below, routes, methods, and prefixes come from static analysis and the LLM only writes schemas and descriptions; for anything else, a generic LLM extraction fallback takes over, which can miss or misread routes.
+**Open-source OpenAPI generator.** Point it at a repository and it detects the web framework (one LLM call, cached), extracts REST endpoints, and produces a valid **OpenAPI 3.0 `swagger.json`** plus a **self-contained HTML endpoint catalog** you can open in any browser. Routes, methods, and prefixes come from static analysis of code and of the OpenAPI contracts the repo provably serves; the LLM only writes schemas and descriptions, never routes.
 
 Built to be driven by humans or by AI agents: one non-interactive command in, one machine-readable spec out, with honest exit codes and a coverage report inside the spec.
 
@@ -72,7 +72,7 @@ docker run --pull always --rm -v $(pwd):/workspace \
 | `--redetect-framework` | Forget the cached framework and detect again. |
 | `--openai-api-key <key>` | The key (script and docker wrappers; the env var works everywhere). |
 
-**Environment variables:** `OPENAI_API_KEY`, `APIMESH_API_HOST`, `APIMESH_OPENAI_MODEL`, `APIMESH_SKIP_HTML=1`, `APIMESH_TELEMETRY=0` (opt out of usage telemetry). Flags beat environment variables beat stored config.
+**Environment variables:** `OPENAI_API_KEY`, `APIMESH_API_HOST`, `APIMESH_OPENAI_MODEL`, `APIMESH_SKIP_HTML=1`, `APIMESH_INGEST_SPECS=0` (disable OpenAPI spec ingestion), `APIMESH_TELEMETRY=0` (opt out of usage telemetry). Flags beat environment variables beat stored config.
 
 **Exit codes:**
 
@@ -91,8 +91,9 @@ docker run --pull always --rm -v $(pwd):/workspace \
 | `api_index.json` | Per-endpoint state for incremental runs (dependencies, content hashes). |
 | `config.json` | Stored key (mode 0600, auto-gitignored), model, host, framework. |
 | `metadata_cache/` | Content-addressed parse cache; makes reruns cheap. Safe to delete. |
+| `repo_profile.json` | The contract lane's full account: every spec found, served, excluded (with reason) or awaiting confirmation, and the state of every override. Written only when the repo carries OpenAPI documents. |
 
-**Trust, but verify:** every spec carries `info.x-apimesh-coverage` with `endpoints_extracted`, `generated`, `skipped_unchanged`, and `failed` counts. If `failed` is nonzero, treat the spec as incomplete: new endpoints that failed are absent, and a changed endpoint that failed may still show its previous operation until a rerun succeeds. For the supported frameworks, rerunning retries just the failed endpoints; the generic fallback reruns its whole extraction. Custom metadata lives in `x-` extension fields (`x-authorization-tag`, `x-module-tag`, `x-sensitive-information`), so strict OpenAPI validators accept the output.
+**Trust, but verify:** every spec carries `info.x-apimesh-coverage` with `endpoints_extracted`, `generated`, `skipped_unchanged`, and `failed` counts, plus a `contract` subblock (specs found/served/excluded, operations, conflicts, whether the sweep was truncated). If `failed` is nonzero, treat the spec as incomplete: new endpoints that failed are absent, and a changed endpoint that failed may still show its previous operation until a rerun succeeds; rerunning retries just the failed endpoints. Routes are never invented: an operation is present only when a parser proved it in code or a spec this repo provably serves declares it, and each one names its origin in `x-apimesh-source`. Custom metadata lives in `x-` extension fields (`x-authorization-tag`, `x-module-tag`, `x-sensitive-information`), so strict OpenAPI validators accept the output.
 
 ## Supported frameworks
 
@@ -102,15 +103,33 @@ docker run --pull always --rm -v $(pwd):/workspace \
 | Node.js / TypeScript | Express (incl. mounted routers), NestJS | tree-sitter |
 | Ruby on Rails | resources/resource, namespaces, scopes, member/collection, concerns, shallow nesting, engines, split route files | tree-sitter |
 | Go | gin, echo, chi, fiber, gorilla/mux, net/http (incl. Go 1.22 patterns) | tree-sitter |
-| Java | Spring annotation-based controllers (@RestController, @RequestMapping, verb mappings) | tree-sitter |
-| Anything else | Generic LLM extraction fallback | LLM |
+| Java | Spring annotation-based controllers (@RestController, @RequestMapping, verb mappings) and OpenAPI-first codebases (see below) | tree-sitter + spec ingestion |
+
+Anything else yields an honest zero (exit 1, nothing written). ApiMesh never asks an LLM to guess routes: a guessed route set can include third-party client calls and paths nobody serves, which poisons every consumer of the spec.
+
+### OpenAPI-first repositories
+
+Many Spring codebases keep their API in OpenAPI YAML/JSON files and generate the serving interfaces at build time, so the routing never appears in committed code. ApiMesh reads those spec files directly, but only after proving this repo serves them: a Maven, Gradle or Bazel build step must name the spec as input to a server-mode generator (`spring`, `kotlin-spring`, delegate pattern included). Vendored specs of third-party APIs (client generation, gateway upstreams, stale documentation files) are excluded, each with its reason in `repo_profile.json`. Spec content (schemas, parameters, descriptions) passes through as authored, at zero LLM cost, with references rewritten onto per-spec namespaced components.
+
+A spec ApiMesh cannot prove either way is listed as a candidate with an `eligibility_hash`. To confirm one, commit `.apimesh-overrides.json` at the repo root:
+
+```json
+{
+  "specs": [
+    {"path": "specs/internal-api.yaml", "action": "include", "eligibility_hash": "<from repo_profile.json>", "prefix": "/api"},
+    {"path": "vendor/partner.yaml", "action": "exclude", "reason": "partner's API, not ours"}
+  ]
+}
+```
+
+`exclude` always applies. `include` activates only while the hash matches the current spec, build files and implementing controllers, and goes dormant (reported) the moment that evidence changes.
 
 ## How it works
 
 1. **Detect** the framework (cached after the first run).
-2. **Extract** endpoints: parsers own routes, methods, and prefixes for the supported frameworks; the generic fallback asks the model instead.
-3. **Generate** schemas and descriptions with the LLM, batched per source file under a hard token budget, with per-endpoint failure isolation.
-4. **Rerun cheaply**: unchanged endpoints are skipped via content hashes, edits to shared helpers invalidate their dependents, and failed endpoints retry automatically.
+2. **Extract** endpoints: deterministic parsers own routes, methods, and prefixes; the contract lane ingests OpenAPI specs the repo provably serves; overlapping routes are documented from the spec, not generated twice.
+3. **Generate** schemas and descriptions with the LLM for code-proven endpoints only, batched per source file under a hard token budget, with per-endpoint failure isolation.
+4. **Rerun cheaply**: unchanged endpoints are skipped via content hashes, edits to shared helpers invalidate their dependents, failed endpoints retry automatically, and the spec-sourced portion is rebuilt deterministically every run.
 
 Only two things leave your machine: source context sent to the OpenAI API for schema generation, and anonymous usage telemetry (an install UUID and run timings, disable with `APIMESH_TELEMETRY=0`). Nothing is created inside your repository except the `apimesh/` output folder.
 

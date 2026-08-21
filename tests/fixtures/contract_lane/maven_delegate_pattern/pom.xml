@@ -1,0 +1,14 @@
+<project>
+  <build><plugins><plugin>
+    <groupId>org.openapitools</groupId>
+    <artifactId>openapi-generator-maven-plugin</artifactId>
+    <executions><execution><goals><goal>generate</goal></goals>
+      <configuration>
+        <inputSpec>${project.basedir}/src/main/resources/orders.yaml</inputSpec>
+        <generatorName>spring</generatorName>
+        <apiPackage>com.acme.generated.api</apiPackage>
+        <configOptions><delegatePattern>true</delegatePattern></configOptions>
+      </configuration>
+    </execution></executions>
+  </plugin></plugins></build>
+</project>

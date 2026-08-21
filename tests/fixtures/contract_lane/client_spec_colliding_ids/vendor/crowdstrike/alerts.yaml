@@ -1,0 +1,13 @@
+openapi: 3.0.0
+info: {title: CrowdStrike Alerts, version: "1.0.0"}
+paths:
+  /alerts:
+    get:
+      operationId: listAlerts
+      responses: {"200": {description: ok}}
+  /alerts/{id}:
+    delete:
+      operationId: deleteAlert
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses: {"204": {description: gone}}

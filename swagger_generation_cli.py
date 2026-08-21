@@ -2,14 +2,11 @@ import argparse
 import os
 import sys
 import time
-import traceback
 
 from user_config import UserConfigurations
 from swagger_generator import SwaggerGeneration
 from file_scanner import FileScanner
 from framework_identifier import FrameworkIdentifier
-from endpoints_extractor import EndpointsExtractor
-from faiss_index_generator import GenerateFaissIndex
 from nodejs_pipeline.run_swagger_generation import run_swagger_generation as nodejs_swagger_generator
 from python_pipeline.run_swagger_generation import run_swagger_generation as python_swagger_generator
 from rails_pipeline.run_swagger_generation import run_swagger_generation as ruby_on_rails_swagger_generator
@@ -24,6 +21,37 @@ class NoEndpointsFound(Exception):
     pass
 
 
+# Frameworks with a deterministic parser. What a parser proves is the whole
+# answer for every repo: LLM route guessing published third-party client calls
+# and invented paths as endpoints, so it no longer exists on any path.
+PIPELINE_FRAMEWORKS = {
+    "django", "flask", "fastapi",
+    "express", "nestjs",
+    "ruby_on_rails",
+    "golang",
+    "spring",
+}
+
+# Spellings the detector or a hand-edited config produce for the same thing.
+# An unrecognized value stays as written and fails closed at dispatch.
+_FRAMEWORK_ALIASES = {
+    "spring boot": "spring",
+    "spring_boot": "spring",
+    "springboot": "spring",
+    "spring-boot": "spring",
+    "rails": "ruby_on_rails",
+    "ruby on rails": "ruby_on_rails",
+    "ruby-on-rails": "ruby_on_rails",
+    "go": "golang",
+}
+
+
+def canonical_framework(framework) -> str:
+    """One spelling per framework, so the fail-closed set cannot be dodged."""
+    lowered = (framework or "").strip().lower()
+    return _FRAMEWORK_ALIASES.get(lowered, lowered)
+
+
 class RunSwagger:
     def __init__(self, project_api_key, openai_api_key, ai_chat_id, is_mcp, api_host=None, openai_model=None):
         self.ai_chat_id = ai_chat_id
@@ -33,28 +61,37 @@ class RunSwagger:
         self.user_config = self.user_configurations.load_user_config()
         self.framework_identifier = FrameworkIdentifier()
         self.file_scanner = FileScanner()
-        self.endpoints_extractor = EndpointsExtractor()
-        self.faiss_index = GenerateFaissIndex()
         self.swagger_generator = SwaggerGeneration()
         self.telemetry = PostHogTelemetry.from_env()
 
+    @staticmethod
+    def _warn_stale_output():
+        """A failed run never rewrites the output, so say what is left behind."""
+        try:
+            output_filepath = get_output_filepath()
+        except Exception:
+            return
+        if os.path.exists(output_filepath):
+            print(f"Note: {output_filepath} still holds the previous run's result;")
+            print("this run wrote nothing, so do not read that file as current.")
+
 
     def run_python_nodejs_ruby(self, framework):
+        # A crash in a deterministic pipeline is fatal on purpose. Rescuing it
+        # with the generic LLM extractor used to publish routes the parser never
+        # proved (Feign clients, guessed paths), which poisons every consumer of
+        # the spec.
         swagger = None
-        try:
-            if framework == "django" or framework == "flask" or framework == "fastapi":
-                swagger = python_swagger_generator(self.user_config['api_host'])
-            elif framework == "express" or framework == "nestjs":
-                swagger = nodejs_swagger_generator(self.user_config['api_host'])
-            elif framework == "ruby_on_rails":
-                swagger = ruby_on_rails_swagger_generator(self.user_config['api_host'])
-            elif framework == "golang":
-                swagger = golang_swagger_generator(self.user_config['api_host'])
-            elif framework == "spring":
-                swagger = java_swagger_generator(self.user_config['api_host'])
-        except Exception as ex:
-            traceback.print_exc()
-            print("Fallback to old procedure")
+        if framework == "django" or framework == "flask" or framework == "fastapi":
+            swagger = python_swagger_generator(self.user_config['api_host'])
+        elif framework == "express" or framework == "nestjs":
+            swagger = nodejs_swagger_generator(self.user_config['api_host'])
+        elif framework == "ruby_on_rails":
+            swagger = ruby_on_rails_swagger_generator(self.user_config['api_host'])
+        elif framework == "golang":
+            swagger = golang_swagger_generator(self.user_config['api_host'])
+        elif framework == "spring":
+            swagger = java_swagger_generator(self.user_config['api_host'])
         return swagger
 
 
@@ -69,7 +106,6 @@ class RunSwagger:
 
         file_paths = []
         swagger = None
-        all_endpoints = []
         framework = ""
 
         try:
@@ -80,6 +116,7 @@ class RunSwagger:
                 print("No supported source files were found in this repository")
                 print("(looked for .py, .js, .ts, .java, .rb, .go).")
                 print("Nothing was written and no API calls were made.")
+                self._warn_stale_output()
                 raise NoEndpointsFound("no supported source files")
 
             print("\n***************************************************")
@@ -102,6 +139,7 @@ class RunSwagger:
                         print("We do not support this framework currently. Please contact QodexAI support.")
                     raise
 
+            framework = canonical_framework(framework)
             print(f"completed framework identification - {framework}")
             print("\n***************************************************")
             print("Started finding files related to API information")
@@ -109,35 +147,17 @@ class RunSwagger:
             try:
                 with telemetry.stage(run_id, "extract_endpoints"):
                     swagger = self.run_python_nodejs_ruby(framework)
-                    if swagger:
-                        print("Completed finding files related to API information")
-                    else:
-                        api_files = self.file_scanner.find_api_files(file_paths, framework)
-                        print("Completed finding files related to API information")
-                        for filePath in api_files:
-                            endpoints = self.endpoints_extractor.extract_endpoints_with_gpt(filePath, framework)
-                            all_endpoints.extend(endpoints)
-
-                with telemetry.stage(run_id, "generate_swagger", {"fast_path": bool(swagger)}):
-                    if not swagger and not all_endpoints:
-                        # No endpoints were extracted; embedding the whole repo
-                        # would spend real money to document nothing.
-                        print("\n***************************************************")
-                        print("No API endpoints were found in this repository.")
-                        print("Nothing was written: swagger.json and the HTML viewer were not created.")
-                        print(f"We detected the framework as '{framework or 'unknown'}'. If that is wrong,")
-                        print("fix the \"framework\" value in apimesh/config.json and run again.")
-                        raise NoEndpointsFound("no endpoints were extracted")
+                    print("Completed finding files related to API information")
                     if not swagger:
-                        print("\n***************************************************")
-                        print("Started creating faiss index for all files")
-                        faiss_vector = self.faiss_index.create_faiss_index(file_paths, framework)
-                        print("Completed creating faiss index for all files")
-                        print("Fetching authentication related information")
-                        authentication_information = self.faiss_index.get_authentication_related_information(faiss_vector)
-                        print("Completed Fetching authentication related information")
-                        endpoint_related_information = self.endpoints_extractor.get_endpoint_related_information(faiss_vector, all_endpoints)
-                        swagger = self.swagger_generator.create_swagger_json(endpoint_related_information, authentication_information, framework, self.user_config['api_host'])
+                        if framework in PIPELINE_FRAMEWORKS:
+                            # The deterministic parser for this framework saw
+                            # the repo and proved nothing; the honest answer
+                            # is zero.
+                            print(f"apimesh: the {framework} parser found no endpoints; "
+                                  "routes are never LLM-guessed.")
+                        else:
+                            print(f"apimesh: no deterministic parser exists for '{framework}'; "
+                                  "routes are never LLM-guessed, so nothing can be extracted.")
             except NoEndpointsFound:
                 raise
             except Exception:
@@ -150,6 +170,7 @@ class RunSwagger:
                 print("Nothing was written: swagger.json and the HTML viewer were not created.")
                 print(f"We detected the framework as '{framework or 'unknown'}'. If that is wrong,")
                 print("fix the \"framework\" value in apimesh/config.json and run again.")
+                self._warn_stale_output()
                 raise NoEndpointsFound("no endpoints were extracted")
 
             with telemetry.stage(run_id, "render_html"):

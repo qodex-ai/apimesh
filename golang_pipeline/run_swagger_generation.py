@@ -515,7 +515,7 @@ def _update_swagger_for_batches(
 
 
 def _report_generation(generated: int, failed: int) -> None:
-    """Raising on a total wipeout lets the CLI fall back to the generic extractor."""
+    """Raising on a total wipeout fails the run instead of shipping an invented spec."""
     total = generated + failed
     if not total:
         return
@@ -576,7 +576,10 @@ def _maybe_incremental_update(
         and not removed_keys
         and pipeline_common.index_paths_exist(existing_index)
     ):
-        pipeline_common.record_coverage(existing_swagger, len(endpoint_jobs), 0, len(endpoint_jobs), 0)
+        pipeline_common.record_coverage(
+            existing_swagger, len(endpoint_jobs), 0, len(endpoint_jobs), 0,
+            dropped=sum(extraction_drops().values()),
+        )
         return pipeline_common.apply_host(existing_swagger, host)
     changed_keys = set()
     for key in existing_keys & new_keys:
@@ -639,6 +642,7 @@ def _maybe_incremental_update(
         len(generated),
         max(len(endpoint_jobs) - len(generated) - len(failed), 0),
         len(failed),
+        dropped=sum(extraction_drops().values()),
     )
     return pipeline_common.apply_host(existing_swagger, host)
 
@@ -1112,18 +1116,52 @@ def run_swagger_generation(host: str) -> Optional[Dict]:
             endpoint_jobs.append(hydrated)
         endpoint_jobs = _dedupe_endpoint_jobs(endpoint_jobs)
 
-        # Nothing was extracted: hand back None so the caller falls back instead
+        # The contract lane runs before anything else is decided: a spec-first
+        # repo can carry its whole surface in contracts the code lane cannot
+        # see. Deterministic and LLM-free, so it runs every time.
+        lane_result, reconciled, endpoint_jobs = pipeline_common.integrate_contract_lane(
+            directory_path, endpoint_jobs, _job_method, _normalize_route
+        )
+        contract_paths = bool(reconciled and reconciled["paths"])
+
+        # Nothing was extracted: hand back None so the caller reports an honest zero instead
         # of publishing an empty spec (or, worse, incrementally deleting one).
-        if not endpoint_jobs:
+        if not endpoint_jobs and not contract_paths:
             print(
                 "apimesh: golang parser found 0 endpoints, "
-                "falling back to generic extraction"
+                "nothing will be generated"
             )
             return None
 
+        if not endpoint_jobs:
+            print(
+                "apimesh: golang parser found 0 annotated endpoints; "
+                "the contract lane supplies the spec"
+            )
+            swagger = pipeline_common.base_swagger(
+                repo_name,
+                host,
+                get_git_commit_hash(),
+                get_github_repo_url(),
+                datetime.datetime.utcnow().isoformat() + "Z",
+            )
+            # An empty code index is deliberate: code endpoints that existed
+            # on a previous run and are gone now must leave the spec.
+            _write_api_index(_build_api_index([]))
+            pipeline_common.record_coverage(swagger, 0, 0, 0, 0)
+            return pipeline_common.finish_with_contract(
+                swagger, reconciled, lane_result["report"], get_output_filepath()
+            )
+
         incremental_swagger = _maybe_incremental_update(directory_path, endpoint_jobs, host)
         if incremental_swagger is not None:
-            return incremental_swagger
+            if reconciled is not None:
+                return pipeline_common.finish_with_contract(
+                    incremental_swagger, reconciled, lane_result["report"], get_output_filepath()
+                )
+            # The lane is disabled: contract operations from a previous run
+            # must not ride out on the incremental fast path as current.
+            return pipeline_common.strip_contract_operations(incremental_swagger)
 
         generated: List[Dict] = []
         failed: List[Dict] = []
@@ -1157,7 +1195,11 @@ def run_swagger_generation(host: str) -> Optional[Dict]:
             dropped=sum(extraction_drops().values()),
         )
 
-        return swagger
+        if reconciled is not None:
+            return pipeline_common.finish_with_contract(
+                swagger, reconciled, lane_result["report"], get_output_filepath()
+            )
+        return pipeline_common.strip_contract_operations(swagger)
     finally:
         # The cache outlives the run; only entries for content that is gone are
         # dropped, so the next run parses just what changed.
