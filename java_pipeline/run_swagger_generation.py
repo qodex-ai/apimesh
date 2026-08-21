@@ -1,3 +1,4 @@
+import json
 import os
 import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -6,6 +7,8 @@ from typing import Dict, List, Optional, Tuple
 
 import pipeline_common
 from config import Configurations
+from contract_lane.lane import run_lane
+from contract_lane.reconcile import reconcile
 from java_pipeline.definition_swagger_generator import (
     HANDLER_TOKEN_BUDGET,
     get_batch_definition_swagger,
@@ -686,6 +689,107 @@ def _maybe_incremental_update(
     return pipeline_common.apply_host(existing_swagger, host)
 
 
+def _base_swagger(repo_name: str, host: str) -> Dict:
+    return {
+        "openapi": "3.0.0",
+        "info": {
+            "title": repo_name,
+            "version": "1.0.0",
+            "description": "This Swagger file was generated using OpenAI GPT.",
+            "x-generated-at": datetime.datetime.utcnow().isoformat() + "Z",
+            "x-commit-reference": get_git_commit_hash(),
+            "x-github-repo-url": get_github_repo_url(),
+        },
+        "servers": [{"url": host}],
+        "paths": {},
+    }
+
+
+def _repo_profile_path() -> str:
+    return os.path.join(os.path.dirname(get_output_filepath()), "repo_profile.json")
+
+
+def _write_repo_profile(report: Dict, reconciled: Dict) -> None:
+    """The run's full account of the contract lane, for humans and agents.
+
+    A generated report, never an input: the next run re-derives everything
+    from the repository. Best-effort, a profile that cannot be written must
+    not fail the spec.
+    """
+    profile = {
+        "contract_lane": report,
+        "conflicts": reconciled["conflicts"],
+        "superseded_code_endpoints": len(reconciled["superseded_code"]),
+    }
+    path = _repo_profile_path()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp_path = f"{path}.tmp"
+        with open(tmp_path, "w") as handle:
+            json.dump(profile, handle, indent=2, sort_keys=True)
+        os.replace(tmp_path, path)
+    except OSError as ex:
+        print(f"apimesh: could not write {path}: {ex}")
+
+
+def _finish_with_contract(swagger: Dict, reconciled: Dict, report: Dict) -> Dict:
+    """Merge the contract lane's operations into the code lane's document.
+
+    Spec-sourced operations from a previous run are stripped first, so a
+    contract operation that disappeared from its spec leaves the document:
+    the contract portion is rebuilt from scratch on every run.
+    """
+    paths = swagger.setdefault("paths", {})
+    for route in list(paths):
+        item = paths[route]
+        if not isinstance(item, dict):
+            continue
+        for verb in list(item):
+            operation = item[verb]
+            if isinstance(operation, dict) and any(
+                str(source).startswith("spec:")
+                for source in operation.get("x-apimesh-source") or []
+            ):
+                del item[verb]
+        if not item:
+            del paths[route]
+    for route, item in reconciled["paths"].items():
+        paths.setdefault(route, {}).update(item)
+    if reconciled["components"]:
+        components = swagger.setdefault("components", {})
+        for category, items in reconciled["components"].items():
+            components.setdefault(category, {}).update(items)
+
+    contract_operations = sum(len(item) for item in reconciled["paths"].values())
+    summary = {
+        "specs_found": report["specs_found"],
+        "specs_served": len(report["served"]),
+        "specs_excluded": len(report["excluded"]),
+        "specs_candidate": len(report["candidates"]),
+        "operations": contract_operations,
+        "unresolved_operations": len(report["unresolved_operations"]),
+        "conflicts": len(reconciled["conflicts"]),
+        "superseded_code_endpoints": len(reconciled["superseded_code"]),
+        "truncated": report["truncated"],
+    }
+    info = swagger.setdefault("info", {})
+    coverage = info.get("x-apimesh-coverage")
+    if isinstance(coverage, dict):
+        coverage["contract"] = summary
+    else:
+        info["x-apimesh-coverage"] = {"contract": summary}
+    # A repo with no contracts gets the coverage line but no profile file:
+    # dropping an empty report into every plain java repo is noise.
+    if report["specs_found"]:
+        _write_repo_profile(report, reconciled)
+        print(
+            f"apimesh: contract lane served {summary['specs_served']} specs "
+            f"({contract_operations} operations), excluded {summary['specs_excluded']}, "
+            f"candidates {summary['specs_candidate']}"
+        )
+    return swagger
+
+
 def _reset_caches() -> None:
     """Drop everything held between runs.
 
@@ -872,33 +976,64 @@ def run_swagger_generation(host: str) -> Optional[Dict]:
 
         endpoint_jobs = _dedupe_endpoint_jobs(endpoints)
 
-        # Nothing was extracted: hand back None so the caller reports an honest
-        # zero instead of publishing an empty spec (or, worse, incrementally
-        # deleting one).
-        if not endpoint_jobs:
+        # The contract lane runs before anything else is decided: an
+        # OpenAPI-first repo can carry its whole surface in specs the code
+        # lane cannot see. Deterministic and LLM-free, so it runs every time.
+        lane_result = run_lane(directory_path)
+        reconciled = None
+        if lane_result is not None:
+            code_ops = [
+                {
+                    "method": (_job_method(job) or "").upper(),
+                    "route": _normalize_route(job.get("route")),
+                    "source_id": str(position),
+                }
+                for position, job in enumerate(endpoint_jobs)
+            ]
+            reconciled = reconcile(lane_result["rows"], code_ops, directory_path)
+            allowed = {int(op["source_id"]) for op in reconciled["code_to_generate"]}
+            # A code route the contract also declares is documented from the
+            # contract; generating it again would double-spend and collide.
+            endpoint_jobs = [
+                job for position, job in enumerate(endpoint_jobs) if position in allowed
+            ]
+
+        contract_paths = bool(reconciled and reconciled["paths"])
+
+        # Nothing was extracted anywhere: hand back None so the caller reports
+        # an honest zero instead of publishing an empty spec (or, worse,
+        # incrementally deleting one).
+        if not endpoint_jobs and not contract_paths:
             print(
                 "apimesh: java parser found 0 endpoints, "
                 "nothing will be generated"
             )
             return None
 
+        if not endpoint_jobs:
+            print(
+                "apimesh: java parser found 0 annotated endpoints; "
+                "the contract lane supplies the spec"
+            )
+            swagger = _base_swagger(repo_name, host)
+            # An empty code index is deliberate: code endpoints that existed
+            # on a previous run and are gone now must leave the spec.
+            _write_api_index(_build_api_index([]))
+            pipeline_common.record_coverage(
+                swagger, 0, 0, 0, 0,
+                dropped=extraction_drops().get("unresolved", 0),
+            )
+            return _finish_with_contract(swagger, reconciled, lane_result["report"])
+
         incremental_swagger = _maybe_incremental_update(directory_path, endpoint_jobs, host)
         if incremental_swagger is not None:
+            if reconciled is not None:
+                return _finish_with_contract(
+                    incremental_swagger, reconciled, lane_result["report"]
+                )
             return incremental_swagger
 
-        swagger = {
-            "openapi": "3.0.0",
-            "info": {
-                "title": repo_name,
-                "version": "1.0.0",
-                "description": "This Swagger file was generated using OpenAI GPT.",
-                "x-generated-at": datetime.datetime.utcnow().isoformat() + "Z",
-                "x-commit-reference": get_git_commit_hash(),
-                "x-github-repo-url": get_github_repo_url(),
-            },
-            "servers": [{"url": host}],
-            "paths": {},
-        }
+        swagger = _base_swagger(repo_name, host)
 
         generated: List[Dict] = []
         failed: List[Dict] = []
@@ -934,6 +1069,8 @@ def run_swagger_generation(host: str) -> Optional[Dict]:
             dropped=extraction_drops().get("unresolved", 0),
         )
 
+        if reconciled is not None:
+            return _finish_with_contract(swagger, reconciled, lane_result["report"])
         return swagger
     finally:
         # The cache outlives the run; only entries for content that is gone are

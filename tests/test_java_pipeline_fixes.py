@@ -1095,6 +1095,22 @@ public class MixedController {
 """
 
 
+
+def _no_spec_contract_coverage():
+    """What the contract lane reports for a repo that carries no contracts."""
+    return {
+        "specs_found": 0,
+        "specs_served": 0,
+        "specs_excluded": 0,
+        "specs_candidate": 0,
+        "operations": 0,
+        "unresolved_operations": 0,
+        "conflicts": 0,
+        "superseded_code_endpoints": 0,
+        "truncated": False,
+    }
+
+
 def test_the_coverage_block_sums_the_run(tmp_path, monkeypatch):
     """Two endpoints extracted, one documented, one the model left out, and one
     mapping extraction could not read at all."""
@@ -1117,6 +1133,7 @@ def test_the_coverage_block_sums_the_run(tmp_path, monkeypatch):
         "skipped_unchanged": 0,
         "failed": 1,
         "dropped_routes": 1,
+        "contract": _no_spec_contract_coverage(),
     }
 
 
@@ -1258,6 +1275,7 @@ def test_an_unchanged_endpoint_costs_no_llm_call_and_a_dependency_edit_does(
         "generated": 2,
         "skipped_unchanged": 2,
         "failed": 0,
+        "contract": _no_spec_contract_coverage(),
     }
 
 
