@@ -137,3 +137,114 @@ def test_repo_without_contracts_or_endpoints_still_returns_none(monkeypatch, tmp
     monkeypatch.setenv("APIMESH_OUTPUT_FILEPATH", str(tmp_path / "out" / "swagger.json"))
 
     assert rsg.run_swagger_generation("http://api.example.test") is None
+
+
+# ---------------------------------------------------------------------------
+# Overrides
+# ---------------------------------------------------------------------------
+
+def _copy_fixture(src_name, dst):
+    import shutil
+
+    shutil.copytree(FIXTURES_ROOT / src_name, dst)
+    return dst
+
+
+def test_exclude_override_beats_a_served_verdict(monkeypatch, tmp_path):
+    """Fail-closed: an operator exclude wins even over build-proven serving."""
+    from contract_lane.lane import run_lane
+
+    repo = _copy_fixture("openapi_first_spring", tmp_path / "repo")
+    (repo / ".apimesh-overrides.json").write_text(json.dumps({
+        "specs": [{"path": "app/src/main/resources/api/pets.yaml", "action": "exclude",
+                   "reason": "not deployed"}]
+    }))
+
+    result = run_lane(str(repo))
+
+    assert result["rows"] == []
+    assert result["report"]["excluded"] == [
+        {"path": "app/src/main/resources/api/pets.yaml", "reason": "override_exclude"}
+    ]
+    assert result["report"]["overrides"] == [
+        {"path": "app/src/main/resources/api/pets.yaml", "action": "exclude", "state": "applied"}
+    ]
+
+
+def test_include_override_activates_only_on_a_matching_hash(monkeypatch, tmp_path):
+    """The include a human writes binds to the evidence they saw."""
+    from contract_lane.lane import run_lane
+
+    repo = tmp_path / "repo"
+    (repo / "src").mkdir(parents=True)
+    (repo / "api.yaml").write_text(
+        "openapi: 3.0.0\npaths:\n  /widgets:\n    get:\n      operationId: listWidgets\n"
+        "      responses: {'200': {description: ok}}\n"
+    )
+    (repo / "src" / "WidgetsController.java").write_text(
+        "package com.acme.web;\n"
+        "import com.acme.generated.api.WidgetsApi;\n"
+        "import org.springframework.web.bind.annotation.RestController;\n"
+        "@RestController\n"
+        "public class WidgetsController implements WidgetsApi {\n"
+        "    public Object listWidgets() { return null; }\n"
+        "}\n"
+    )
+
+    # First run: candidate, exposes the hash a human would copy.
+    first = run_lane(str(repo))
+    assert len(first["report"]["candidates"]) == 1
+    current_hash = first["report"]["candidates"][0]["eligibility_hash"]
+    assert current_hash
+
+    # A stale include stays dormant.
+    (repo / ".apimesh-overrides.json").write_text(json.dumps({
+        "specs": [{"path": "api.yaml", "action": "include",
+                   "eligibility_hash": "deadbeef", "prefix": "/api"}]
+    }))
+    stale = run_lane(str(repo))
+    assert stale["rows"] == []
+    assert stale["report"]["overrides"][0]["state"] == "dormant"
+
+    # The correct hash activates it, with the asserted prefix.
+    (repo / ".apimesh-overrides.json").write_text(json.dumps({
+        "specs": [{"path": "api.yaml", "action": "include",
+                   "eligibility_hash": current_hash, "prefix": "/api"}]
+    }))
+    live = run_lane(str(repo))
+    assert [(row["method"], row["route"]) for row in live["rows"]] == [
+        ("GET", "/api/widgets")
+    ]
+    served = live["report"]["served"][0]
+    assert served["override"] is True
+    assert live["report"]["overrides"][0]["state"] == "applied"
+
+
+def test_malformed_overrides_are_reported_and_ignored(tmp_path):
+    from contract_lane.lane import run_lane
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "api.yaml").write_text("openapi: 3.0.0\npaths:\n  /a:\n    get: {}\n")
+    (repo / ".apimesh-overrides.json").write_text("{not json")
+
+    result = run_lane(str(repo))
+
+    assert "unreadable" in result["report"]["overrides_error"]
+
+
+def test_override_naming_an_unknown_spec_is_flagged(tmp_path):
+    from contract_lane.lane import run_lane
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "api.yaml").write_text("openapi: 3.0.0\npaths:\n  /a:\n    get: {}\n")
+    (repo / ".apimesh-overrides.json").write_text(json.dumps({
+        "specs": [{"path": "vanished.yaml", "action": "exclude"}]
+    }))
+
+    result = run_lane(str(repo))
+
+    assert {"path": "vanished.yaml", "action": "exclude", "state": "unmatched"} in (
+        result["report"]["overrides"]
+    )
