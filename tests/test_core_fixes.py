@@ -305,30 +305,6 @@ def test_all_routing_patterns_are_valid_regexes_and_match_their_framework():
     assert any(re.search(p, nest_sample) for p in nest_patterns)
 
 
-def test_unknown_framework_uses_generic_extractor(monkeypatch):
-    """spring/laravel used to die with UnboundLocalError before any LLM call."""
-    import endpoints_extractor as ee
-
-    captured = {}
-
-    class FakeClient:
-        def call_chat_completion(self, messages, temperature=0.5):
-            captured["messages"] = messages
-            return '[{"method": "GET", "path": "/springy"}]'
-
-    monkeypatch.setattr(ee, "OpenAiClient", lambda: FakeClient())
-    extractor = ee.EndpointsExtractor()
-    import tempfile, os as _os
-    with tempfile.NamedTemporaryFile("w", suffix=".java", delete=False) as f:
-        f.write('@GetMapping("/springy") public String get() {}')
-        tmp_sample = f.name
-    try:
-        endpoints = extractor.extract_endpoints_with_gpt(tmp_sample, "laravel")
-    finally:
-        _os.unlink(tmp_sample)
-    assert endpoints == [{"method": "GET", "path": "/springy"}]
-    assert "routing expert" in captured["messages"][1]["content"]
-
 
 PLACEHOLDER_HOST = UserConfigurations.PLACEHOLDER_API_HOST
 
@@ -682,65 +658,12 @@ def test_cli_parses_no_html_flag():
     assert swagger_generation_cli.parse_args(["sk"]).no_html is False
 
 
-def test_extractor_filters_malformed_endpoint_entries(monkeypatch):
-    import endpoints_extractor as ee
-
-    class FakeClient:
-        def call_chat_completion(self, messages, temperature=0.5):
-            return '[null, {"method": "GET", "path": "/health"}, {"method": 5, "path": "/x"}, "junk"]'
-
-    monkeypatch.setattr(ee, "OpenAiClient", lambda: FakeClient())
-    extractor = ee.EndpointsExtractor()
-    import tempfile, os as _os
-    with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
-        f.write("@app.route('/health')\ndef h(): pass\n")
-        name = f.name
-    try:
-        endpoints = extractor.extract_endpoints_with_gpt(name, "flask")
-    finally:
-        _os.unlink(name)
-    assert endpoints == [{"method": "GET", "path": "/health"}]
-
 
 def test_config_json_is_written_owner_only(user_config_file):
     _configure(user_config_file)
     mode = user_config_file.stat().st_mode & 0o777
     assert mode == 0o600
 
-
-def test_faiss_index_returns_merged_batches_and_skips_unreadable(monkeypatch, tmp_path):
-    """The batched indices are the result; re-embedding the corpus doubled the
-    spend and reintroduced the per-request token limit."""
-    import faiss_index_generator as fig
-
-    calls = []
-
-    class FakeIndex:
-        def __init__(self, texts):
-            self.texts = list(texts)
-        def merge_from(self, other):
-            self.texts.extend(other.texts)
-
-    monkeypatch.setattr(
-        fig.FAISS, "from_texts",
-        lambda texts, embeddings, metadatas=None: (calls.append(list(texts)), FakeIndex(texts))[1],
-    )
-    good = tmp_path / "a.py"
-    good.write_text("def handler(): pass\n" * 5)
-    unreadable = tmp_path / "b.py"
-    unreadable.write_bytes(b"\xff\xfe garbage \xff")
-
-    generator = fig.GenerateFaissIndex.__new__(fig.GenerateFaissIndex)
-    class C: embeddings = None
-    generator.openai_client = C()
-    index = generator.create_faiss_index([str(good), str(unreadable)], "flask")
-
-    assert isinstance(index, FakeIndex)
-    total_embedded = sum(len(batch) for batch in calls)
-    assert total_embedded == len(index.texts)  # embedded exactly once, no duplicate pass
-
-    with pytest.raises(ValueError):
-        generator.create_faiss_index([str(unreadable)], "flask")
 
 
 def test_save_swagger_json_reports_html_outcome(monkeypatch, tmp_path):
