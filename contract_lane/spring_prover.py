@@ -193,24 +193,24 @@ def _match_operations(operations: List[dict], index: SourceIndex):
     return matched, unannotated, routed
 
 
-def _spec_prefixes(matched: Dict[int, dict], implementers: List[dict]) -> Tuple[str, Dict[int, str]]:
-    """The default prefix for a spec and per-operation overrides.
+def _spec_prefixes(implementers: List[dict]) -> Tuple[str, List[str]]:
+    """The prefix a spec's operations compose under, from its proven implementers.
 
-    Each operation takes the class-level prefix of the class implementing it;
-    operations nobody visibly implements (default interface methods) take the
-    most common prefix among the spec's implementers.
+    Only classes proven to implement this spec's generated package vote; loose
+    method-name matches do not, because a same-named method on a service or an
+    unrelated controller hands the operation a prefix it is not served under.
+    The majority prefix wins and the minority prefixes are reported as
+    variants rather than silently rewriting paths.
     """
-    by_operation: Dict[int, str] = {}
     counts: Dict[str, int] = {}
-    for position, cls in matched.items():
-        prefix = cls["prefixes"][0] if cls["prefixes"] else ""
-        by_operation[position] = prefix
-        counts[prefix] = counts.get(prefix, 0) + 1
     for cls in implementers:
         prefix = cls["prefixes"][0] if cls["prefixes"] else ""
         counts[prefix] = counts.get(prefix, 0) + 1
-    default = max(counts, key=counts.get) if counts else ""
-    return default, by_operation
+    if not counts:
+        return "", []
+    default = max(counts, key=lambda p: (counts[p], p))
+    variants = sorted(p for p in counts if p != default)
+    return default, variants
 
 
 def classify_contract(
@@ -234,14 +234,15 @@ def classify_contract(
             if api_package:
                 implementers.extend(index.implementers_of_package(api_package))
         matched, unannotated, _ = _match_operations(operations, index)
-        default_prefix, by_operation = _spec_prefixes(matched, implementers)
+        default_prefix, prefix_variants = _spec_prefixes(implementers)
         return {
             "status": "served",
             "path": entry["path"],
             "invocations": server_invocations,
             "corroborated": bool(matched or implementers),
             "default_prefix": default_prefix,
-            "prefix_by_operation": by_operation,
+            "prefix_variants": prefix_variants,
+            "prefix_by_operation": {},
         }
 
     if client_invocations:

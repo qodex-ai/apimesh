@@ -49,7 +49,7 @@ def test_openapi_first_spring_is_served_with_api_prefix():
     assert verdict["status"] == "served"
     assert verdict["corroborated"] is True
     assert verdict["default_prefix"] == "/api"
-    assert set(verdict["prefix_by_operation"].values()) == {"/api"}
+    assert verdict["prefix_variants"] == []
 
 
 def test_delegate_pattern_is_served_and_corroborated():
