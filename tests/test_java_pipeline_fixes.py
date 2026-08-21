@@ -1106,6 +1106,7 @@ def _no_spec_contract_coverage():
         "operations": 0,
         "unresolved_operations": 0,
         "conflicts": 0,
+        "rewrite_failures": 0,
         "superseded_code_endpoints": 0,
         "truncated": False,
     }
@@ -1275,6 +1276,7 @@ def test_an_unchanged_endpoint_costs_no_llm_call_and_a_dependency_edit_does(
         "generated": 2,
         "skipped_unchanged": 2,
         "failed": 0,
+        "dropped_routes": 0,
         "contract": _no_spec_contract_coverage(),
     }
 

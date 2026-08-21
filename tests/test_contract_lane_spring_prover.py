@@ -48,7 +48,7 @@ def test_openapi_first_spring_is_served_with_api_prefix():
 
     assert verdict["status"] == "served"
     assert verdict["corroborated"] is True
-    assert verdict["default_prefix"] == "/api"
+    assert verdict["prefixes"] == ["/api"]
     assert verdict["prefix_variants"] == []
 
 
@@ -58,7 +58,7 @@ def test_delegate_pattern_is_served_and_corroborated():
 
     assert verdict["status"] == "served"
     assert verdict["corroborated"] is True
-    assert verdict["default_prefix"] == ""
+    assert verdict["prefixes"] == [""]
 
 
 def test_client_spec_is_excluded_no_matter_how_many_names_match():
@@ -92,7 +92,7 @@ def test_spec_without_operation_ids_is_served_via_build_evidence():
     assert verdict["status"] == "served"
     # Derived names (healthGet, healthDeepGet) corroborate the invocation.
     assert verdict["corroborated"] is True
-    assert verdict["default_prefix"] == ""
+    assert verdict["prefixes"] == [""]
 
 
 def test_unproven_matching_spec_is_a_candidate_never_included(tmp_path):
@@ -191,7 +191,7 @@ def test_go_oapi_codegen_server_spec_is_served():
     results = _classify_fixture("go_oapi_codegen")
     verdict = results["api/openapi.yaml"]
     assert verdict["status"] == "served"
-    assert verdict["default_prefix"] == ""
+    assert verdict["prefixes"] == [""]
 
 
 def test_go_oapi_client_spec_is_excluded():
@@ -205,4 +205,109 @@ def test_connexion_spec_is_served_under_its_base_path():
     results = _classify_fixture("connexion_app")
     verdict = results["specs/openapi.yaml"]
     assert verdict["status"] == "served"
-    assert verdict["default_prefix"] == "/v1"
+    assert verdict["prefixes"] == ["/v1"]
+
+
+# ---------------------------------------------------------------------------
+# Review round 2 regressions
+# ---------------------------------------------------------------------------
+
+def _spec_and_index(tmp_path, controller_source):
+    (tmp_path / "api.yaml").write_text(
+        "openapi: 3.0.0\n"
+        "paths:\n"
+        "  /pets:\n"
+        "    get:\n"
+        "      operationId: listPets\n"
+        "      responses: {'200': {description: ok}}\n"
+    )
+    (tmp_path / "src").mkdir(exist_ok=True)
+    (tmp_path / "src" / "PetsController.java").write_text(controller_source)
+    inventory = discover_contract_documents(str(tmp_path))
+    index = build_source_index(str(tmp_path))
+    entry = inventory["contracts"][0]
+    operations, _ = load_operations(entry, str(tmp_path))
+    return entry, operations, index
+
+
+_SERVER_EVIDENCE = [{
+    "kind": "server", "generator": "spring", "api_package": "com.acme.generated.api",
+    "provisional": False, "build_file": "pom.xml", "config_files": [],
+}]
+
+
+def test_multi_prefix_implementer_fans_out_every_prefix(tmp_path):
+    entry, operations, index = _spec_and_index(
+        tmp_path,
+        "package com.acme.web;\n"
+        "import com.acme.generated.api.PetsApi;\n"
+        "import org.springframework.web.bind.annotation.RequestMapping;\n"
+        "import org.springframework.web.bind.annotation.RestController;\n"
+        "@RestController\n"
+        "@RequestMapping({\"/v1\", \"/v2\"})\n"
+        "public class PetsController implements PetsApi {\n"
+        "    public Object listPets() { return null; }\n"
+        "}\n",
+    )
+    verdict = classify_contract(entry, operations, _SERVER_EVIDENCE, index)
+    assert verdict["status"] == "served"
+    assert verdict["prefixes"] == ["/v1", "/v2"]
+
+    from contract_lane.reconcile import contract_candidates
+    routes = {row["route"] for row in contract_candidates(verdict, operations)}
+    assert routes == {"/v1/pets", "/v2/pets"}
+
+
+def test_unreadable_class_prefix_excludes_instead_of_guessing(tmp_path):
+    entry, operations, index = _spec_and_index(
+        tmp_path,
+        "package com.acme.web;\n"
+        "import com.acme.generated.api.PetsApi;\n"
+        "import org.springframework.web.bind.annotation.RequestMapping;\n"
+        "import org.springframework.web.bind.annotation.RestController;\n"
+        "@RestController\n"
+        "@RequestMapping(ApiPaths.ROOT)\n"
+        "public class PetsController implements PetsApi {\n"
+        "    public Object listPets() { return null; }\n"
+        "}\n",
+    )
+    verdict = classify_contract(entry, operations, _SERVER_EVIDENCE, index)
+    assert verdict["status"] == "excluded"
+    assert verdict["reason"] == "unresolved_prefix"
+
+
+def test_tied_implementer_prefixes_are_unresolved(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "AdminController.java").write_text(
+        "package com.acme.web;\n"
+        "import com.acme.generated.api.AdminApi;\n"
+        "import org.springframework.web.bind.annotation.RequestMapping;\n"
+        "import org.springframework.web.bind.annotation.RestController;\n"
+        "@RestController\n"
+        "@RequestMapping(\"/admin\")\n"
+        "public class AdminController implements AdminApi {}\n"
+    )
+    entry, operations, index = _spec_and_index(
+        tmp_path,
+        "package com.acme.web;\n"
+        "import com.acme.generated.api.PetsApi;\n"
+        "import org.springframework.web.bind.annotation.RequestMapping;\n"
+        "import org.springframework.web.bind.annotation.RestController;\n"
+        "@RestController\n"
+        "@RequestMapping(\"/public\")\n"
+        "public class PetsController implements PetsApi {}\n",
+    )
+    verdict = classify_contract(entry, operations, _SERVER_EVIDENCE, index)
+    assert verdict["status"] == "excluded"
+    assert verdict["reason"] == "unresolved_prefix"
+
+
+def test_provisional_only_evidence_is_a_candidate(tmp_path):
+    entry, operations, index = _spec_and_index(
+        tmp_path,
+        "package com.acme;\npublic class Nothing {}\n",
+    )
+    provisional = [dict(_SERVER_EVIDENCE[0], provisional=True)]
+    verdict = classify_contract(entry, operations, provisional, index)
+    assert verdict["status"] == "candidate"
+    assert verdict["reason"] == "provisional_evidence"

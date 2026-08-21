@@ -576,7 +576,10 @@ def _maybe_incremental_update(
         and not removed_keys
         and pipeline_common.index_paths_exist(existing_index)
     ):
-        pipeline_common.record_coverage(existing_swagger, len(endpoint_jobs), 0, len(endpoint_jobs), 0)
+        pipeline_common.record_coverage(
+            existing_swagger, len(endpoint_jobs), 0, len(endpoint_jobs), 0,
+            dropped=sum(extraction_drops().values()),
+        )
         return pipeline_common.apply_host(existing_swagger, host)
     changed_keys = set()
     for key in existing_keys & new_keys:
@@ -639,6 +642,7 @@ def _maybe_incremental_update(
         len(generated),
         max(len(endpoint_jobs) - len(generated) - len(failed), 0),
         len(failed),
+        dropped=sum(extraction_drops().values()),
     )
     return pipeline_common.apply_host(existing_swagger, host)
 
@@ -1155,7 +1159,9 @@ def run_swagger_generation(host: str) -> Optional[Dict]:
                 return pipeline_common.finish_with_contract(
                     incremental_swagger, reconciled, lane_result["report"], get_output_filepath()
                 )
-            return incremental_swagger
+            # The lane is disabled: contract operations from a previous run
+            # must not ride out on the incremental fast path as current.
+            return pipeline_common.strip_contract_operations(incremental_swagger)
 
         generated: List[Dict] = []
         failed: List[Dict] = []
@@ -1193,7 +1199,7 @@ def run_swagger_generation(host: str) -> Optional[Dict]:
             return pipeline_common.finish_with_contract(
                 swagger, reconciled, lane_result["report"], get_output_filepath()
             )
-        return swagger
+        return pipeline_common.strip_contract_operations(swagger)
     finally:
         # The cache outlives the run; only entries for content that is gone are
         # dropped, so the next run parses just what changed.

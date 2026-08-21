@@ -56,7 +56,7 @@ def test_openapi_first_repo_yields_a_spec_with_no_llm(contract_only_repo, monkey
     }
     operation = swagger["paths"]["/api/pets"]["get"]
     assert operation["x-apimesh-source"] == [
-        "spec:app/src/main/resources/api/pets.yaml#get /pets"
+        "spec:app/src/main/resources/api/pets.yaml#get /api/pets"
     ]
     contract_coverage = swagger["info"]["x-apimesh-coverage"]["contract"]
     assert contract_coverage["specs_served"] == 1
@@ -296,3 +296,54 @@ def test_connexion_repo_yields_a_spec_under_its_base_path(monkeypatch, tmp_path)
     ops = {(m.upper(), route) for route, item in swagger["paths"].items() for m in item}
     assert ops == {("GET", "/v1/notes")}
     assert (tmp_path / "out" / "repo_profile.json").is_file()
+
+
+def test_include_cannot_lift_a_mandatory_exclusion(monkeypatch, tmp_path):
+    """A client-generated spec stays excluded whatever hash an include carries."""
+    from contract_lane.lane import run_lane
+
+    repo = _copy_fixture("client_spec_colliding_ids", tmp_path / "repo")
+    first = run_lane(str(repo))
+    excluded = first["report"]["excluded"][0]
+    assert excluded["reason"] == "client_generator"
+    # Fish the hash out and try to include anyway.
+    (repo / ".apimesh-overrides.json").write_text(json.dumps({
+        "specs": [{"path": "vendor/crowdstrike/alerts.yaml", "action": "include",
+                   "eligibility_hash": "whatever"}]
+    }))
+
+    second = run_lane(str(repo))
+
+    assert all(row["spec_path"] != "vendor/crowdstrike/alerts.yaml" for row in second["rows"])
+    states = {item["state"] for item in second["report"]["overrides"]}
+    assert states == {"inapplicable"}
+
+
+def test_duplicate_override_entries_cannot_dodge_an_exclude(monkeypatch, tmp_path):
+    from contract_lane.lane import run_lane
+
+    repo = _copy_fixture("openapi_first_spring", tmp_path / "repo")
+    (repo / ".apimesh-overrides.json").write_text(json.dumps({
+        "specs": [
+            {"path": "app/src/main/resources/api/pets.yaml", "action": "exclude"},
+            {"path": "app/src/main/resources/api/pets.yaml", "action": "include",
+             "eligibility_hash": "whatever"},
+        ]
+    }))
+
+    result = run_lane(str(repo))
+
+    assert result["rows"] == []
+    assert result["report"]["excluded"][0]["reason"] == "override_exclude"
+
+
+def test_kill_switch_strips_stale_contract_operations(contract_only_repo, monkeypatch):
+    """Run once with the lane on, then disabled: the old spec ops must go."""
+    first = rsg.run_swagger_generation("http://api.example.test")
+    assert "/api/pets" in first["paths"]
+
+    monkeypatch.setenv("APIMESH_INGEST_SPECS", "0")
+    second = rsg.run_swagger_generation("http://api.example.test")
+
+    # With the lane off there is nothing left in this repo, an honest zero.
+    assert second is None

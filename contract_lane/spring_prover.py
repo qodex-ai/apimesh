@@ -86,8 +86,15 @@ def _class_facts(file_path: Path, repo_root: str) -> List[dict]:
         }
         class_mapping = java_ast._class_mapping(node, source)
         prefixes: List[str] = []
-        if class_mapping and class_mapping["readable"]:
-            prefixes = [p for p in class_mapping["prefixes"] if p]
+        prefix_unreadable = False
+        if class_mapping is not None:
+            if class_mapping["readable"]:
+                prefixes = [p for p in class_mapping["prefixes"] if p]
+            else:
+                # @RequestMapping(SOME_CONSTANT): the prefix exists but its
+                # value is unknowable, and treating it as empty once published
+                # routes under paths nobody serves.
+                prefix_unreadable = True
         methods = {}
         for method in java_ast._class_methods(node):
             annotation, _ = java_ast._mapping_annotation(method, source)
@@ -102,6 +109,7 @@ def _class_facts(file_path: Path, repo_root: str) -> List[dict]:
                 "is_component": bool(annotations & _SERVICE_ANNOTATIONS),
                 "implements": java_ast._implemented_names(node, source),
                 "prefixes": prefixes,
+                "prefix_unreadable": prefix_unreadable,
                 # method name -> carries its own mapping annotation
                 "methods": methods,
             }
@@ -193,24 +201,41 @@ def _match_operations(operations: List[dict], index: SourceIndex):
     return matched, unannotated, routed
 
 
-def _spec_prefixes(implementers: List[dict]) -> Tuple[str, List[str]]:
-    """The prefix a spec's operations compose under, from its proven implementers.
+_UNREADABLE_PREFIX = ("<unreadable>",)
+
+
+def _spec_prefixes(implementers: List[dict]):
+    """(prefix tuple, variants, resolved) from the spec's proven implementers.
 
     Only classes proven to implement this spec's generated package vote; loose
     method-name matches do not, because a same-named method on a service or an
     unrelated controller hands the operation a prefix it is not served under.
-    The majority prefix wins and the minority prefixes are reported as
-    variants rather than silently rewriting paths.
+    Each implementer votes its whole prefix list, so @RequestMapping({"/v1",
+    "/v2"}) fans out instead of dropping /v2. An unreadable prefix or a tied
+    vote is unresolved: publishing a guessed path is worse than excluding and
+    reporting.
     """
-    counts: Dict[str, int] = {}
+    counts: Dict[tuple, int] = {}
     for cls in implementers:
-        prefix = cls["prefixes"][0] if cls["prefixes"] else ""
-        counts[prefix] = counts.get(prefix, 0) + 1
+        if cls.get("prefix_unreadable"):
+            vote = _UNREADABLE_PREFIX
+        else:
+            vote = tuple(cls["prefixes"]) if cls["prefixes"] else ("",)
+        counts[vote] = counts.get(vote, 0) + 1
     if not counts:
-        return "", []
-    default = max(counts, key=lambda p: (counts[p], p))
-    variants = sorted(p for p in counts if p != default)
-    return default, variants
+        return ("",), [], True
+    best = max(counts.values())
+    winners = [vote for vote, count in counts.items() if count == best]
+    if len(winners) > 1 or winners[0] == _UNREADABLE_PREFIX:
+        return ("",), [], False
+    variants = sorted(
+        prefix
+        for vote in counts
+        if vote != winners[0] and vote != _UNREADABLE_PREFIX
+        for prefix in vote
+        if prefix not in winners[0]
+    )
+    return winners[0], variants, True
 
 
 def classify_contract(
@@ -226,6 +251,7 @@ def classify_contract(
     """
     server_invocations = [e for e in evidence if e["kind"] == "server"]
     client_invocations = [e for e in evidence if e["kind"] == "client"]
+    live_server = [e for e in server_invocations if not e.get("provisional")]
 
     if (server_invocations or client_invocations) and entry.get("contracts_in_file", 1) > 1:
         # Build evidence names a file; a file holding several contract
@@ -236,30 +262,130 @@ def classify_contract(
             "reason": "multi_document_ambiguity",
         }
 
-    if server_invocations:
+    if server_invocations and not live_server and not client_invocations:
+        # Only provisional evidence (a profile-gated plugin, a go:generate
+        # directive with no committed output): the intent is visible but
+        # execution is not provable, so the spec is a candidate, not served.
+        return {
+            "status": "candidate",
+            "path": entry["path"],
+            "reason": "provisional_evidence",
+            "matched_operations": 0,
+            "operations": len(operations),
+        }
+
+    if live_server:
         implementers: List[dict] = []
-        for invocation in server_invocations:
+        for invocation in live_server:
             api_package = invocation.get("api_package")
             if api_package:
                 implementers.extend(index.implementers_of_package(api_package))
         matched, unannotated, _ = _match_operations(operations, index)
-        default_prefix, prefix_variants = _spec_prefixes(implementers)
-        if not default_prefix:
+        # Several specs can share one generated package; the classes whose
+        # methods visibly implement THIS spec's operations decide its prefix,
+        # per operation. Restricting the vote to proven implementers keeps a
+        # same-named method on a service from grabbing it. Where matching
+        # voters disagree, the intersection of their prefixes is used, which
+        # under-publishes rather than fabricates; an empty intersection or an
+        # unreadable prefix drops the operation and is reported.
+        spec_method_names = {
+            name
+            for operation in operations
+            for name in _derived_method_names(operation)
+        }
+        voters = [
+            cls
+            for cls in implementers
+            if any(name in cls["methods"] for name in spec_method_names)
+        ]
+
+        def _prefix_set(cls) -> Optional[set]:
+            if cls.get("prefix_unreadable"):
+                return None
+            return set(cls["prefixes"]) if cls["prefixes"] else {""}
+
+        def _majority(sets: List[set]) -> Optional[set]:
+            """The strictly most common prefix tuple, or None on a tie."""
+            counts: Dict[tuple, int] = {}
+            for candidate in sets:
+                key = tuple(sorted(candidate))
+                counts[key] = counts.get(key, 0) + 1
+            ranked = sorted(counts.items(), key=lambda kv: -kv[1])
+            if len(ranked) > 1 and ranked[0][1] == ranked[1][1]:
+                return None
+            return set(ranked[0][0]) if ranked else None
+
+        fallback_sets = [_prefix_set(cls) for cls in (voters or implementers)]
+        if not fallback_sets:
+            default: Optional[set] = {""}
+        elif any(s is None for s in fallback_sets):
+            default = None
+        else:
+            default = set.intersection(*fallback_sets) or _majority(fallback_sets)
+
+        prefixes_by_operation: Dict[int, List[str]] = {}
+        dropped_positions: List[int] = []
+        majority_resolved = 0
+        for position, operation in enumerate(operations):
+            names = set(_derived_method_names(operation))
+            voter_sets = [
+                _prefix_set(cls)
+                for cls in voters
+                if any(name in cls["methods"] for name in names)
+            ]
+            if any(s is None for s in voter_sets):
+                chosen: Optional[set] = None
+            elif voter_sets:
+                chosen = set.intersection(*voter_sets)
+                if not chosen:
+                    # Disagreeing implementers: the strictly most common
+                    # prefix is published and the resolution is reported; a
+                    # tie stays unresolved.
+                    chosen = _majority(voter_sets)
+                    if chosen is not None:
+                        majority_resolved += 1
+            else:
+                chosen = default
+            if chosen is None:
+                dropped_positions.append(position)
+            else:
+                prefixes_by_operation[position] = sorted(chosen)
+
+        if operations and not prefixes_by_operation:
+            # No operation has a knowable prefix; publishing a guess would
+            # document routes nobody serves.
+            return {
+                "status": "excluded",
+                "path": entry["path"],
+                "reason": "unresolved_prefix",
+            }
+
+        default_list = sorted(default) if default else []
+        if default_list == [""] and not implementers:
             # Registration-style evidence (connexion add_api) can carry the
             # mount prefix itself.
-            for invocation in server_invocations:
+            for invocation in live_server:
                 base_path = (invocation.get("options") or {}).get("base_path")
                 if base_path:
-                    default_prefix = base_path
+                    default_list = [base_path]
+                    prefixes_by_operation = {
+                        position: [base_path] for position in prefixes_by_operation
+                    }
                     break
+
+        all_prefixes = sorted(
+            {p for values in prefixes_by_operation.values() for p in values}
+        )
         return {
             "status": "served",
             "path": entry["path"],
-            "invocations": server_invocations,
+            "invocations": live_server,
             "corroborated": bool(matched or implementers),
-            "default_prefix": default_prefix,
-            "prefix_variants": prefix_variants,
-            "prefix_by_operation": {},
+            "prefixes": default_list or all_prefixes,
+            "prefixes_by_operation": prefixes_by_operation,
+            "prefix_variants": [p for p in all_prefixes if p not in (default_list or all_prefixes)],
+            "operations_without_prefix": len(dropped_positions),
+            "operations_prefix_by_majority": majority_resolved,
         }
 
     if client_invocations:

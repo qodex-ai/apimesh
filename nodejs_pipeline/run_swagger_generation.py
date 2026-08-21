@@ -729,7 +729,9 @@ def run_swagger_generation(host):
                 return pipeline_common.finish_with_contract(
                     incremental_swagger, reconciled, lane_result["report"], get_output_filepath()
                 )
-            return incremental_swagger
+            # The lane is disabled: contract operations from a previous run
+            # must not ride out on the incremental fast path as current.
+            return pipeline_common.strip_contract_operations(incremental_swagger)
         batches = _batch_endpoint_jobs(endpoint_jobs)
         max_workers = min(5, len(batches))
         start_time = time.time()
@@ -783,7 +785,7 @@ def run_swagger_generation(host):
             return pipeline_common.finish_with_contract(
                 swagger, reconciled, lane_result["report"], get_output_filepath()
             )
-        return swagger
+        return pipeline_common.strip_contract_operations(swagger)
     finally:
         # The cache outlives the run; only entries for content that is gone are
         # dropped, so the next run parses just what changed.

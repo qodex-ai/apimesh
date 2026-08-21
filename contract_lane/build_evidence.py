@@ -120,6 +120,29 @@ def _contain(repo_root: Path, base_dir: Path, raw_path: str) -> Optional[str]:
 _OPTION_KEYS = ("interfaceOnly", "delegatePattern", "useTags", "requestMappingMode")
 
 
+def _strip_hash_comments(text: str) -> str:
+    """Drop #-to-end-of-line comments, tolerating # inside quoted strings.
+
+    Quote parity per line is an approximation, but a # after balanced quotes
+    is a comment in BUILD files, Python and go:generate contexts alike, and a
+    commented-out invocation must never count as evidence.
+    """
+    lines = []
+    for line in text.splitlines():
+        position = 0
+        while True:
+            index = line.find("#", position)
+            if index == -1:
+                break
+            before = line[:index]
+            if before.count('"') % 2 == 0 and before.count("'") % 2 == 0:
+                line = line[:index]
+                break
+            position = index + 1
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def _options_from_text(text: str) -> Dict[str, str]:
     options: Dict[str, str] = {}
     for key in _OPTION_KEYS:
@@ -181,17 +204,23 @@ def _child_text(element, name: str) -> Optional[str]:
 
 
 def _plugins_outside_plugin_management(root_element):
-    """Plugin elements that can actually execute.
+    """(plugin, provisional) pairs for plugins that can actually execute.
 
     A plugin under <pluginManagement> only sets defaults; treating it as an
-    invocation once turned a configuration template into server evidence.
+    invocation once turned a configuration template into server evidence. A
+    plugin inside <profiles> runs only when its profile is activated, which
+    static analysis cannot decide, so it is marked provisional: real evidence
+    for exclusion purposes, never sufficient on its own to serve a spec.
     """
     managed = set()
+    profiled = set()
     for element in root_element.iter():
         if _strip_ns(element.tag) == "pluginManagement":
             managed.update(id(child) for child in element.iter())
+        elif _strip_ns(element.tag) == "profiles":
+            profiled.update(id(child) for child in element.iter())
     return [
-        element
+        (element, id(element) in profiled)
         for element in root_element.iter()
         if _strip_ns(element.tag) == "plugin" and id(element) not in managed
     ]
@@ -215,14 +244,19 @@ def _maven_invocations(pom_path: Path, repo_root: Path) -> List[dict]:
     build_file = str(pom_path.relative_to(repo_root))
     invocations = []
 
-    for plugin in _plugins_outside_plugin_management(root_element):
+    for plugin, provisional in _plugins_outside_plugin_management(root_element):
         artifact = _child_text(plugin, "artifactId")
         if artifact not in _MAVEN_GENERATOR_PLUGINS:
             continue
         for configuration in plugin.iter():
             if _strip_ns(configuration.tag) != "configuration":
                 continue
-            if (_child_text(configuration, "skip") or "").strip().lower() == "true":
+            # <skip>${openapi.skip}</skip> with the property set statically is
+            # the common spelling; resolve it before reading the value.
+            skip_value = _substitute(
+                _child_text(configuration, "skip") or "", properties, pom_dir
+            )
+            if skip_value.strip().lower() == "true":
                 continue
             generator = _child_text(configuration, "generatorName") or _child_text(
                 configuration, "language"
@@ -238,6 +272,9 @@ def _maven_invocations(pom_path: Path, repo_root: Path) -> List[dict]:
                 "spec_path": None,
                 "options": {},
                 "api_package": _child_text(configuration, "apiPackage"),
+                # Profile-gated execution cannot be proven live statically.
+                "provisional": provisional,
+                "config_files": [],
             }
             for key in _OPTION_KEYS:
                 value = _child_text(configuration, key)
@@ -322,6 +359,8 @@ def _gradle_invocations(build_path: Path, repo_root: Path) -> List[dict]:
             "spec_path": None,
             "options": _options_from_text(block),
             "api_package": assignments.get("apiPackage"),
+            "provisional": False,
+            "config_files": [],
         }
         raw_input = assignments.get("inputSpec")
         if raw_input:
@@ -424,6 +463,7 @@ def _bzl_macro_generators(repo_root: Path, bzl_files: List[Path]) -> Dict[str, d
             text = bzl_path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
+        text = _strip_hash_comments(text)
         file_options = _options_from_text(text)
         relative = str(bzl_path.relative_to(repo_root))
         matches = list(_BZL_MACRO_DEF.finditer(text))
@@ -498,6 +538,10 @@ def _bazel_entry(macro: dict, build_file: str, extra_options: str) -> dict:
         "spec_path": None,
         "options": dict(macro["options"], **_options_from_text(extra_options)),
         "api_package": None,
+        "provisional": False,
+        # The macro definition decides the generator kind, so its file is
+        # part of the proof surface.
+        "config_files": [macro["defined_in"]],
     }
 
 
@@ -508,6 +552,7 @@ def _bazel_invocations(repo_root: Path, build_files: List[Path], macros: Dict[st
             text = build_path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
+        text = _strip_hash_comments(text)
         build_file = str(build_path.relative_to(repo_root))
         package_dir = build_path.parent
 
@@ -524,6 +569,8 @@ def _bazel_invocations(repo_root: Path, build_files: List[Path], macros: Dict[st
                 "spec_path": None,
                 "options": _options_from_text(line),
                 "api_package": package_match.group(1) if package_match else None,
+                "provisional": False,
+                "config_files": [],
             }
             resolved = _resolve_spec_path(repo_root, package_dir, raw_spec)
             if resolved is None:
@@ -648,6 +695,7 @@ def _golang_invocations(go_path: Path, text: str, repo_root: Path) -> List[dict]
     build_file = str(go_path.relative_to(repo_root))
     package_dir = go_path.parent
     for match in _GO_GENERATE.finditer(text):
+        output_token = None
         tokens = match.group(1).split()
         flavors: List[str] = []
         spec_token = None
@@ -663,19 +711,32 @@ def _golang_invocations(go_path: Path, text: str, repo_root: Path) -> List[dict]
                 config_token = tokens[index + 1]
                 index += 2
                 continue
+            if token in ("-o", "--o") and index + 1 < len(tokens):
+                output_token = tokens[index + 1]
+                index += 2
+                continue
             if token.lower().endswith((".yaml", ".yml", ".json")) and not token.startswith("-"):
                 spec_token = token
             index += 1
+        config_files: List[str] = []
         if config_token:
             resolved_config = _contain(repo_root, package_dir, config_token)
             if resolved_config:
                 flavors.extend(_oapi_config_flavors(repo_root / resolved_config))
+                config_files.append(resolved_config)
             # The config file itself can be the yaml positional; a config is
             # never the spec.
             if spec_token == config_token:
                 spec_token = None
         if spec_token is None:
             continue
+        # go build never runs go generate: the directive alone proves intent,
+        # not a server. Committed generated output is what corroborates it.
+        output_exists = bool(
+            output_token
+            and (contained_output := _contain(repo_root, package_dir, output_token))
+            and (repo_root / contained_output).is_file()
+        )
         entry = {
             "build_file": build_file,
             "tool": "go-generate",
@@ -684,6 +745,8 @@ def _golang_invocations(go_path: Path, text: str, repo_root: Path) -> List[dict]
             "spec_path": None,
             "options": {"generate": sorted(set(flavors))},
             "api_package": None,
+            "provisional": not output_exists,
+            "config_files": config_files,
         }
         resolved = _resolve_spec_path(repo_root, package_dir, spec_token)
         if resolved is None:
@@ -704,13 +767,26 @@ _BASE_PATH_KWARG = re.compile(r"base_path\s*=\s*[\"']([^\"']+)[\"']")
 _SPECIFICATION_DIR = re.compile(r"specification_dir\s*=\s*[\"']([^\"']+)[\"']")
 
 
+_CONNEXION_APP_BINDING = re.compile(r"(\w+)\s*=\s*connexion\.\w*App\s*\(")
+_IDENTIFIER_TAIL = re.compile(r"(\w+)\s*$")
+
+
 def _connexion_invocations(py_path: Path, text: str, repo_root: Path) -> List[dict]:
+    # A commented-out add_api and an add_api on something that is not a
+    # connexion App are both nothing.
+    text = _strip_hash_comments(text)
+    app_names = set(_CONNEXION_APP_BINDING.findall(text))
+    if not app_names:
+        return []
     invocations = []
     build_file = str(py_path.relative_to(repo_root))
     module_dir = py_path.parent
     spec_dir_match = _SPECIFICATION_DIR.search(text)
     specification_dir = spec_dir_match.group(1) if spec_dir_match else ""
     for match in _CONNEXION_ADD_API.finditer(text):
+        receiver_match = _IDENTIFIER_TAIL.search(text[: match.start()])
+        if receiver_match is None or receiver_match.group(1) not in app_names:
+            continue
         depth = 1
         index = match.end()
         while index < len(text) and depth:
@@ -734,6 +810,9 @@ def _connexion_invocations(py_path: Path, text: str, repo_root: Path) -> List[di
             "spec_path": None,
             "options": {},
             "api_package": None,
+            # add_api is live wiring, not a generation hint.
+            "provisional": False,
+            "config_files": [],
         }
         if base_path_match:
             entry["options"]["base_path"] = base_path_match.group(1)
@@ -797,6 +876,11 @@ def collect_build_evidence(repo_root: str) -> List[dict]:
                 continue
             text = source.read_text(encoding="utf-8", errors="replace")
         except OSError:
+            continue
+        parts = set(source.relative_to(root).parts)
+        name = source.name
+        if parts & {"test", "tests", "testdata"} or name.endswith("_test.go") or name.startswith("test_") or name == "conftest.py":
+            # A test wiring a spec proves nothing about the deployable.
             continue
         if source.suffix == ".go" and "oapi-codegen" in text:
             invocations.extend(_golang_invocations(source, text, root))

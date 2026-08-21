@@ -30,7 +30,13 @@ already in, and may label excluded residue in reports.
    or delegating the generated symbols) is computed and every served-but-
    uncorroborated spec is flagged in the report. Generator names come from an
    explicit catalog; an unrecognized name is `unknown` and proves nothing in
-   either direction.
+   either direction. Evidence that is visible but not provably executed (a
+   Maven profile-gated plugin, a go:generate directive whose output file is
+   not committed) is *provisional*: it never serves a spec by itself, and a
+   spec with only provisional evidence becomes a candidate. Known
+   approximation: a Gradle assignment inside a conditional block
+   (`if (false) { ... }`) is not evaluated and still counts; Gradle is a
+   programming language and static analysis stops at comments.
 3. **Correlation only**: operationId or `implements *Api` matches with no build
    edge. Never includes on its own; produces a `candidate` entry in the report
    for a human or agent to confirm with an override.
@@ -71,19 +77,28 @@ unchanged. The payload hash covers referenced files, so editing an external
 schema refreshes the operations that use it.
 
 `route_shape` canonicalizes path parameters to `{}` so `/users/{id}` and
-`/users/{userId}` collide on purpose. Collisions between candidates from
-different evidence chains are reported as conflicts, never silently
-overwritten; within one chain the contract candidate owns schemas, parameters
-and descriptions, and the code candidate keeps its routing conditions as
-`x-apimesh-routing-conditions`.
+`/users/{userId}` collide on purpose. A collision between two different specs
+publishes the deterministic first candidate, marked with `x-apimesh-conflict`
+naming every other claim and listed in the report. This is a deliberate
+deviation from pure ambiguity-excludes: the route provably exists (both specs
+are build-proven), only the content authority is ambiguous, and hiding a real
+route from a testing consumer costs more than flagging contested content.
+Within one chain the contract candidate owns schemas, parameters and
+descriptions, and a superseded code candidate leaves its routing conditions
+behind as `x-apimesh-routing-conditions`.
 
 ## Path layers
 
 Served path = controller mapping prefix (proven Spring layers only) + operation
-path. The deployment base URL stays in `servers[0]` (the api_host). Property
-placeholders (`${...}`) and unresolvable constants are never guessed: the
-affected operations are excluded and reported as unresolved path variants.
-Multi-value prefixes fan out as variants.
+path, resolved per operation. Only classes proven to implement the spec's
+generated package vote, and the ladder is: implementers whose methods match
+the operation agree exactly (intersection); they disagree (the strictly most
+common prefix tuple is published and the resolution counted in the report);
+nothing decides it (the spec-wide fallback). A multi-prefix mapping
+(`@RequestMapping({"/v1", "/v2"})`) fans out every prefix. An unreadable
+prefix (`@RequestMapping(SOME_CONSTANT)`) or a tie poisons the operation: it
+is dropped and reported, never guessed. The deployment base URL stays in
+`servers[0]` (the api_host).
 
 ## Service boundary (v1)
 

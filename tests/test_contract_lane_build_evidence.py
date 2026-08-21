@@ -464,3 +464,91 @@ def test_go_generate_in_vendored_code_is_ignored(tmp_path):
         "package dep\n//go:generate oapi-codegen -generate chi-server api.yaml\n"
     )
     assert collect_build_evidence(str(tmp_path)) == []
+
+
+# ---------------------------------------------------------------------------
+# Review round 2 regressions
+# ---------------------------------------------------------------------------
+
+def test_profile_scoped_plugin_is_provisional(tmp_path):
+    (tmp_path / "api.yaml").write_text("openapi: 3.0.0\npaths: {}\n")
+    (tmp_path / "pom.xml").write_text(
+        "<project><profiles><profile><id>gen</id><build><plugins><plugin>\n"
+        "  <artifactId>openapi-generator-maven-plugin</artifactId>\n"
+        "  <configuration>\n"
+        "    <inputSpec>${project.basedir}/api.yaml</inputSpec>\n"
+        "    <generatorName>spring</generatorName>\n"
+        "  </configuration>\n"
+        "</plugin></plugins></build></profile></profiles></project>\n"
+    )
+    invocations = collect_build_evidence(str(tmp_path))
+    assert len(invocations) == 1
+    assert invocations[0]["provisional"] is True
+
+
+def test_property_driven_skip_is_respected(tmp_path):
+    (tmp_path / "api.yaml").write_text("openapi: 3.0.0\npaths: {}\n")
+    (tmp_path / "pom.xml").write_text(
+        "<project>\n"
+        "  <properties><openapi.skip>true</openapi.skip></properties>\n"
+        "  <build><plugins><plugin>\n"
+        "    <artifactId>openapi-generator-maven-plugin</artifactId>\n"
+        "    <configuration>\n"
+        "      <skip>${openapi.skip}</skip>\n"
+        "      <inputSpec>${project.basedir}/api.yaml</inputSpec>\n"
+        "      <generatorName>spring</generatorName>\n"
+        "    </configuration>\n"
+        "  </plugin></plugins></build>\n"
+        "</project>\n"
+    )
+    assert collect_build_evidence(str(tmp_path)) == []
+
+
+def test_commented_bazel_call_site_is_not_an_invocation(tmp_path):
+    (tmp_path / "api.yaml").write_text("openapi: 3.0.0\npaths: {}\n")
+    (tmp_path / "defs.bzl").write_text(
+        "def openapi_spring_spec(name, spec_file):\n"
+        "    native.genrule(name = name, cmd = \"generate -g spring -i \" + spec_file)\n"
+    )
+    (tmp_path / "BUILD.bazel").write_text(
+        "load(\"//:defs.bzl\", \"openapi_spring_spec\")\n"
+        "# openapi_spring_spec(name = \"dead\", spec_file = \"api.yaml\")\n"
+    )
+    assert collect_build_evidence(str(tmp_path)) == []
+
+
+def test_commented_or_foreign_add_api_is_not_evidence(tmp_path):
+    (tmp_path / "specs").mkdir()
+    (tmp_path / "specs" / "openapi.yaml").write_text("openapi: 3.0.0\npaths: {}\n")
+    (tmp_path / "app.py").write_text(
+        "import connexion\n"
+        "app = connexion.FlaskApp(__name__, specification_dir=\"specs\")\n"
+        "# app.add_api(\"openapi.yaml\", base_path=\"/evil\")\n"
+        "partner_client.add_api(\"specs/openapi.yaml\")\n"
+    )
+    assert collect_build_evidence(str(tmp_path)) == []
+
+
+def test_go_generate_without_committed_output_is_provisional(tmp_path):
+    (tmp_path / "api.yaml").write_text("openapi: 3.0.0\npaths: {}\n")
+    (tmp_path / "gen.go").write_text(
+        "package api\n//go:generate oapi-codegen -generate chi-server -o api_gen.go api.yaml\n"
+    )
+    invocations = collect_build_evidence(str(tmp_path))
+    assert len(invocations) == 1
+    assert invocations[0]["provisional"] is True
+
+    (tmp_path / "api_gen.go").write_text("package api\n")
+    invocations = collect_build_evidence(str(tmp_path))
+    assert invocations[0]["provisional"] is False
+
+
+def test_add_api_in_test_files_proves_nothing(tmp_path):
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "openapi.yaml").write_text("openapi: 3.0.0\npaths: {}\n")
+    (tmp_path / "tests" / "test_app.py").write_text(
+        "import connexion\n"
+        "app = connexion.FlaskApp(__name__)\n"
+        "app.add_api(\"../openapi.yaml\")\n"
+    )
+    assert collect_build_evidence(str(tmp_path)) == []

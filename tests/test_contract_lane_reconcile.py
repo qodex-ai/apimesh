@@ -36,8 +36,7 @@ def _rows(tmp_path, filename, prefix=""):
     assert unresolved == []
     verdict = {
         "path": filename,
-        "default_prefix": prefix,
-        "prefix_by_operation": {},
+        "prefixes": [prefix],
     }
     return contract_candidates(verdict, operations)
 
@@ -70,7 +69,7 @@ def test_contract_wins_over_code_and_the_rest_survive(tmp_path):
     # The contract's authored parameter name owns the route key.
     assert list(result["paths"]) == ["/api/users/{userId}"]
     operation = result["paths"]["/api/users/{userId}"]["get"]
-    assert operation["x-apimesh-source"] == ["spec:api.yaml#get /users/{userId}"]
+    assert operation["x-apimesh-source"] == ["spec:api.yaml#get /api/users/{userId}"]
     assert [op["source_id"] for op in result["superseded_code"]] == [
         "code:UserController#getUser"
     ]
@@ -217,3 +216,127 @@ def test_cross_file_component_reference_is_imported_and_rewritten(tmp_path):
         "application/json"
     ]["schema"]
     assert schema_ref == {"$ref": "#/components/schemas/schemas_User"}
+
+
+# ---------------------------------------------------------------------------
+# Review round 2 regressions
+# ---------------------------------------------------------------------------
+
+def test_document_security_is_inherited_and_schemes_are_namespaced(tmp_path):
+    (tmp_path / "api.yaml").write_text(
+        "openapi: 3.0.0\n"
+        "security:\n"
+        "  - BearerAuth: []\n"
+        "components:\n"
+        "  securitySchemes:\n"
+        "    BearerAuth: {type: http, scheme: bearer}\n"
+        "paths:\n"
+        "  /secure:\n"
+        "    get:\n"
+        "      operationId: secure\n"
+        "      responses: {'200': {description: ok}}\n"
+    )
+    rows = _rows(tmp_path, "api.yaml")
+
+    result = reconcile(rows, [], str(tmp_path))
+
+    operation = result["paths"]["/secure"]["get"]
+    assert operation["security"] == [{"api_BearerAuth": []}]
+    assert result["components"]["securitySchemes"]["api_BearerAuth"] == {
+        "type": "http",
+        "scheme": "bearer",
+    }
+
+
+def test_missing_security_scheme_fails_the_operation_closed(tmp_path):
+    (tmp_path / "api.yaml").write_text(
+        "openapi: 3.0.0\n"
+        "paths:\n"
+        "  /secure:\n"
+        "    get:\n"
+        "      security:\n"
+        "        - Ghost: []\n"
+        "      responses: {'200': {description: ok}}\n"
+    )
+    inventory = discover_contract_documents(str(tmp_path))
+    operations, unresolved = load_operations(inventory["contracts"][0], str(tmp_path))
+    assert operations == []
+    assert "Ghost" in unresolved[0]["error"]
+
+
+def test_discriminator_mapping_strings_are_renamed(tmp_path):
+    (tmp_path / "api.yaml").write_text(
+        "openapi: 3.0.0\n"
+        "components:\n"
+        "  schemas:\n"
+        "    Cat: {type: object}\n"
+        "    Pet:\n"
+        "      discriminator:\n"
+        "        propertyName: kind\n"
+        "        mapping:\n"
+        "          cat: '#/components/schemas/Cat'\n"
+        "      oneOf:\n"
+        "        - {$ref: '#/components/schemas/Cat'}\n"
+        "paths:\n"
+        "  /pets:\n"
+        "    get:\n"
+        "      responses:\n"
+        "        '200':\n"
+        "          description: ok\n"
+        "          content:\n"
+        "            application/json:\n"
+        "              schema: {$ref: '#/components/schemas/Pet'}\n"
+    )
+    rows = _rows(tmp_path, "api.yaml")
+
+    result = reconcile(rows, [], str(tmp_path))
+
+    pet = result["components"]["schemas"]["api_Pet"]
+    assert pet["discriminator"]["mapping"] == {"cat": "#/components/schemas/api_Cat"}
+
+
+def test_non_component_reference_cycles_fail_the_operation_not_the_run(tmp_path):
+    (tmp_path / "api.yaml").write_text(
+        "openapi: 3.0.0\n"
+        "x-shared:\n"
+        "  a: {$ref: '#/x-shared/b'}\n"
+        "  b: {$ref: '#/x-shared/a'}\n"
+        "paths:\n"
+        "  /cyclic:\n"
+        "    get:\n"
+        "      responses:\n"
+        "        '200': {$ref: '#/x-shared/a'}\n"
+        "  /fine:\n"
+        "    get:\n"
+        "      responses: {'200': {description: ok}}\n"
+    )
+    rows = _rows(tmp_path, "api.yaml")
+
+    result = reconcile(rows, [], str(tmp_path))
+
+    assert list(result["paths"]) == ["/fine"]
+    assert len(result["rewrite_failures"]) == 1
+    assert "cycle" in result["rewrite_failures"][0]["error"]
+
+
+def test_superseded_code_conditions_ride_on_the_contract_operation(tmp_path):
+    (tmp_path / "api.yaml").write_text(
+        "openapi: 3.0.0\n"
+        "paths:\n"
+        "  /orders:\n"
+        "    post:\n"
+        "      operationId: createOrder\n"
+        "      responses: {'201': {description: created}}\n"
+    )
+    rows = _rows(tmp_path, "api.yaml")
+    code_ops = [{
+        "method": "POST", "route": "/orders", "source_id": "code:0",
+        "conditions": {"consumes": ["application/json"]},
+    }]
+
+    result = reconcile(rows, code_ops, str(tmp_path))
+
+    operation = result["paths"]["/orders"]["post"]
+    assert operation["x-apimesh-routing-conditions"] == {
+        "consumes": ["application/json"]
+    }
