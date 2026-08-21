@@ -401,3 +401,66 @@ def test_unrecognized_generator_names_are_unknown_not_guessed(tmp_path):
         )
         invocations = collect_build_evidence(str(tmp_path))
         assert invocations[0]["kind"] == "unknown", name
+
+
+# ---------------------------------------------------------------------------
+# Go (oapi-codegen) and Python (connexion)
+# ---------------------------------------------------------------------------
+
+def test_go_generate_server_flavor_is_server_evidence():
+    invocations = collect_build_evidence(str(FIXTURES_ROOT / "go_oapi_codegen"))
+
+    assert len(invocations) == 1
+    entry = invocations[0]
+    assert entry["tool"] == "go-generate"
+    assert entry["kind"] == "server"
+    assert entry["spec_path"] == "api/openapi.yaml"
+    assert "chi-server" in entry["options"]["generate"]
+
+
+def test_go_generate_client_flavor_is_client_evidence():
+    invocations = collect_build_evidence(str(FIXTURES_ROOT / "go_oapi_client"))
+
+    assert len(invocations) == 1
+    assert invocations[0]["kind"] == "client"
+    assert invocations[0]["spec_path"] == "vendorapi/partner.yaml"
+
+
+def test_go_generate_config_file_supplies_the_flavors():
+    invocations = collect_build_evidence(str(FIXTURES_ROOT / "go_oapi_config"))
+
+    assert len(invocations) == 1
+    entry = invocations[0]
+    assert entry["kind"] == "server"
+    assert entry["spec_path"] == "api.yaml"
+    assert "std-http-server" in entry["options"]["generate"]
+
+
+def test_connexion_add_api_is_server_evidence_with_base_path():
+    invocations = collect_build_evidence(str(FIXTURES_ROOT / "connexion_app"))
+
+    assert len(invocations) == 1
+    entry = invocations[0]
+    assert entry["tool"] == "connexion"
+    assert entry["kind"] == "server"
+    assert entry["spec_path"] == "specs/openapi.yaml"
+    assert entry["options"]["base_path"] == "/v1"
+
+
+def test_connexion_variable_spec_is_not_statically_knowable(tmp_path):
+    (tmp_path / "app.py").write_text(
+        "import connexion\n"
+        "spec = pick_spec()\n"
+        "app = connexion.FlaskApp(__name__)\n"
+        "app.add_api(spec)\n"
+    )
+    assert collect_build_evidence(str(tmp_path)) == []
+
+
+def test_go_generate_in_vendored_code_is_ignored(tmp_path):
+    (tmp_path / "vendor" / "dep").mkdir(parents=True)
+    (tmp_path / "vendor" / "dep" / "api.yaml").write_text("openapi: 3.0.0\npaths: {}\n")
+    (tmp_path / "vendor" / "dep" / "gen.go").write_text(
+        "package dep\n//go:generate oapi-codegen -generate chi-server api.yaml\n"
+    )
+    assert collect_build_evidence(str(tmp_path)) == []

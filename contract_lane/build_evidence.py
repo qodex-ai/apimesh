@@ -578,10 +578,180 @@ def _bazel_invocations(repo_root: Path, build_files: List[Path], macros: Dict[st
 # Entry point
 # ---------------------------------------------------------------------------
 
-_SKIPPED_DIRS = {".git", "node_modules", "target", "build", "dist", ".gradle", ".idea"}
+# Vendored trees are other people's build declarations: a go:generate line or
+# a pom inside vendor/ describes a dependency's build, never this repo's.
+_SKIPPED_DIRS = {
+    ".git",
+    "node_modules",
+    "target",
+    "build",
+    "dist",
+    ".gradle",
+    ".idea",
+    "vendor",
+    "venv",
+    ".venv",
+    "__pycache__",
+    ".tox",
+}
 
 # A build file larger than this is generated output or hostile, not authored.
 MAX_BUILD_FILE_BYTES = 5 * 1024 * 1024
+
+# Source files are scanned for embedded build directives (go:generate,
+# connexion add_api) only up to this size.
+MAX_SOURCE_SCAN_BYTES = 1 * 1024 * 1024
+
+
+# ---------------------------------------------------------------------------
+# Go: oapi-codegen via go:generate
+# ---------------------------------------------------------------------------
+
+_GO_GENERATE = re.compile(r"^\s*//go:generate\s+(.*oapi-codegen.*)$", re.MULTILINE)
+_OAPI_SERVER_FLAVORS = {
+    "server",
+    "chi-server",
+    "echo-server",
+    "gin-server",
+    "fiber-server",
+    "iris-server",
+    "std-http-server",
+    "strict-server",
+}
+
+
+def _oapi_flavor_kind(flavors) -> str:
+    if any(flavor in _OAPI_SERVER_FLAVORS for flavor in flavors):
+        return "server"
+    if "client" in flavors:
+        return "client"
+    return "unknown"
+
+
+def _oapi_config_flavors(config_path: Path) -> List[str]:
+    try:
+        import yaml as _yaml
+
+        document = _yaml.safe_load(config_path.read_text(encoding="utf-8", errors="replace"))
+    except Exception:
+        return []
+    generate = document.get("generate") if isinstance(document, dict) else None
+    if isinstance(generate, dict):
+        return [key for key, value in generate.items() if value]
+    if isinstance(generate, list):
+        return [str(item) for item in generate]
+    return []
+
+
+def _golang_invocations(go_path: Path, text: str, repo_root: Path) -> List[dict]:
+    invocations = []
+    build_file = str(go_path.relative_to(repo_root))
+    package_dir = go_path.parent
+    for match in _GO_GENERATE.finditer(text):
+        tokens = match.group(1).split()
+        flavors: List[str] = []
+        spec_token = None
+        config_token = None
+        index = 0
+        while index < len(tokens):
+            token = tokens[index]
+            if token in ("-generate", "--generate") and index + 1 < len(tokens):
+                flavors.extend(tokens[index + 1].split(","))
+                index += 2
+                continue
+            if token in ("-config", "--config") and index + 1 < len(tokens):
+                config_token = tokens[index + 1]
+                index += 2
+                continue
+            if token.lower().endswith((".yaml", ".yml", ".json")) and not token.startswith("-"):
+                spec_token = token
+            index += 1
+        if config_token:
+            resolved_config = _contain(repo_root, package_dir, config_token)
+            if resolved_config:
+                flavors.extend(_oapi_config_flavors(repo_root / resolved_config))
+            # The config file itself can be the yaml positional; a config is
+            # never the spec.
+            if spec_token == config_token:
+                spec_token = None
+        if spec_token is None:
+            continue
+        entry = {
+            "build_file": build_file,
+            "tool": "go-generate",
+            "generator": "oapi-codegen",
+            "kind": _oapi_flavor_kind(flavors),
+            "spec_path": None,
+            "options": {"generate": sorted(set(flavors))},
+            "api_package": None,
+        }
+        resolved = _resolve_spec_path(repo_root, package_dir, spec_token)
+        if resolved is None:
+            entry["unresolved_input"] = spec_token
+        else:
+            entry["spec_path"] = resolved
+        invocations.append(entry)
+    return invocations
+
+
+# ---------------------------------------------------------------------------
+# Python: connexion add_api is direct registration
+# ---------------------------------------------------------------------------
+
+_CONNEXION_ADD_API = re.compile(r"\.add_api\s*\(")
+_SPEC_LITERAL = re.compile(r"^\s*[\"']([^\"']+)[\"']")
+_BASE_PATH_KWARG = re.compile(r"base_path\s*=\s*[\"']([^\"']+)[\"']")
+_SPECIFICATION_DIR = re.compile(r"specification_dir\s*=\s*[\"']([^\"']+)[\"']")
+
+
+def _connexion_invocations(py_path: Path, text: str, repo_root: Path) -> List[dict]:
+    invocations = []
+    build_file = str(py_path.relative_to(repo_root))
+    module_dir = py_path.parent
+    spec_dir_match = _SPECIFICATION_DIR.search(text)
+    specification_dir = spec_dir_match.group(1) if spec_dir_match else ""
+    for match in _CONNEXION_ADD_API.finditer(text):
+        depth = 1
+        index = match.end()
+        while index < len(text) and depth:
+            if text[index] == "(":
+                depth += 1
+            elif text[index] == ")":
+                depth -= 1
+            index += 1
+        arguments = text[match.end() : index - 1]
+        literal = _SPEC_LITERAL.match(arguments)
+        if literal is None:
+            # A spec passed as a variable or dict is not statically knowable.
+            continue
+        raw_spec = literal.group(1)
+        base_path_match = _BASE_PATH_KWARG.search(arguments)
+        entry = {
+            "build_file": build_file,
+            "tool": "connexion",
+            "generator": "connexion",
+            "kind": "server",
+            "spec_path": None,
+            "options": {},
+            "api_package": None,
+        }
+        if base_path_match:
+            entry["options"]["base_path"] = base_path_match.group(1)
+        resolved = None
+        for base in (
+            module_dir / specification_dir if specification_dir else module_dir,
+            module_dir,
+        ):
+            candidate = _contain(repo_root, Path(base), raw_spec)
+            if candidate and (repo_root / candidate).is_file():
+                resolved = candidate
+                break
+        if resolved is None:
+            entry["unresolved_input"] = raw_spec
+        else:
+            entry["spec_path"] = resolved
+        invocations.append(entry)
+    return invocations
 
 
 def collect_build_evidence(repo_root: str) -> List[dict]:
@@ -591,6 +761,7 @@ def collect_build_evidence(repo_root: str) -> List[dict]:
     gradles: List[Path] = []
     bazel_build_files: List[Path] = []
     bzl_files: List[Path] = []
+    source_files: List[Path] = []
     for current_dir, dirnames, filenames in os.walk(root):
         dirnames[:] = sorted(d for d in dirnames if d not in _SKIPPED_DIRS)
         for filename in filenames:
@@ -612,12 +783,25 @@ def collect_build_evidence(repo_root: str) -> List[dict]:
                 bazel_build_files.append(path)
             elif filename.endswith(".bzl"):
                 bzl_files.append(path)
+            elif filename.endswith((".go", ".py")):
+                source_files.append(path)
 
     invocations: List[dict] = []
     for pom in sorted(poms):
         invocations.extend(_maven_invocations(pom, root))
     for gradle in sorted(gradles):
         invocations.extend(_gradle_invocations(gradle, root))
+    for source in sorted(source_files):
+        try:
+            if source.stat().st_size > MAX_SOURCE_SCAN_BYTES:
+                continue
+            text = source.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if source.suffix == ".go" and "oapi-codegen" in text:
+            invocations.extend(_golang_invocations(source, text, root))
+        elif source.suffix == ".py" and ".add_api" in text:
+            invocations.extend(_connexion_invocations(source, text, root))
     macros = _bzl_macro_generators(root, sorted(bzl_files))
     if macros:
         # Call sites count only in BUILD files: a macro invoked inside another
