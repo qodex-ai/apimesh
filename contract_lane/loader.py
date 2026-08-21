@@ -196,6 +196,30 @@ class ContractLoader:
                     return
                 for value in current.values():
                     _walk(value, current_file, depth + 1)
+                # Discriminator mappings reference schemas as strings; the
+                # targets must join the closure or the rename dangles.
+                discriminator = current.get("discriminator")
+                if isinstance(discriminator, dict) and isinstance(
+                    discriminator.get("mapping"), dict
+                ):
+                    for mapping_value in discriminator["mapping"].values():
+                        if not isinstance(mapping_value, str):
+                            continue
+                        reference = mapping_value
+                        if "#" not in reference and "/" not in reference:
+                            reference = f"#/components/schemas/{reference}"
+                        if "#" not in reference:
+                            continue
+                        try:
+                            key, target = self.target(current_file, reference)
+                        except RefError as ex:
+                            errors.append(str(ex))
+                            continue
+                        if key in visited:
+                            continue
+                        visited.add(key)
+                        closure[f"{key[0]}#{key[1].lstrip('#')}"] = target
+                        _walk(target, key[0], depth + 1)
             elif isinstance(current, list):
                 for item in current:
                     _walk(item, current_file, depth + 1)
@@ -296,16 +320,6 @@ def load_operations(entry: dict, repo_root: str) -> Tuple[List[dict], List[dict]
                     {"path": spec_path, "method": verb.upper(), "error": str(ex)}
                 )
                 continue
-            closure, errors = loader.collect_closure(operation, item_file)
-            for body, origin in parameters:
-                more_closure, more_errors = loader.collect_closure(body, origin)
-                closure.update(more_closure)
-                errors.extend(more_errors)
-            if errors:
-                unresolved.append(
-                    {"path": spec_path, "method": verb.upper(), "error": errors[0]}
-                )
-                continue
             merged = dict(operation)
             parameter_origins: List[str] = []
             if parameters:
@@ -331,6 +345,20 @@ def load_operations(entry: dict, repo_root: str) -> Tuple[List[dict], List[dict]
                         "method": verb.upper(),
                         "error": f"security scheme {missing_scheme!r} is not defined",
                     }
+                )
+                continue
+            closure, errors = loader.collect_closure(operation, item_file)
+            for body, origin in parameters:
+                more_closure, more_errors = loader.collect_closure(body, origin)
+                closure.update(more_closure)
+                errors.extend(more_errors)
+            for scheme in required_schemes.values():
+                more_closure, more_errors = loader.collect_closure(scheme, base_file)
+                closure.update(more_closure)
+                errors.extend(more_errors)
+            if errors:
+                unresolved.append(
+                    {"path": spec_path, "method": verb.upper(), "error": errors[0]}
                 )
                 continue
             operations.append(

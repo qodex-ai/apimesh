@@ -305,23 +305,33 @@ def classify_contract(
             return set(cls["prefixes"]) if cls["prefixes"] else {""}
 
         def _majority(sets: List[set]) -> Optional[set]:
-            """The strictly most common prefix tuple, or None on a tie."""
+            """The prefix tuple holding a strict majority of votes, or None.
+
+            A 2/1/1 plurality is not a majority: publishing it would guess.
+            """
             counts: Dict[tuple, int] = {}
             for candidate in sets:
                 key = tuple(sorted(candidate))
                 counts[key] = counts.get(key, 0) + 1
-            ranked = sorted(counts.items(), key=lambda kv: -kv[1])
-            if len(ranked) > 1 and ranked[0][1] == ranked[1][1]:
+            if not counts:
                 return None
-            return set(ranked[0][0]) if ranked else None
+            best_key = max(counts, key=counts.get)
+            if counts[best_key] * 2 <= len(sets):
+                return None
+            return set(best_key)
 
         fallback_sets = [_prefix_set(cls) for cls in (voters or implementers)]
+        default_by_majority = False
         if not fallback_sets:
             default: Optional[set] = {""}
         elif any(s is None for s in fallback_sets):
             default = None
         else:
-            default = set.intersection(*fallback_sets) or _majority(fallback_sets)
+            default = set.intersection(*fallback_sets)
+            default_by_majority = False
+            if not default:
+                default = _majority(fallback_sets)
+                default_by_majority = default is not None
 
         prefixes_by_operation: Dict[int, List[str]] = {}
         dropped_positions: List[int] = []
@@ -346,6 +356,8 @@ def classify_contract(
                         majority_resolved += 1
             else:
                 chosen = default
+                if chosen is not None and default_by_majority:
+                    majority_resolved += 1
             if chosen is None:
                 dropped_positions.append(position)
             else:

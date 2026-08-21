@@ -262,6 +262,7 @@ def run_lane(repo_root: str) -> Optional[dict]:
                 "prefixes": verdict["prefixes"],
                 "prefix_variants": verdict["prefix_variants"],
                 "operations_without_prefix": verdict.get("operations_without_prefix", 0),
+                "operations_prefix_by_majority": verdict.get("operations_prefix_by_majority", 0),
                 "eligibility_hash": verdict["eligibility_hash"],
                 "payload_hash": verdict["payload_hash"],
                 "invocations": [
