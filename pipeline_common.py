@@ -882,6 +882,35 @@ def base_swagger(repo_name, host, commit_hash, repo_url, generated_at):
     }
 
 
+def strip_contract_operations(swagger):
+    """Remove every spec-sourced operation and the contract components.
+
+    Used when the lane is disabled: an incremental fast path would otherwise
+    hand back contract operations from a previous run as current.
+    """
+    if not isinstance(swagger, dict):
+        return swagger
+    paths = swagger.get("paths") or {}
+    for route in list(paths):
+        item = paths[route]
+        if not isinstance(item, dict):
+            continue
+        for verb in list(item):
+            operation = item[verb]
+            if isinstance(operation, dict) and any(
+                str(source).startswith("spec:")
+                for source in operation.get("x-apimesh-source") or []
+            ):
+                del item[verb]
+        if not item:
+            del paths[route]
+    swagger.pop("components", None)
+    coverage = (swagger.get("info") or {}).get("x-apimesh-coverage")
+    if isinstance(coverage, dict):
+        coverage["contract"] = {"disabled": True}
+    return swagger
+
+
 def integrate_contract_lane(directory_path, endpoint_jobs, method_of, normalize_route):
     """Run the contract lane and supersede code jobs the contracts cover.
 
@@ -901,6 +930,9 @@ def integrate_contract_lane(directory_path, endpoint_jobs, method_of, normalize_
             "method": (method_of(job) or "").upper(),
             "route": normalize_route(job.get("route")),
             "source_id": str(position),
+            # Routing conditions ride onto the contract operation that
+            # supersedes this handler, instead of vanishing with it.
+            "conditions": job.get("conditions"),
         }
         for position, job in enumerate(endpoint_jobs)
     ]
@@ -956,10 +988,13 @@ def finish_with_contract(swagger, reconciled, report, output_filepath):
             del paths[route]
     for route, item in reconciled["paths"].items():
         paths.setdefault(route, {}).update(item)
+    # Components are a contract-lane artifact, so the merged set replaces the
+    # previous one wholesale; anything else keeps renamed or deleted schemas
+    # around forever.
     if reconciled["components"]:
-        components = swagger.setdefault("components", {})
-        for category, items in reconciled["components"].items():
-            components.setdefault(category, {}).update(items)
+        swagger["components"] = reconciled["components"]
+    else:
+        swagger.pop("components", None)
 
     contract_operations = sum(len(item) for item in reconciled["paths"].values())
     summary = {
@@ -970,6 +1005,7 @@ def finish_with_contract(swagger, reconciled, report, output_filepath):
         "operations": contract_operations,
         "unresolved_operations": len(report["unresolved_operations"]),
         "conflicts": len(reconciled["conflicts"]),
+        "rewrite_failures": len(reconciled.get("rewrite_failures") or []),
         "superseded_code_endpoints": len(reconciled["superseded_code"]),
         "truncated": report["truncated"],
     }
@@ -980,8 +1016,13 @@ def finish_with_contract(swagger, reconciled, report, output_filepath):
     else:
         info["x-apimesh-coverage"] = {"contract": summary}
     # A repo with no contracts gets the coverage line but no profile file:
-    # dropping an empty report into every plain repo is noise.
-    if report["specs_found"]:
+    # dropping an empty report into every plain repo is noise. An existing
+    # profile is always rewritten, so a repo whose last contract disappeared
+    # does not keep claiming it is served.
+    profile_path = os.path.join(
+        os.path.dirname(output_filepath), "repo_profile.json"
+    )
+    if report["specs_found"] or os.path.exists(profile_path):
         write_repo_profile(report, reconciled, output_filepath)
         print(
             f"apimesh: contract lane served {summary['specs_served']} specs "

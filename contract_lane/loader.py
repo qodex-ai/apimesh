@@ -263,6 +263,13 @@ def load_operations(entry: dict, repo_root: str) -> Tuple[List[dict], List[dict]
     base_file = entry["path"]
     loader._documents[base_file] = entry["document"]
     paths = entry["document"].get("paths") or {}
+    # Document-level security applies to every operation that declares none,
+    # and requirements name schemes by string, not $ref, so the schemes must
+    # travel with the operations or the output silently loses auth.
+    document_security = entry["document"].get("security")
+    document_schemes = (entry["document"].get("components") or {}).get(
+        "securitySchemes"
+    ) or {}
 
     operations: List[dict] = []
     unresolved: List[dict] = []
@@ -304,6 +311,28 @@ def load_operations(entry: dict, repo_root: str) -> Tuple[List[dict], List[dict]
             if parameters:
                 merged["parameters"] = [body for body, _ in parameters]
                 parameter_origins = [origin for _, origin in parameters]
+            if "security" not in merged and isinstance(document_security, list):
+                merged["security"] = document_security
+            required_schemes: Dict[str, dict] = {}
+            missing_scheme = None
+            for requirement in merged.get("security") or []:
+                if not isinstance(requirement, dict):
+                    continue
+                for scheme_name in requirement:
+                    scheme = document_schemes.get(scheme_name)
+                    if scheme is None:
+                        missing_scheme = scheme_name
+                    else:
+                        required_schemes[scheme_name] = scheme
+            if missing_scheme is not None:
+                unresolved.append(
+                    {
+                        "path": spec_path,
+                        "method": verb.upper(),
+                        "error": f"security scheme {missing_scheme!r} is not defined",
+                    }
+                )
+                continue
             operations.append(
                 {
                     "method": verb.upper(),
@@ -318,6 +347,9 @@ def load_operations(entry: dict, repo_root: str) -> Tuple[List[dict], List[dict]
                     # parameters keep their own origins for the same reason.
                     "source_file": item_file,
                     "parameter_origins": parameter_origins,
+                    # Scheme definitions referenced by name from security
+                    # requirements; the reconciler namespaces them.
+                    "security_schemes": required_schemes,
                 }
             )
     return operations, unresolved

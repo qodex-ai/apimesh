@@ -43,8 +43,14 @@ def _load_overrides(repo_root: str):
             continue
         spec_path = entry.get("path")
         action = entry.get("action")
-        if isinstance(spec_path, str) and action in ("include", "exclude"):
-            overrides[spec_path] = entry
+        if not isinstance(spec_path, str) or action not in ("include", "exclude"):
+            continue
+        existing = overrides.get(spec_path)
+        if existing is not None and existing["action"] == "exclude":
+            # Fail-closed precedence: once a path is excluded, a later
+            # duplicate entry cannot overwrite the exclusion.
+            continue
+        overrides[spec_path] = entry
     return overrides, None
 
 
@@ -61,13 +67,19 @@ def _sha256_of_file(path: str) -> str:
 
 # Bumped when classification rules change: a cached override bound to an old
 # policy must go dormant rather than keep applying under new rules.
-PROVER_POLICY_VERSION = "1"
+PROVER_POLICY_VERSION = "2"
 
 
 def _eligibility_hash(
-    repo_root: str, spec_path: str, invocations: List[dict], implementer_files: List[str]
+    repo_root: str,
+    spec_path: str,
+    invocations: List[dict],
+    implementer_files: List[str],
+    closure_files,
 ) -> str:
-    """Covers the whole proof surface: spec, build files, implementers, policy.
+    """Covers the whole proof surface: spec, build files, the config files the
+    generator kind was read from (.bzl macros, oapi-codegen.yaml), every file
+    the spec's references reach, implementers, and the policy version.
 
     Editing any of them, or removing the last implementing controller, must
     change this hash so overrides and cached conclusions go stale with it.
@@ -75,15 +87,52 @@ def _eligibility_hash(
     digest = hashlib.sha256()
     digest.update(PROVER_POLICY_VERSION.encode())
     digest.update(_sha256_of_file(os.path.join(repo_root, spec_path)).encode())
-    build_files = sorted(
-        {invocation["build_file"] for invocation in invocations if invocation.get("build_file")}
-    )
-    for build_file in build_files:
-        digest.update(build_file.encode())
-        digest.update(_sha256_of_file(os.path.join(repo_root, build_file)).encode())
+    proof_files = {
+        invocation["build_file"]
+        for invocation in invocations
+        if invocation.get("build_file")
+    }
+    for invocation in invocations:
+        proof_files.update(invocation.get("config_files") or [])
+    proof_files.update(closure_files)
+    for proof_file in sorted(proof_files):
+        digest.update(proof_file.encode())
+        digest.update(_sha256_of_file(os.path.join(repo_root, proof_file)).encode())
     for implementer in sorted(set(implementer_files)):
         digest.update(implementer.encode())
         digest.update(_sha256_of_file(implementer).encode())
+    return digest.hexdigest()
+
+
+def _stringify_keys(node):
+    """YAML happily parses `200:` as an int key; JSON sorting cannot mix types."""
+    if isinstance(node, dict):
+        return {str(key): _stringify_keys(value) for key, value in node.items()}
+    if isinstance(node, list):
+        return [_stringify_keys(item) for item in node]
+    return node
+
+
+def _payload_hash(operations: List[dict]) -> str:
+    """The authored content plus its resolved reference closure, canonically."""
+    digest = hashlib.sha256()
+    for record in sorted(
+        operations, key=lambda r: (r["method"], r["spec_path"])
+    ):
+        digest.update(
+            json.dumps(
+                _stringify_keys(
+                    {
+                        "method": record["method"],
+                        "path": record["spec_path"],
+                        "operation": record["operation"],
+                        "closure": record["ref_closure"],
+                    }
+                ),
+                sort_keys=True,
+                default=str,
+            ).encode()
+        )
     return digest.hexdigest()
 
 
@@ -113,11 +162,19 @@ def run_lane(repo_root: str) -> Optional[dict]:
         for item in unresolved:
             unresolved_operations.append(dict(item, spec=entry["path"]))
         spec_evidence = evidence.get(entry["path"], [])
+        closure_files = {
+            key.partition("#")[0]
+            for record in operations
+            for key in record["ref_closure"]
+        }
+        closure_files.update(record["source_file"] for record in operations)
+        closure_files.discard(entry["path"])
         eligibility = _eligibility_hash(
-            repo_root, entry["path"], spec_evidence, implementer_files
+            repo_root, entry["path"], spec_evidence, implementer_files, closure_files
         )
         verdict = classify_contract(entry, operations, spec_evidence, index)
         verdict["eligibility_hash"] = eligibility
+        verdict["payload_hash"] = _payload_hash(operations)
         verdict["operations"] = len(operations)
 
         override = overrides.get(entry["path"])
@@ -133,7 +190,10 @@ def run_lane(repo_root: str) -> Optional[dict]:
                     "operations": len(operations),
                 }
                 overrides_report.append({"path": entry["path"], "action": "exclude", "state": "applied"})
-            elif verdict["status"] != "served":
+            elif verdict["status"] == "candidate":
+                # Includes activate candidates only. A mandatory exclusion
+                # (client generator, multi-document ambiguity) is not the
+                # operator's to lift with an include.
                 if override.get("eligibility_hash") == eligibility:
                     verdict = {
                         "status": "served",
@@ -141,10 +201,10 @@ def run_lane(repo_root: str) -> Optional[dict]:
                         "invocations": [],
                         "corroborated": False,
                         "override": True,
-                        "default_prefix": override.get("prefix", ""),
+                        "prefixes": [override.get("prefix", "")],
                         "prefix_variants": [],
-                        "prefix_by_operation": {},
                         "eligibility_hash": eligibility,
+                        "payload_hash": verdict["payload_hash"],
                         "operations": len(operations),
                     }
                     overrides_report.append({"path": entry["path"], "action": "include", "state": "applied"})
@@ -161,6 +221,15 @@ def run_lane(repo_root: str) -> Optional[dict]:
                             "current": eligibility,
                         }
                     )
+            elif verdict["status"] == "excluded":
+                overrides_report.append(
+                    {
+                        "path": entry["path"],
+                        "action": "include",
+                        "state": "inapplicable",
+                        "reason": verdict.get("reason", ""),
+                    }
+                )
 
         if verdict["status"] == "served":
             served.append(verdict)
@@ -190,9 +259,11 @@ def run_lane(repo_root: str) -> Optional[dict]:
                 "operations": verdict["operations"],
                 "corroborated": verdict["corroborated"],
                 "override": verdict.get("override", False),
-                "default_prefix": verdict["default_prefix"],
+                "prefixes": verdict["prefixes"],
                 "prefix_variants": verdict["prefix_variants"],
+                "operations_without_prefix": verdict.get("operations_without_prefix", 0),
                 "eligibility_hash": verdict["eligibility_hash"],
+                "payload_hash": verdict["payload_hash"],
                 "invocations": [
                     {
                         "build_file": invocation["build_file"],
