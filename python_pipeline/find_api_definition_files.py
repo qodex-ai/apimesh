@@ -58,7 +58,3 @@ def find_api_definition_sources(directory):
 
 def find_api_definition_files(directory):
     return [str(py_file) for py_file, _ in find_api_definition_sources(directory)]
-
-# directory = Path('/Users/ankits/PycharmProjects/data-science-model-serving')
-# api_files = find_api_definition_files(directory)
-# print(api_files)

@@ -244,14 +244,3 @@ def should_process_directory(dir_path: str) -> bool:
     """
     path_parts = dir_path.split(os.sep)
     return not any(part in config.ignored_dirs for part in path_parts)
-
-
-if __name__ == "__main__":
-    import json
-    filename = "/Users/ankits/PycharmProjects/qpulse-backend/python_scripts/interactive_ai_agent/tools/get_test_scenario_tags.py"
-    base_directory = "/Users/ankits/PycharmProjects/qpulse-backend"
-    if os.path.exists(filename) and should_process_directory(filename) and filename.endswith(".py"):
-        result = process_file(filename, base_directory)
-        print(json.dumps(result, indent=2))
-    else:
-        print(f"File {filename} not found")

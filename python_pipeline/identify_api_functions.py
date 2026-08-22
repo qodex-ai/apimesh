@@ -422,19 +422,3 @@ def set_parents(tree):
     for node in ast.walk(tree):
         for child in ast.iter_child_nodes(node):
             child.parent = node
-
-
-if __name__ == "__main__":
-    api_files = ['/Users/ankits/PycharmProjects/data-science-model-serving/app.py', '/Users/ankits/PycharmProjects/data-science-model-serving/apps/training/run.py', '/Users/ankits/PycharmProjects/data-science-model-serving/apps/prediction/run.py']
-    py_files = [Path(file) for file in api_files]  # Convert to Path objects
-    all_endpoints = []
-    for py_file in py_files:
-        try:
-            source = py_file.read_text(encoding="utf-8", errors="replace")
-            tree = ast.parse(source)
-            eps = find_api_endpoints(py_file, tree=tree)
-            if eps:
-                all_endpoints.extend(eps)
-        except Exception:
-            continue
-    print(json.dumps(all_endpoints, indent=2))
