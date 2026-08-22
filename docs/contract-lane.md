@@ -52,14 +52,14 @@ Every potential operation, from any lane, becomes a candidate:
 
 ```json
 {
-  "source_id": "spec:src/main/resources/esd.core/adhoc.yml#get /bootstrap",
+  "source_id": "spec:src/main/resources/specs/orders.yaml#get /api/orders",
   "lane": "contract | code",
   "method": "GET",
-  "route": "/api/bootstrap",
-  "route_shape": "GET /api/bootstrap",
+  "route": "/api/orders",
+  "route_shape": "GET /api/orders",
   "doc_index": 0,
-  "invocations": [{"tier": 2, "build_file": "esd-app/BUILD.bazel", "generator": "spring", "kind": "server"}],
-  "service": "esd-web-app",
+  "invocations": [{"tier": 2, "build_file": "app/BUILD.bazel", "generator": "spring", "kind": "server"}],
+  "service": "orders-service",
   "eligibility_hash": "<spec content + every build file carrying its invocations + implementing controller files + prover version>",
   "payload_hash": "<the operation object plus its resolved reference closure>",
   "operation": {"...": "authored content, refs resolved and namespaced"}

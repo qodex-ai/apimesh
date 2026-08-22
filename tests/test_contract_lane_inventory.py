@@ -338,7 +338,7 @@ def test_loader_reports_missing_pointer_targets(tmp_path):
     assert len(unresolved) == 1
 
 
-def test_loader_handles_the_esd_shaped_fixture():
+def test_loader_handles_the_spring_fixture():
     """The pets fixture loads clean: three operations, ids and tags intact."""
     fixture = FIXTURES_ROOT / "openapi_first_spring"
     entry = _entry_for(fixture, "app/src/main/resources/api/pets.yaml")
