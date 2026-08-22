@@ -99,17 +99,17 @@ docker run --pull always --rm -v $(pwd):/workspace \
 
 | Language | Frameworks | How |
 | --- | --- | --- |
-| Python | Flask, FastAPI, Django (URLconf), Django REST Framework | AST analysis |
+| Python | Flask, FastAPI, Django (URLconf), Django REST Framework, connexion (spec-first, see below) | AST analysis + spec ingestion |
 | Node.js / TypeScript | Express (incl. mounted routers), NestJS | tree-sitter |
 | Ruby on Rails | resources/resource, namespaces, scopes, member/collection, concerns, shallow nesting, engines, split route files | tree-sitter |
-| Go | gin, echo, chi, fiber, gorilla/mux, net/http (incl. Go 1.22 patterns) | tree-sitter |
+| Go | gin, echo, chi, fiber, gorilla/mux, net/http (incl. Go 1.22 patterns), oapi-codegen (spec-first, see below) | tree-sitter + spec ingestion |
 | Java | Spring annotation-based controllers (@RestController, @RequestMapping, verb mappings) and OpenAPI-first codebases (see below) | tree-sitter + spec ingestion |
 
 Anything else yields an honest zero (exit 1, nothing written). ApiMesh never asks an LLM to guess routes: a guessed route set can include third-party client calls and paths nobody serves, which poisons every consumer of the spec.
 
 ### OpenAPI-first repositories
 
-Many Spring codebases keep their API in OpenAPI YAML/JSON files and generate the serving interfaces at build time, so the routing never appears in committed code. ApiMesh reads those spec files directly, but only after proving this repo serves them: a Maven, Gradle or Bazel build step must name the spec as input to a server-mode generator (`spring`, `kotlin-spring`, delegate pattern included). Vendored specs of third-party APIs (client generation, gateway upstreams, stale documentation files) are excluded, each with its reason in `repo_profile.json`. Spec content (schemas, parameters, descriptions) passes through as authored, at zero LLM cost, with references rewritten onto per-spec namespaced components.
+Many codebases keep their API in OpenAPI YAML/JSON files and generate or register the serving code from them, so the routing never appears in committed handlers. ApiMesh reads those spec files directly, but only after proving this repo serves them. The accepted proofs: a live Maven, Gradle or Bazel build step naming the spec as input to a server-mode generator (`spring`, `kotlin-spring`, delegate pattern included); a `//go:generate oapi-codegen` directive with a server flavor whose generated output is committed; or a connexion `app.add_api("spec.yaml")` registration in application code. Profile-gated plugins and go:generate directives without committed output are provisional: the spec is listed as a candidate for confirmation, never served on a hint. Vendored specs of third-party APIs (client generation, gateway upstreams, stale documentation files) are excluded, each with its reason in `repo_profile.json`. Spec content (schemas, parameters, descriptions) passes through as authored, at zero LLM cost, with references rewritten onto per-spec namespaced components.
 
 A spec ApiMesh cannot prove either way is listed as a candidate with an `eligibility_hash`. To confirm one, commit `.apimesh-overrides.json` at the repo root:
 
