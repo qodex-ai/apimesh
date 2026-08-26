@@ -42,6 +42,20 @@ IMPORT_ASSIGN_PATTERN = re.compile(
     r'(?P<quote>[\'"`])(?P<module>[^\'"`]+)(?P=quote)'
 )
 
+# Route paths ending in one of these serve a static asset or a page, not an API
+# payload, so app.get('/index.html', ...) is never a real endpoint.
+STATIC_ASSET_EXTENSIONS = (
+    ".html", ".htm", ".css", ".js", ".mjs", ".map", ".ico",
+    ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp",
+    ".woff", ".woff2", ".ttf", ".eot", ".txt", ".xml", ".pdf",
+)
+# A handler that ends the request with one of these serves a file, a rendered
+# template, or a redirect rather than data.
+PAGE_SERVE_CALL_PATTERN = re.compile(r'\.\s*(?:sendFile|sendfile|render|redirect)\s*\(')
+# res.json(...) or res.send({...}) / res.send([...]) means the handler emits JSON,
+# so it stays an endpoint even if it also serves a page on another branch.
+JSON_EMIT_PATTERN = re.compile(r'\.\s*json\s*\(|\.\s*send\s*\(\s*[\[{]')
+
 JS_LANGUAGE = Language(tree_sitter_javascript.language())
 TS_LANGUAGE = Language(tree_sitter_typescript.language_typescript())
 TSX_LANGUAGE = Language(tree_sitter_typescript.language_tsx())
@@ -75,6 +89,44 @@ def _extract_endpoints_with_regex(source: str, file_path: Path):
     return endpoints
 
 
+def _route_has_static_asset_extension(route) -> bool:
+    """True when the route path ends in a static asset or page extension."""
+    if not route:
+        return False
+    path = route.split("?", 1)[0].split("#", 1)[0].rstrip("/")
+    return path.lower().endswith(STATIC_ASSET_EXTENSIONS)
+
+
+def _handler_serves_page(endpoint, source: str) -> bool:
+    """
+    True when the handler body serves a page (sendFile/render/redirect) and
+    never emits JSON. Any json-emitting call keeps the endpoint, so a handler
+    that both serves a file and returns JSON on another branch is kept.
+    """
+    start_line = endpoint.get("start_line")
+    end_line = endpoint.get("end_line")
+    if not start_line or not end_line:
+        return False
+    body = "\n".join(source.splitlines()[start_line - 1:end_line])
+    if JSON_EMIT_PATTERN.search(body):
+        return False
+    return bool(PAGE_SERVE_CALL_PATTERN.search(body))
+
+
+def _is_page_serving_endpoint(endpoint, source: str) -> bool:
+    """
+    A page-serving route is not an API endpoint. When unsure, keep it: a
+    false-drop of a real API is worse than keeping a rare page-serve.
+    """
+    if _route_has_static_asset_extension(endpoint.get("route")):
+        return True
+    return _handler_serves_page(endpoint, source)
+
+
+def _drop_page_serving_endpoints(endpoints, source: str):
+    return [ep for ep in endpoints if not _is_page_serving_endpoint(ep, source)]
+
+
 def find_api_endpoints_js(file_path: Path):
     try:
         source = file_path.read_text(encoding='utf-8')
@@ -82,8 +134,9 @@ def find_api_endpoints_js(file_path: Path):
         return []
 
     endpoints = _find_api_endpoints_tree_sitter(file_path, source)
+    endpoints = _apply_same_file_mounts(endpoints, source)
 
-    return _apply_same_file_mounts(endpoints, source)
+    return _drop_page_serving_endpoints(endpoints, source)
 
 
 def _walk_tree(root):

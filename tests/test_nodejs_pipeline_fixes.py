@@ -101,6 +101,105 @@ def test_unmounted_routes_unchanged(tmp_path):
     assert _routes(app_file) == {("GET", "/users"), ("GET", "/health")}
 
 
+PAGE_SERVE_APP = """const express = require('express');
+const path = require('path');
+const app = express();
+
+app.get('/index.html', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
+app.get('/approvals.html', (req, res) => res.sendFile(path.join(__dirname, 'public', 'approvals.html')));
+app.get('/notifications.html', (req, res) => res.sendFile(path.join(__dirname, 'public', 'notifications.html')));
+
+app.get('/approvals', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'approvals.html'));
+});
+app.get('/notifications', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'notifications.html'));
+});
+
+app.get('/health', (req, res) => res.json({ status: 'ok' }));
+
+module.exports = app;
+"""
+
+
+def test_page_serve_routes_dropped_health_kept(tmp_path):
+    """The prod frontend case: five page-serves are dropped, only the JSON
+    /health endpoint survives."""
+    app_file = _write(tmp_path / "app.js", PAGE_SERVE_APP)
+    assert _routes(app_file) == {("GET", "/health")}
+
+
+STATIC_ASSET_APP = """const express = require('express');
+const app = express();
+
+app.get('/styles/main.css', (req, res) => res.sendFile('main.css'));
+app.get('/scripts/app.js', (req, res) => res.sendFile('app.js'));
+app.get('/img/logo.png', (req, res) => res.sendFile('logo.png'));
+
+module.exports = app;
+"""
+
+
+def test_static_asset_extension_routes_dropped(tmp_path):
+    """Any route ending in a static asset extension is dropped by path alone."""
+    app_file = _write(tmp_path / "app.js", STATIC_ASSET_APP)
+    assert _routes(app_file) == set()
+
+
+SENDFILE_ONLY_APP = """const express = require('express');
+const app = express();
+
+app.get('/approvals', (req, res) => {
+    res.sendFile('/var/www/approvals.html');
+});
+
+module.exports = app;
+"""
+
+
+def test_extensionless_sendfile_route_dropped(tmp_path):
+    """An extension-less route whose handler only sends a file is dropped."""
+    app_file = _write(tmp_path / "app.js", SENDFILE_ONLY_APP)
+    assert _routes(app_file) == set()
+
+
+JSON_API_APP = """const express = require('express');
+const app = express();
+
+app.get('/health', (req, res) => res.json({ status: 'ok' }));
+app.post('/api/users', (req, res) => res.json({ id: 1 }));
+
+module.exports = app;
+"""
+
+
+def test_json_emitting_routes_kept(tmp_path):
+    """A res.json health route and a normal JSON POST endpoint are both kept."""
+    app_file = _write(tmp_path / "app.js", JSON_API_APP)
+    assert _routes(app_file) == {("GET", "/health"), ("POST", "/api/users")}
+
+
+SERVE_AND_JSON_APP = """const express = require('express');
+const app = express();
+
+app.get('/dashboard', (req, res) => {
+    if (req.accepts('json')) {
+        return res.json({ ok: true });
+    }
+    res.sendFile('/var/www/dashboard.html');
+});
+
+module.exports = app;
+"""
+
+
+def test_handler_that_serves_and_emits_json_is_kept(tmp_path):
+    """A handler that serves a file on one branch but emits JSON on another is
+    kept, since any JSON emission means it is a real endpoint."""
+    app_file = _write(tmp_path / "app.js", SERVE_AND_JSON_APP)
+    assert _routes(app_file) == {("GET", "/dashboard")}
+
+
 CROSS_FILE_APP = """const express = require('express');
 const usersRouter = require('./routes/users');
 const app = express();
