@@ -732,6 +732,49 @@ def test_changed_files_include_untracked(tmp_path, monkeypatch):
     assert str(repo / "new_routes.py") in {str(Path(p)) for p in changed}
 
 
+def test_changed_files_returns_none_on_partial_git_failure(tmp_path, monkeypatch):
+    """If a git call in the uncommitted-changes pass fails after another already
+    populated the set, return None (full regeneration) rather than a partial
+    set that would stamp a real edit as unchanged."""
+    import subprocess as real_subprocess
+
+    import utils
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    real_subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    (repo / "a.py").write_text("x = 1\n")
+    real_subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    real_subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t",
+         "commit", "-qm", "init"],
+        check=True,
+    )
+    base = real_subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    (repo / "a.py").write_text("x = 2\n")
+
+    real_run = real_subprocess.run
+    calls = {"n": 0}
+
+    def flaky_run(args, *pos, **kwargs):
+        # Let the base-commit diff and the first uncommitted diff succeed, then
+        # fail the staged diff so `changed` is already populated when git fails.
+        if args[:3] == ["git", "diff", "--name-only"] and "--cached" in args:
+            calls["n"] += 1
+            result = real_subprocess.CompletedProcess(args, 1, stdout="", stderr="boom")
+            return result
+        return real_run(args, *pos, **kwargs)
+
+    monkeypatch.setattr(utils.subprocess, "run", flaky_run)
+
+    changed = utils.get_changed_files_since(base, repo_path=str(repo))
+    assert calls["n"] == 1
+    assert changed is None
+
+
 def test_legacy_generation_reports_coverage(monkeypatch, tmp_path):
     monkeypatch.setenv("APIMESH_USER_REPO_PATH", str(tmp_path))
     generator = _generator()
