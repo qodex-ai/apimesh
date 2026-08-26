@@ -278,6 +278,9 @@ def get_changed_files_since(
         # Untracked files are invisible to every diff form above, yet a brand
         # new route file is exactly what an incremental run must notice.
         ok = _collect(["git", "ls-files", "--others", "--exclude-standard"]) and ok
-    if not ok and not changed:
+    if not ok:
+        # Any git failure in the uncommitted-changes pass can leave a partial
+        # set, which would stamp a real edit as unchanged. Force a full
+        # regeneration instead, matching the base-commit fail-safe above.
         return None
     return changed
