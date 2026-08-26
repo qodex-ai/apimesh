@@ -195,8 +195,23 @@ class SwaggerGeneration:
         directory = os.path.dirname(filename)
         if directory:
             os.makedirs(directory, exist_ok=True)
+        # OpenAPI specs are frequently authored in YAML, and PyYAML parses
+        # ISO date/datetime scalars (e.g. an `info.version` or a date field)
+        # into Python date/datetime objects. Those flow into the assembled
+        # spec and json.dump cannot serialize them, which crashed the whole
+        # run at the final write. Serialize dates as ISO strings; re-raise for
+        # any genuinely unexpected type so real bugs still surface.
+        from datetime import date, datetime
+
+        def _json_default(o):
+            if isinstance(o, (date, datetime)):
+                return o.isoformat()
+            raise TypeError(
+                f"Object of type {o.__class__.__name__} is not JSON serializable"
+            )
+
         with open(filename, 'w', encoding='utf-8') as file:
-            json.dump(swagger, file, indent=2)
+            json.dump(swagger, file, indent=2, default=_json_default)
         # Display relative path (remove /workspace prefix if present)
         display_path = filename
         if filename.startswith('/workspace/'):
