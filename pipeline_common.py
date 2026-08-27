@@ -415,6 +415,61 @@ def build_api_index(endpoints, endpoint_key_of, method_of, collect_imports):
     return api_index
 
 
+def contract_api_index_entries(reconciled, endpoint_key_of):
+    """The api_index entries for the contract lane's served operations.
+
+    api_index maps an endpoint to the repository files that define it. The code
+    lane only indexes endpoints it found in source, so an OpenAPI-first repo
+    (its whole surface declared in committed spec files and served by the
+    contract lane) produced an empty index and a downstream consumer that maps
+    endpoints to source files got nothing. Each served contract operation is
+    keyed with the same ``METHOD /route`` key the code lane uses and points at
+    the spec file that declares it. No context_hash: a contract operation is
+    reconciled fresh every run, so there is no per-endpoint prompt to fingerprint.
+    """
+    entries = {}
+    if not reconciled:
+        return entries
+    for operation in reconciled.get("served") or []:
+        file_path = operation.get("file_path")
+        if not file_path:
+            continue
+        key = endpoint_key_of(operation.get("route"), operation.get("method"))
+        entry = entries.setdefault(key, {"files": []})
+        merge_file_entry(entry["files"], {"file_path": file_path, "imports": []})
+    return entries
+
+
+def merge_contract_index_entries(output_filepath, contract_entries):
+    """Fold the contract lane's entries into the api_index already on disk.
+
+    The code lane has just written api_index.json for this run; the contract
+    entries are added so the file covers both lanes. A code entry is never
+    clobbered: a key a code endpoint already holds keeps its files and its
+    context_hash, and the contract file only joins that key's files list.
+    Best-effort, like write_api_index: a failure here must not fail the spec.
+    """
+    if not contract_entries:
+        return
+    api_index_path = api_index_output_path(output_filepath)
+    try:
+        with open(api_index_path, "r", encoding="utf-8") as f:
+            api_index = json.load(f)
+    except (OSError, ValueError):
+        api_index = {}
+    if not isinstance(api_index, dict):
+        api_index = {}
+    for key, contract_entry in contract_entries.items():
+        entry = api_index.get(key)
+        if not isinstance(entry, dict):
+            entry = {"files": []}
+            api_index[key] = entry
+        files = entry.setdefault("files", [])
+        for file_entry in contract_entry.get("files", []):
+            merge_file_entry(files, file_entry)
+    write_api_index(api_index, api_index_path)
+
+
 def apply_generated_index_entries(updated_index, generated_index, failed_keys):
     """Refresh the entries of the endpoints that made it, drop the ones that did not.
 
@@ -937,6 +992,12 @@ def integrate_contract_lane(directory_path, endpoint_jobs, method_of, normalize_
         for position, job in enumerate(endpoint_jobs)
     ]
     reconciled = reconcile(lane_result["rows"], code_ops, directory_path)
+    # The served contract endpoints are keyed here, with this pipeline's own
+    # route normalizer, so their api_index keys match the code lane's exactly.
+    reconciled["api_index_entries"] = contract_api_index_entries(
+        reconciled,
+        lambda route, method: endpoint_key(route, method, normalize_route),
+    )
     allowed = {int(op["source_id"]) for op in reconciled["code_to_generate"]}
     filtered = [job for position, job in enumerate(endpoint_jobs) if position in allowed]
     return lane_result, reconciled, filtered
@@ -970,8 +1031,13 @@ def finish_with_contract(swagger, reconciled, report, output_filepath):
 
     Spec-sourced operations from a previous run are stripped first, so a
     contract operation that disappeared from its spec leaves the document:
-    the contract portion is rebuilt from scratch on every run.
+    the contract portion is rebuilt from scratch on every run. The served
+    contract operations are also folded into the api_index the code lane just
+    wrote, so the index covers both lanes.
     """
+    merge_contract_index_entries(
+        output_filepath, (reconciled or {}).get("api_index_entries")
+    )
     paths = swagger.setdefault("paths", {})
     for route in list(paths):
         item = paths[route]
