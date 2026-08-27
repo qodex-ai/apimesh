@@ -71,6 +71,103 @@ def test_openapi_first_repo_yields_a_spec_with_no_llm(contract_only_repo, monkey
     assert profile["contract_lane"]["served"][0]["eligibility_hash"]
 
 
+def test_openapi_first_repo_writes_api_index_for_contract_endpoints(
+    contract_only_repo, monkeypatch
+):
+    """The contract-only path (code parser finds nothing) writes a non-empty
+    api_index: one key per served operation, each pointing at the spec file
+    that declares it, keyed as METHOD /route and pathed absolutely."""
+
+    def _forbid(*args, **kwargs):
+        raise AssertionError("no LLM call may happen for a contract-only repo")
+
+    monkeypatch.setattr(rsg, "get_batch_definition_swagger", _forbid)
+    monkeypatch.setattr(rsg, "get_function_definition_swagger", _forbid)
+
+    rsg.run_swagger_generation("http://api.example.test")
+
+    api_index = json.loads(
+        (contract_only_repo / "out" / "api_index.json").read_text()
+    )
+    assert set(api_index) == {
+        "GET /api/pets",
+        "POST /api/pets",
+        "DELETE /api/pets/{petId}",
+    }
+    spec_file = os.path.abspath(
+        str(
+            FIXTURES_ROOT
+            / "openapi_first_spring"
+            / "app"
+            / "src"
+            / "main"
+            / "resources"
+            / "api"
+            / "pets.yaml"
+        )
+    )
+    for entry in api_index.values():
+        assert entry["files"] == [{"file_path": spec_file, "imports": []}]
+        assert os.path.isabs(entry["files"][0]["file_path"])
+
+
+def test_finish_with_contract_folds_contract_entries_into_the_code_index(tmp_path):
+    """A mixed repo: the code lane's api_index already holds a code endpoint,
+    and finishing with the contract lane adds the served contract endpoints,
+    so the index on disk covers both lanes."""
+    import pipeline_common
+
+    output_filepath = str(tmp_path / "out" / "swagger.json")
+    index_path = pipeline_common.api_index_output_path(output_filepath)
+    code_file = os.path.abspath(str(tmp_path / "HealthController.java"))
+    pipeline_common.write_api_index(
+        {
+            "GET /internal/health": {
+                "files": [{"file_path": code_file, "imports": []}],
+                "context_hash": "codehash",
+            }
+        },
+        index_path,
+    )
+
+    spec_file = os.path.abspath(str(tmp_path / "api" / "pets.yaml"))
+    reconciled = {
+        "paths": {"/api/pets": {"get": {"x-apimesh-source": ["spec:api/pets.yaml#get /api/pets"]}}},
+        "components": {},
+        "conflicts": [],
+        "superseded_code": [],
+        "code_to_generate": [],
+        "api_index_entries": {
+            "GET /api/pets": {"files": [{"file_path": spec_file, "imports": []}]},
+        },
+    }
+    report = {
+        "specs_found": 1,
+        "served": [1],
+        "excluded": [],
+        "candidates": [],
+        "unresolved_operations": [],
+        "truncated": False,
+    }
+
+    pipeline_common.finish_with_contract(
+        {"info": {}, "paths": {}}, reconciled, report, output_filepath
+    )
+
+    with open(index_path, encoding="utf-8") as handle:
+        merged = json.load(handle)
+    assert set(merged) == {"GET /internal/health", "GET /api/pets"}
+    # The code entry survives untouched.
+    assert merged["GET /internal/health"]["context_hash"] == "codehash"
+    assert merged["GET /internal/health"]["files"] == [
+        {"file_path": code_file, "imports": []}
+    ]
+    # The contract endpoint points at its spec file.
+    assert merged["GET /api/pets"]["files"] == [
+        {"file_path": spec_file, "imports": []}
+    ]
+
+
 def test_kill_switch_restores_the_honest_zero(contract_only_repo, monkeypatch):
     monkeypatch.setenv("APIMESH_INGEST_SPECS", "0")
 

@@ -324,6 +324,113 @@ def test_load_existing_api_index_returns_none_when_there_is_none(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# Contract lane api_index entries
+# --------------------------------------------------------------------------- #
+
+
+def test_contract_api_index_entries_keyed_like_code_and_point_at_the_spec():
+    """A served contract op is keyed with the same METHOD /route the code lane
+    uses and points at the spec file, with no prompt fingerprint."""
+    spec = os.path.abspath("/repo/openapi.yaml")
+    reconciled = {
+        "served": [
+            {"method": "GET", "route": "/users/:id", "file_path": spec},
+            {"method": "POST", "route": "/users", "file_path": spec},
+        ]
+    }
+    entries = pipeline_common.contract_api_index_entries(reconciled, _endpoint_key)
+    # The stand-in normalizer turns :id into {id}, exactly as for a code entry.
+    assert set(entries) == {"GET /users/{id}", "POST /users"}
+    assert entries["GET /users/{id}"] == {"files": [{"file_path": spec, "imports": []}]}
+    assert "context_hash" not in entries["GET /users/{id}"]
+
+
+def test_contract_api_index_entries_are_empty_without_a_lane():
+    assert pipeline_common.contract_api_index_entries(None, _endpoint_key) == {}
+    assert pipeline_common.contract_api_index_entries({}, _endpoint_key) == {}
+    assert pipeline_common.contract_api_index_entries({"served": []}, _endpoint_key) == {}
+
+
+def test_merge_contract_index_entries_adds_to_the_code_index_without_clobbering(tmp_path):
+    """Contract entries join the api_index the code lane already wrote: a
+    code-only key keeps its files and its context_hash, a key both lanes claim
+    keeps the code file and gains the spec file, a contract-only key is added."""
+    output_filepath = str(tmp_path / "out" / "swagger.json")
+    index_path = pipeline_common.api_index_output_path(output_filepath)
+    code_file = os.path.abspath("/repo/Health.java")
+    shared_code_file = os.path.abspath("/repo/PetController.java")
+    pipeline_common.write_api_index(
+        {
+            "GET /internal/health": {
+                "files": [{"file_path": code_file, "imports": []}],
+                "context_hash": "abc123",
+            },
+            "GET /api/pets": {
+                "files": [{"file_path": shared_code_file, "imports": []}],
+                "context_hash": "def456",
+            },
+        },
+        index_path,
+    )
+    spec_file = os.path.abspath("/repo/api/pets.yaml")
+    contract_entries = {
+        "GET /api/pets": {"files": [{"file_path": spec_file, "imports": []}]},
+        "DELETE /api/pets/{id}": {"files": [{"file_path": spec_file, "imports": []}]},
+    }
+
+    pipeline_common.merge_contract_index_entries(output_filepath, contract_entries)
+
+    with open(index_path, encoding="utf-8") as handle:
+        merged = json.load(handle)
+    assert set(merged) == {
+        "GET /internal/health",
+        "GET /api/pets",
+        "DELETE /api/pets/{id}",
+    }
+    # The code-only entry is untouched.
+    assert merged["GET /internal/health"]["context_hash"] == "abc123"
+    assert merged["GET /internal/health"]["files"] == [
+        {"file_path": code_file, "imports": []}
+    ]
+    # A key both lanes claim keeps its code file and hash and gains the spec.
+    shared = merged["GET /api/pets"]
+    assert shared["context_hash"] == "def456"
+    assert [f["file_path"] for f in shared["files"]] == [shared_code_file, spec_file]
+    # A contract-only key is added.
+    assert merged["DELETE /api/pets/{id}"]["files"] == [
+        {"file_path": spec_file, "imports": []}
+    ]
+
+
+def test_merge_contract_index_entries_writes_a_fresh_index_when_none_on_disk(tmp_path):
+    """The contract-only path writes an empty code index; the contract entries
+    still have to land, so a missing or empty file is started from scratch."""
+    output_filepath = str(tmp_path / "out" / "swagger.json")
+    index_path = pipeline_common.api_index_output_path(output_filepath)
+    pipeline_common.write_api_index({}, index_path)
+    spec_file = os.path.abspath("/repo/api/pets.yaml")
+
+    pipeline_common.merge_contract_index_entries(
+        output_filepath,
+        {"GET /api/pets": {"files": [{"file_path": spec_file, "imports": []}]}},
+    )
+
+    with open(index_path, encoding="utf-8") as handle:
+        merged = json.load(handle)
+    assert merged == {"GET /api/pets": {"files": [{"file_path": spec_file, "imports": []}]}}
+
+
+def test_merge_contract_index_entries_is_a_noop_without_entries(tmp_path):
+    output_filepath = str(tmp_path / "out" / "swagger.json")
+    index_path = pipeline_common.api_index_output_path(output_filepath)
+    pipeline_common.write_api_index({"GET /a": {"files": []}}, index_path)
+    pipeline_common.merge_contract_index_entries(output_filepath, None)
+    pipeline_common.merge_contract_index_entries(output_filepath, {})
+    with open(index_path, encoding="utf-8") as handle:
+        assert json.load(handle) == {"GET /a": {"files": []}}
+
+
+# --------------------------------------------------------------------------- #
 # Metadata cache
 # --------------------------------------------------------------------------- #
 

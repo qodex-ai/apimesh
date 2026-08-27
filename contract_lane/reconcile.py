@@ -15,6 +15,7 @@ Rules, per docs/contract-lane.md:
   components in the merged document; nothing dangles.
 """
 
+import os
 import re
 from typing import Dict, List, Optional, Tuple
 
@@ -212,9 +213,11 @@ def reconcile(contract_rows: List[dict], code_ops: List[dict], repo_root: str) -
     """One merged path map from both lanes, with a full account of the merge.
 
     code_ops: [{"method", "route", "source_id"}] from the framework parser.
-    Returns {"paths", "components", "conflicts", "superseded_code",
+    Returns {"paths", "served", "components", "conflicts", "superseded_code",
     "code_to_generate"}: the pipeline documents code_to_generate with the LLM
-    and grafts the results under the same route keys.
+    and grafts the results under the same route keys. "served" lists each
+    published contract operation with the absolute path of the spec file that
+    defines it, so the api_index can point an endpoint at its source file.
     """
     loader = ContractLoader(repo_root)
     store = _ComponentStore()
@@ -239,6 +242,7 @@ def reconcile(contract_rows: List[dict], code_ops: List[dict], repo_root: str) -
             code_to_generate.append(code_op)
 
     paths: Dict[str, Dict[str, dict]] = {}
+    served: List[dict] = []
     conflicts: List[dict] = []
     rewrite_failures: List[dict] = []
     rewritten_components_done: set = set()
@@ -340,9 +344,23 @@ def reconcile(contract_rows: List[dict], code_ops: List[dict], repo_root: str) -
                 }
             )
         paths.setdefault(winner["route"], {})[method.lower()] = operation
+        # The file that, when edited, changes this served endpoint: the file the
+        # operation body lives in when a path-item alias crossed files, else the
+        # OpenAPI document itself. Absolute, the way the code lane records its
+        # own files, so a downstream consumer can relativize both the same way.
+        record = winner.get("record") or {}
+        source_file = record.get("source_file") or winner["spec_path"]
+        served.append(
+            {
+                "method": method,
+                "route": winner["route"],
+                "file_path": os.path.abspath(os.path.join(repo_root, source_file)),
+            }
+        )
 
     return {
         "paths": paths,
+        "served": served,
         "components": {
             category: dict(sorted(items.items()))
             for category, items in sorted(store.components.items())

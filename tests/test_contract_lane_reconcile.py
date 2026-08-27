@@ -79,6 +79,34 @@ def test_contract_wins_over_code_and_the_rest_survive(tmp_path):
     assert result["conflicts"] == []
 
 
+def test_reconcile_lists_served_operations_with_their_spec_file(tmp_path):
+    """Each published contract operation is reported with the absolute path of
+    the spec file that defines it, so the api_index can map it to source."""
+    (tmp_path / "api.yaml").write_text(
+        "openapi: 3.0.0\n"
+        "paths:\n"
+        "  /users/{userId}:\n"
+        "    get:\n"
+        "      operationId: getUser\n"
+        "      responses: {'200': {description: ok}}\n"
+        "  /users:\n"
+        "    post:\n"
+        "      operationId: createUser\n"
+        "      responses: {'201': {description: created}}\n"
+    )
+    rows = _rows(tmp_path, "api.yaml", prefix="/api")
+
+    result = reconcile(rows, [], str(tmp_path))
+
+    served = {(op["method"], op["route"]): op["file_path"] for op in result["served"]}
+    spec_file = os.path.abspath(str(tmp_path / "api.yaml"))
+    assert served == {
+        ("GET", "/api/users/{userId}"): spec_file,
+        ("POST", "/api/users"): spec_file,
+    }
+    assert all(os.path.isabs(path) for path in served.values())
+
+
 def test_cross_spec_collision_is_a_reported_conflict(tmp_path):
     (tmp_path / "one.yaml").write_text(
         "openapi: 3.0.0\n"
